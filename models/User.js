@@ -29,12 +29,12 @@ const userSchema = new mongoose.Schema(
       },
       lastname: {
         type: String,
-        required: [true, 'Please provide a last name'],
+        required: false,
         trim: true
       },
       phone: {
         type: String,
-        required: [true, 'Please provide a phone number'],
+        required: false,
         trim: true
       }
     },
@@ -47,6 +47,28 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: ['active', 'inactive'],
       default: 'active'
+    }
+    ,
+    passwordResetOTP: {
+      type: String,
+      select: false
+    },
+    passwordResetOTPExpires: {
+      type: Date,
+      select: false
+    }
+    ,
+    isVerified: {
+      type: Boolean,
+      default: false
+    },
+    emailVerificationOTP: {
+      type: String,
+      select: false
+    },
+    emailVerificationOTPExpires: {
+      type: Date,
+      select: false
     }
   },
   { timestamps: true }
