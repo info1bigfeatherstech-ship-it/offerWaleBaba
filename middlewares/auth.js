@@ -1,10 +1,12 @@
 const jwt = require('jsonwebtoken');
+const { redisClient } = require('../config/redis.config');
+const tokenStore = require('../config/tokenBlacklist');
 
 /**
  * Verify JWT Token Middleware
  * Checks for valid JWT token in Authorization header (Bearer token)
  */
-const verifyToken = (req, res, next) => {
+const verifyToken = async (req, res, next) => {
   try {
     // Get token from Authorization header
     const authHeader = req.headers.authorization;
@@ -12,7 +14,7 @@ const verifyToken = (req, res, next) => {
     if (!authHeader) {
       return res.status(401).json({
         success: false,
-        message: 'Authorization header is missing',
+        message: 'User is not logged in',
         code: 'MISSING_AUTH_HEADER'
       });
     }
@@ -35,6 +37,23 @@ const verifyToken = (req, res, next) => {
       token,
       process.env.JWT_SECRET || 'your-secret-key'
     );
+
+    // Check blacklist (Redis first, then in-memory fallback)
+    try {
+      if (redisClient) {
+        const isBlacklisted = await redisClient.get(`bl_${token}`);
+        if (isBlacklisted) {
+          return res.status(401).json({ success: false, message: 'Token is blacklisted', code: 'TOKEN_BLACKLISTED' });
+        }
+      } else if (tokenStore.has(token)) {
+        return res.status(401).json({ success: false, message: 'Token is blacklisted', code: 'TOKEN_BLACKLISTED' });
+      }
+    } catch (err) {
+      // If Redis errors, fall back to in-memory check only
+      if (tokenStore.has(token)) {
+        return res.status(401).json({ success: false, message: 'Token is blacklisted', code: 'TOKEN_BLACKLISTED' });
+      }
+    }
 
     // Attach user id to request object
     req.userId = decoded.id;
