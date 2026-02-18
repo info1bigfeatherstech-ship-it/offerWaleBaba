@@ -4,6 +4,7 @@ const nodemailer = require('nodemailer');
 const { validationResult } = require('express-validator');
 const { redisClient } = require('../config/redis.config');
 const tokenStore = require('../config/tokenBlacklist');
+const { token } = require('morgan');
 
 // Helper to extract token from Authorization header
 const getTokenFromHeader = (req) => {
@@ -31,7 +32,7 @@ const generateAccessToken = (id) => {
 };
 
 const generateRefreshToken = (id) => {
-  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET || 'your-secret-key', {
+  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET || 'your-secret-keyy', {
     expiresIn: REFRESH_EXPIRES
   });
 };
@@ -242,6 +243,7 @@ const logout = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Token is required' });
     }
 
+  
     // Decode token to get expiry
     const decoded = jwt.decode(token);
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -284,7 +286,7 @@ const refreshAccessToken = async (req, res) => {
     // Verify refresh token
     let decoded;
     try {
-      decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET || 'your-secret-key');
+      decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET || 'your-secret-keyy');
     } catch (err) {
       return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
     }
@@ -317,7 +319,7 @@ const me = async (req, res) => {
         phone: user.profile.phone,
         role: user.role,
         status: user.status
-      }
+      } , token: getTokenFromHeader(req)
     });
   } catch (error) {
     console.error('Me error:', error);
