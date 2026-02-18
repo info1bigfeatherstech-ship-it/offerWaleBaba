@@ -1,6 +1,6 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword } = require('../controllers/authController');
+const { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken } = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -61,8 +61,11 @@ router.post(
     body('email').trim().notEmpty().withMessage('Email is required').isEmail().withMessage('Invalid email format').normalizeEmail(),
     body('otp').trim().notEmpty().withMessage('OTP is required')
   ],
-  require('../controllers/authController').verifyRegistrationOTP
+  verifyRegistrationOTP
 );
+
+// POST /api/auth/refresh - issues new access token using refresh cookie
+router.post('/refresh', refreshAccessToken);
 
 
 

@@ -20,11 +20,30 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-// Generate JWT Token
-const generateToken = (id) => {
+// Generate Access and Refresh Tokens
+const ACCESS_EXPIRES = process.env.ACCESS_TOKEN_EXPIRES || '15m';
+const REFRESH_EXPIRES = process.env.REFRESH_TOKEN_EXPIRES || '7d';
+
+const generateAccessToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET || 'your-secret-key', {
-    expiresIn: '7d'
+    expiresIn: ACCESS_EXPIRES
   });
+};
+
+const generateRefreshToken = (id) => {
+  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET || 'your-secret-key', {
+    expiresIn: REFRESH_EXPIRES
+  });
+};
+
+const getRefreshCookieOptions = () => {
+  const secure = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure,
+    sameSite: secure ? 'none' : 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  };
 };
 
 // Register Controller
@@ -131,8 +150,10 @@ const verifyRegistrationOTP = async (req, res) => {
     user.emailVerificationOTPExpires = undefined;
     await user.save();
 
-    const token = generateToken(user._id);
-    return res.status(200).json({ success: true, message: 'Verification successful', token, user: { id: user._id, email: user.email, firstname: user.profile.firstname, lastname: user.profile.lastname } });
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+    res.cookie('refreshToken', refreshToken, getRefreshCookieOptions());
+    return res.status(200).json({ success: true, message: 'Verification successful', accessToken, user: { id: user._id, email: user.email, firstname: user.profile.firstname, lastname: user.profile.lastname } });
   } catch (error) {
     console.error('Verify registration OTP error:', error);
     return res.status(500).json({ success: false, message: 'Error verifying OTP', error: error.message });
@@ -184,12 +205,15 @@ const login = async (req, res) => {
     }
 
     // Generate token
-    const token = generateToken(user._id);
-    // Return success response
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+    // Set refresh token in HttpOnly cookie
+    res.cookie('refreshToken', refreshToken, getRefreshCookieOptions());
+    // Return success response with access token
     return res.status(200).json({
       success: true,
       message: 'Login successful',
-      token,
+      accessToken,
       user: {
         id: user._id,
         email: user.email,
@@ -237,10 +261,43 @@ const logout = async (req, res) => {
       tokenStore.add(token, ttl);
     }
 
+    // Clear refresh token cookie
+    try {
+      res.clearCookie('refreshToken', getRefreshCookieOptions());
+    } catch (e) {
+      // ignore if cookies not present
+    }
+
     return res.status(200).json({ success: true, message: 'Logged out successfully' });
   } catch (error) {
     console.error('Logout error:', error);
     return res.status(500).json({ success: false, message: 'Error during logout', error: error.message });
+  }
+};
+
+// Refresh access token using refresh token cookie
+const refreshAccessToken = async (req, res) => {
+  try {
+    const refreshToken = req.cookies && req.cookies.refreshToken;
+    if (!refreshToken) return res.status(401).json({ success: false, message: 'Refresh token missing' });
+
+    // Verify refresh token
+    let decoded;
+    try {
+      decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET || 'your-secret-key');
+    } catch (err) {
+      return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
+    }
+
+    const userId = decoded.id;
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const accessToken = generateAccessToken(userId);
+    return res.status(200).json({ success: true, accessToken });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    return res.status(500).json({ success: false, message: 'Could not refresh token', error: error.message });
   }
 };
 
@@ -381,5 +438,5 @@ const resetPassword = async (req, res) => {
   }
 };
 
-module.exports = { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP };
+module.exports = { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken };
 
