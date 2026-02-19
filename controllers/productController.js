@@ -5,77 +5,26 @@ const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinar
 const sharp = require('sharp');
 
 // Create new product
-// const createProduct = async (req, res) => {
-//   try {
-//     const { name, description, category, price, inventory, variants, status } = req.body;
-
-//     if (!name) return res.status(400).json({ success: false, message: 'Product name is required' });
-
-//     // Generate slug and SKU server-side
-//     const slug = await generateSlug(name);
-//     const sku = await generateSku();
-
-//     // Handle price: if single number provided, use as base price
-//     let priceObj = { base: 0, sale: 0 };
-//     if (typeof price === 'number') {
-//       priceObj.base = price;
-//     } else if (typeof price === 'object' && price !== null) {
-//       priceObj = { ...priceObj, ...price };
-//     }
-
-//     // Handle inventory: set defaults if not provided
-//     const inventoryObj = {
-//       quantity: inventory?.quantity || 0,
-//       trackInventory: inventory?.trackInventory !== false,
-//       lowStockThreshold: inventory?.lowStockThreshold || 5
-//     };
-
-//     // Handle uploaded images via Multer
-//     let images = [];
-//     if (req.files && req.files.length > 0) {
-//       for (let i = 0; i < req.files.length; i++) {
-//         const file = req.files[i];
-//         try {
-//           const { url, publicId } = await uploadToCloudinary(file.buffer, 'products');
-//           images.push({
-//             url,
-//             publicId,
-//             altText: req.body[`images[${i}].altText`] || `Product image ${i + 1}`,
-//             order: i
-//           });
-//         } catch (uploadError) {
-//           console.error(`Error uploading image ${i}:`, uploadError.message);
-//           // Continue with other images if one fails
-          
-//         }
-//       }
-//     }
-
-//     const prod = new Product({
-//       name,
-//       slug,
-//       sku,
-//       description: description || '',
-//       category: category || undefined,
-//       price: priceObj,
-//       inventory: inventoryObj,
-//       images,
-//       variants: variants || [],
-//       status: status || 'draft'
-//     });
-
-//     await prod.save();
-//     return res.status(201).json({ success: true, message: 'Product created', product: prod });
-//   } catch (error) {
-//     console.error('Create product error:', error);
-//     return res.status(500).json({ success: false, message: 'Error creating product', error: error.message });
-//   }
-// };
 
 const createProduct = async (req, res) => {
   try {
-    const { name, description, category, price, inventory, variants, status } = req.body;
+    const {
+      name,
+      description,
+      shortDescription,
+      category,
+      brand,
+      price,
+      inventory,
+      shipping,
+      attributes,
+      isFeatured,
+      status
+    } = req.body;
 
+    // =========================
+    // REQUIRED VALIDATION
+    // =========================
     if (!name) {
       return res.status(400).json({
         success: false,
@@ -83,19 +32,97 @@ const createProduct = async (req, res) => {
       });
     }
 
-    // Generate slug and SKU server-side
+    if (!description) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product description is required'
+      });
+    }
+
+    if (!category) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product category is required'
+      });
+    }
+
+    // =========================
+    // Generate slug & SKU (UNCHANGED)
+    // =========================
     const slug = await generateSlug(name);
     const sku = await generateSku();
 
-    // Handle price
-    let priceObj = { base: 0, sale: 0 };
-    if (typeof price === 'number') {
-      priceObj.base = price;
-    } else if (typeof price === 'object' && price !== null) {
-      priceObj = { ...priceObj, ...price };
+    // =========================
+    // HANDLE PRICE (JSON or STRING)
+    // =========================
+    let parsedPrice = price;
+
+    // If coming from form-data as stringified JSON
+    if (typeof price === 'string') {
+      try {
+        parsedPrice = JSON.parse(price);
+      } catch (err) {
+        parsedPrice = {};
+      }
     }
 
-    // Handle inventory
+    let priceObj = {
+      base: 0,
+      sale: null,
+      costPrice: null,
+      saleStartDate: null,
+      saleEndDate: null
+    };
+
+    if (parsedPrice !== undefined) {
+      // If number only
+      if (!isNaN(parsedPrice)) {
+        priceObj.base = Number(parsedPrice);
+      }
+
+      // If object
+      else if (typeof parsedPrice === 'object' && parsedPrice !== null) {
+        priceObj.base = Number(parsedPrice.base) || 0;
+        priceObj.sale = parsedPrice.sale
+          ? Number(parsedPrice.sale)
+          : null;
+
+        priceObj.costPrice = parsedPrice.costPrice
+          ? Number(parsedPrice.costPrice)
+          : null;
+
+        priceObj.saleStartDate = parsedPrice.saleStartDate
+          ? new Date(parsedPrice.saleStartDate)
+          : null;
+
+        priceObj.saleEndDate = parsedPrice.saleEndDate
+          ? new Date(parsedPrice.saleEndDate)
+          : null;
+      }
+    }
+
+    // Extra safety validation
+    if (priceObj.sale && priceObj.sale >= priceObj.base) {
+      return res.status(400).json({
+        success: false,
+        message: 'Sale price must be less than base price'
+      });
+    }
+
+    if (
+      priceObj.saleStartDate &&
+      priceObj.saleEndDate &&
+      priceObj.saleStartDate > priceObj.saleEndDate
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Sale start date cannot be after sale end date'
+      });
+    }
+
+    // =========================
+    // HANDLE INVENTORY
+    // =========================
     const inventoryObj = {
       quantity: inventory?.quantity || 0,
       trackInventory: inventory?.trackInventory !== false,
@@ -103,7 +130,43 @@ const createProduct = async (req, res) => {
     };
 
     // =========================
-    // HANDLE IMAGE UPLOADS
+    // HANDLE SHIPPING
+    // =========================
+    const shippingObj = {
+      weight: shipping?.weight || 0,
+      dimensions: {
+        length: shipping?.dimensions?.length || 0,
+        width: shipping?.dimensions?.width || 0,
+        height: shipping?.dimensions?.height || 0
+      }
+    };
+
+    // =========================
+    // HANDLE ATTRIBUTES
+    // =========================
+    let attributesArr = [];
+
+    if (attributes) {
+      let parsedAttributes = attributes;
+
+      if (typeof attributes === 'string') {
+        try {
+          parsedAttributes = JSON.parse(attributes);
+        } catch (err) {
+          parsedAttributes = [];
+        }
+      }
+
+      if (Array.isArray(parsedAttributes)) {
+        attributesArr = parsedAttributes.map(attr => ({
+          key: attr.key,
+          value: attr.value
+        }));
+      }
+    }
+
+    // =========================
+    // HANDLE IMAGE UPLOADS (UNCHANGED)
     // =========================
     let images = [];
 
@@ -112,7 +175,6 @@ const createProduct = async (req, res) => {
         const file = req.files[i];
 
         try {
-          // 1️⃣ Validate dimensions (Security protection)
           const metadata = await sharp(file.buffer).metadata();
 
           if (
@@ -122,7 +184,6 @@ const createProduct = async (req, res) => {
             throw new Error('Image dimensions too large (max 5000px allowed)');
           }
 
-          // 2️⃣ Resize + Convert to WebP
           const optimizedBuffer = await sharp(file.buffer)
             .resize({
               width: 1500,
@@ -131,7 +192,6 @@ const createProduct = async (req, res) => {
             .webp({ quality: 80 })
             .toBuffer();
 
-          // 3️⃣ Upload to Cloudinary
           const { url, publicId } = await uploadToCloudinary(
             optimizedBuffer,
             `products/${slug}`
@@ -151,7 +211,6 @@ const createProduct = async (req, res) => {
             `Error processing image ${i}:`,
             uploadError.message
           );
-          // Continue uploading other images
         }
       }
     }
@@ -159,25 +218,29 @@ const createProduct = async (req, res) => {
     // =========================
     // CREATE PRODUCT
     // =========================
-    const prod = new Product({
+    const product = new Product({
       name,
       slug,
       sku,
-      description: description || '',
-      category: category || undefined,
+      description,
+      shortDescription: shortDescription || '',
+      category,
+      brand: brand || 'Generic',
       price: priceObj,
       inventory: inventoryObj,
+      shipping: shippingObj,
       images,
-      variants: variants || [],
+      attributes: attributesArr,
+      isFeatured: isFeatured === true || isFeatured === 'true',
       status: status || 'draft'
     });
 
-    await prod.save();
+    await product.save();
 
     return res.status(201).json({
       success: true,
       message: 'Product created successfully',
-      product: prod
+      product
     });
 
   } catch (error) {
@@ -189,6 +252,7 @@ const createProduct = async (req, res) => {
     });
   }
 };
+
 
 // Update product
 // const updateProduct = async (req, res) => {
@@ -357,6 +421,15 @@ const updateProduct = async (req, res) => {
     // ===================================================
     // 7️⃣ Update Product
     // ===================================================
+    // If name changed, regenerate slug server-side
+    if (updates.name && updates.name !== existingProduct.name) {
+      try {
+        const newSlug = await generateSlug(updates.name, id);
+        updates.slug = newSlug;
+      } catch (err) {
+        console.error('Failed to generate slug on update:', err.message);
+      }
+    }
     const updatedProduct = await Product.findByIdAndUpdate(
       id,
       { $set: updates },
@@ -488,4 +561,15 @@ const getDraftProducts = async (req, res) => {
     }
 };
 
-module.exports = { createProduct, updateProduct, deleteProduct, bulkDelete, restoreProduct, getLowStockProducts, getArchivedProducts, getDraftProducts , getAllProducts, getProductBySlug , getProductBySlug};
+module.exports = {
+  createProduct,
+  updateProduct,
+  deleteProduct,
+  bulkDelete,
+  restoreProduct,
+  getLowStockProducts,
+  getArchivedProducts,
+  getDraftProducts,
+  getAllProducts,
+  getProductBySlug
+};

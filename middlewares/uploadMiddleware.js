@@ -53,5 +53,6 @@ const upload = multer({
 });
 
 const uploadProductImages = upload.array('images', 10);
+const uploadSingleImage = upload.single('image');
 
-module.exports = { uploadProductImages };
+module.exports = { uploadProductImages, uploadSingleImage };

@@ -1,41 +1,49 @@
 const mongoose = require('mongoose');
+const slugify = require('slugify');
 
 const categorySchema = new mongoose.Schema(
   {
     name: {
       type: String,
-      required: [true, 'Please provide a category name'],
-      trim: true,
-      index: true
+      required: true,
+      trim: true
     },
+
     slug: {
       type: String,
       required: true,
       unique: true,
+      lowercase: true,
       index: true
     },
+
     description: {
       type: String,
       default: ''
     },
-    parent: {
+
+    image: {
+      url: { type: String },
+      publicId: { type: String }
+    },
+
+    // For nested categories (Men → Shoes → Running)
+    parentCategory: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Category',
       default: null
     },
-    level: {
-      type: Number,
-      default: 0
+
+    isActive: {
+      type: Boolean,
+      default: true
     },
-    image: {
-      url: String,
-      publicId: String
+
+    showInMenu: {
+      type: Boolean,
+      default: true
     },
-    status: {
-      type: String,
-      enum: ['active', 'inactive'],
-      default: 'active'
-    },
+
     order: {
       type: Number,
       default: 0
@@ -44,12 +52,23 @@ const categorySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Simple slug generator if not provided
+//
+// ========================
+// AUTO SLUG GENERATION
+// ========================
 categorySchema.pre('validate', function (next) {
-  if (!this.slug && this.name) {
-    this.slug = this.name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  if (this.name && !this.slug) {
+    this.slug = slugify(this.name, { lower: true, strict: true });
   }
   next();
 });
+
+//
+// ========================
+// INDEXES (Performance)
+// ========================
+categorySchema.index({ name: 'text' });
+categorySchema.index({ parentCategory: 1 });
+categorySchema.index({ isActive: 1 });
 
 module.exports = mongoose.model('Category', categorySchema);
