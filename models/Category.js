@@ -74,3 +74,4 @@ categorySchema.index({ parent: 1 });
 categorySchema.index({ status: 1 });
 
 module.exports = mongoose.model('Category', categorySchema);
+
