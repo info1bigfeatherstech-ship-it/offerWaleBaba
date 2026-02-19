@@ -1,5 +1,7 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
+const mongoose = require('mongoose');
+const slugify = require('slugify');
 const { generateSlug, generateSku } = require('../utils/productUtils');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinaryHelper');
 const sharp = require('sharp');
@@ -47,7 +49,35 @@ const createProduct = async (req, res) => {
     }
 
     // =========================
-    // Generate slug & SKU (UNCHANGED)
+    // RESOLVE CATEGORY (accept id or name/slug)
+    // =========================
+    const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    let categoryId;
+
+    if (mongoose.Types.ObjectId.isValid(category)) {
+      const found = await Category.findById(category);
+      if (!found) {
+        return res.status(400).json({ success: false, message: 'Invalid category id' });
+      }
+      categoryId = found._id;
+    } else {
+      // try to find by slug or name (case-insensitive)
+      const candidateSlug = slugify(String(category), { lower: true, strict: true });
+      let found = await Category.findOne({ $or: [{ slug: candidateSlug }, { name: new RegExp('^' + escapeRegExp(String(category)) + '$', 'i') }] });
+
+      // create category automatically if not found
+      if (!found) {
+        const newCat = new Category({ name: String(category), slug: candidateSlug, status: 'active', level: 0 });
+        await newCat.save();
+        found = newCat;
+      }
+
+      categoryId = found._id;
+    }
+
+    // =========================
+    // Generate slug & SKU
     // =========================
     const slug = await generateSlug(name);
     const sku = await generateSku();
@@ -224,7 +254,7 @@ const createProduct = async (req, res) => {
       sku,
       description,
       shortDescription: shortDescription || '',
-      category,
+      category: categoryId,
       brand: brand || 'Generic',
       price: priceObj,
       inventory: inventoryObj,

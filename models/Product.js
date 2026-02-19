@@ -227,15 +227,13 @@ productSchema.set('toObject', { virtuals: true });
 // =========================
 //
 
-productSchema.pre('save', function (next) {
+productSchema.pre('save', function () {
   // Sale must be less than base
   if (
     this.price.sale &&
     this.price.sale >= this.price.base
   ) {
-    return next(
-      new Error('Sale price must be less than base price')
-    );
+    throw new Error('Sale price must be less than base price');
   }
 
   // Sale start cannot be after end
@@ -244,12 +242,8 @@ productSchema.pre('save', function (next) {
     this.price.saleEndDate &&
     this.price.saleStartDate > this.price.saleEndDate
   ) {
-    return next(
-      new Error('Sale start date cannot be after sale end date')
-    );
+    throw new Error('Sale start date cannot be after sale end date');
   }
-
-  next();
 });
 
 //

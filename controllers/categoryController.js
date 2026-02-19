@@ -32,7 +32,7 @@ const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinar
 const getAllCategories = async (req, res) => {
   try {
     // Only active categories
-    const categories = await Category.find({ isActive: true })
+    const categories = await Category.find({ status: 'active' })
       .sort({ order: 1, name: 1 })
       .lean();
 
@@ -48,13 +48,10 @@ const getAllCategories = async (req, res) => {
 
     // Build hierarchy
     categories.forEach(cat => {
-      if (cat.parentCategory) {
-        const parent = map.get(String(cat.parentCategory));
-        if (parent) {
-          parent.children.push(cat);
-        } else {
-          roots.push(cat);
-        }
+      if (cat.parent) {
+        const parent = map.get(String(cat.parent));
+        if (parent) parent.children.push(cat);
+        else roots.push(cat);
       } else {
         roots.push(cat);
       }
@@ -99,7 +96,7 @@ const getCategoryById = async (req, res) => {
     // Only fetch if active
     const category = await Category.findOne({
       _id: id,
-      isActive: true
+      status: 'active'
     }).lean();
 
     if (!category) {
@@ -167,9 +164,9 @@ const createCategory = async (req, res) => {
     const {
       name,
       description,
-      parentCategory,
+      parent,
       order,
-      isActive,
+      status,
       showInMenu
     } = req.body;
 
@@ -181,11 +178,11 @@ const createCategory = async (req, res) => {
       });
     }
 
-    // 2️⃣ If parentCategory provided, verify it exists
-    if (parentCategory) {
-      const parentExists = await Category.findById(parentCategory);
+    // 2️⃣ If parent provided, verify it exists and is active
+    if (parent) {
+      const parentExists = await Category.findById(parent);
 
-      if (!parentExists || !parentExists.isActive) {
+      if (!parentExists || parentExists.status !== 'active') {
         return res.status(400).json({
           success: false,
           message: 'Invalid or inactive parent category'
@@ -197,11 +194,19 @@ const createCategory = async (req, res) => {
     const category = new Category({
       name,
       description: description || '',
-      parentCategory: parentCategory || null,
+      parent: parent || null,
       order: order || 0,
-      isActive: isActive !== undefined ? isActive : true,
+      status: status !== undefined ? status : 'active',
       showInMenu: showInMenu !== undefined ? showInMenu : true
     });
+
+    // calculate level based on parent
+    if (parent) {
+      const p = await Category.findById(parent);
+      category.level = p ? (p.level || 0) + 1 : 0;
+    } else {
+      category.level = 0;
+    }
 
    
     // 4️⃣ Handle image upload
@@ -299,7 +304,7 @@ const deleteCategory = async (req, res) => {
     }
 
     // 2️⃣ Prevent deleting already inactive category
-    if (!category.isActive) {
+    if (category.status !== 'active') {
       return res.status(400).json({
         success: false,
         message: 'Category is already inactive'
@@ -308,8 +313,8 @@ const deleteCategory = async (req, res) => {
 
     // 3️⃣ Check if any active subcategories exist
     const childCategories = await Category.countDocuments({
-      parentCategory: id,
-      isActive: true
+      parent: id,
+      status: 'active'
     });
 
     if (childCategories > 0) {
@@ -332,7 +337,7 @@ const deleteCategory = async (req, res) => {
     }
 
     // 5️⃣ Soft delete (archive)
-    category.isActive = false;
+    category.status = 'inactive';
     category.showInMenu = false;
 
     await category.save();

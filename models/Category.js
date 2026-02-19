@@ -23,25 +23,28 @@ const categorySchema = new mongoose.Schema(
     },
 
     image: {
-      url: { type: String },
-      publicId: { type: String }
+      url: { type: String, default: '' },
+      publicId: { type: String, default: '' }
     },
 
     // For nested categories (Men → Shoes → Running)
-    parentCategory: {
+    parent: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Category',
       default: null
     },
 
-    isActive: {
-      type: Boolean,
-      default: true
+    // hierarchical depth
+    level: {
+      type: Number,
+      default: 0
     },
 
-    showInMenu: {
-      type: Boolean,
-      default: true
+    // status: active | inactive
+    status: {
+      type: String,
+      enum: ['active', 'inactive'],
+      default: 'active'
     },
 
     order: {
@@ -56,11 +59,10 @@ const categorySchema = new mongoose.Schema(
 // ========================
 // AUTO SLUG GENERATION
 // ========================
-categorySchema.pre('validate', function (next) {
+categorySchema.pre('validate', function () {
   if (this.name && !this.slug) {
     this.slug = slugify(this.name, { lower: true, strict: true });
   }
-  next();
 });
 
 //
@@ -68,7 +70,7 @@ categorySchema.pre('validate', function (next) {
 // INDEXES (Performance)
 // ========================
 categorySchema.index({ name: 'text' });
-categorySchema.index({ parentCategory: 1 });
-categorySchema.index({ isActive: 1 });
+categorySchema.index({ parent: 1 });
+categorySchema.index({ status: 1 });
 
 module.exports = mongoose.model('Category', categorySchema);
