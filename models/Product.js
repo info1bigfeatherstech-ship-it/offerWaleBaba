@@ -192,9 +192,6 @@ const productSchema = new mongoose.Schema(
       }
     },
 
-
-
-
     isFeatured: {
       type: Boolean,
       default: false
@@ -247,6 +244,7 @@ productSchema.virtual('discountPercentage').get(function () {
 productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
 
+
 //
 // =========================
 // VALIDATIONS
@@ -271,6 +269,7 @@ productSchema.pre('save', function () {
     throw new Error('Sale start date cannot be after sale end date');
   }
 });
+
 
 //
 // =========================
