@@ -21,7 +21,8 @@ const createProduct = async (req, res) => {
       shipping,
       attributes,
       isFeatured,
-      status
+      status,
+       fomo   // ✅ NEW FOMO field
     } = req.body;
 
     // =========================
@@ -195,6 +196,56 @@ const createProduct = async (req, res) => {
       }
     }
 
+
+
+ // =========================
+// HANDLE FOMO (FIXED VERSION)
+// =========================
+let fomoObj = {
+  enabled: false,
+  type: 'sold_count',
+  value: 0,
+  message: ''
+};
+
+let parsedFomo = null;
+
+// If coming from raw JSON
+if (req.body.fomo && typeof req.body.fomo === 'object') {
+  parsedFomo = req.body.fomo;
+}
+
+// If coming from form-data (stringified)
+if (req.body.fomo && typeof req.body.fomo === 'string') {
+  try {
+    parsedFomo = JSON.parse(req.body.fomo);
+  } catch {
+    parsedFomo = null;
+  }
+}
+
+if (parsedFomo) {
+  fomoObj.enabled =
+    parsedFomo.enabled === true ||
+    parsedFomo.enabled === 'true';
+
+  if (
+    ['sold_count', 'viewing_now', 'custom_message'].includes(parsedFomo.type)
+  ) {
+    fomoObj.type = parsedFomo.type;
+  }
+
+  if (!isNaN(parsedFomo.value)) {
+    fomoObj.value = Number(parsedFomo.value);
+  }
+
+  if (parsedFomo.type === 'custom_message') {
+    fomoObj.message = parsedFomo.message || '';
+  }
+}
+
+   
+   // =========================
     // =========================
     // HANDLE IMAGE UPLOADS (UNCHANGED)
     // =========================
@@ -261,6 +312,7 @@ const createProduct = async (req, res) => {
       shipping: shippingObj,
       images,
       attributes: attributesArr,
+      fomo: fomoObj,   // ✅ ADD THIS LINE
       isFeatured: isFeatured === true || isFeatured === 'true',
       status: status || 'draft'
     });
@@ -333,10 +385,9 @@ const createProduct = async (req, res) => {
 
 const updateProduct = async (req, res) => {
   try {
-    const id = req.params.id;
+    const slug = req.params.slug;
 
-    // 1️⃣ Find existing product
-    const existingProduct = await Product.findById(id);
+    const existingProduct = await Product.findOne({ slug });
     if (!existingProduct) {
       return res.status(404).json({
         success: false,
@@ -346,25 +397,93 @@ const updateProduct = async (req, res) => {
 
     const updates = { ...req.body };
 
-    // 2️⃣ Prevent slug & sku manual update
-    if ('slug' in updates) delete updates.slug;
-    if ('sku' in updates) delete updates.sku;
+    // ❌ Prevent manual slug & sku change
+    delete updates.slug;
+    delete updates.sku;
 
-    // 3️⃣ Convert price (form-data safe)
+    // ===================================================
+    // 1️⃣ HANDLE PRICE (object safe)
+    // ===================================================
     if (updates.price) {
       let parsedPrice = updates.price;
 
       if (typeof parsedPrice === 'string') {
-        parsedPrice = Number(parsedPrice);
+        try {
+          parsedPrice = JSON.parse(parsedPrice);
+        } catch {
+          parsedPrice = {};
+        }
       }
 
-      if (!isNaN(parsedPrice)) {
-        updates.price = { base: parsedPrice };
+      if (typeof parsedPrice === 'object') {
+        updates.price = {
+          ...existingProduct.price.toObject(),
+          ...parsedPrice
+        };
+
+        if (updates.price.sale && updates.price.sale >= updates.price.base) {
+          return res.status(400).json({
+            success: false,
+            message: 'Sale price must be less than base price'
+          });
+        }
       }
     }
 
     // ===================================================
-    // 4️⃣ HANDLE IMAGE DELETION (if frontend sends images)
+    // 2️⃣ HANDLE ATTRIBUTES
+    // ===================================================
+    if (updates.attributes) {
+      let parsedAttributes = updates.attributes;
+
+      if (typeof parsedAttributes === 'string') {
+        try {
+          parsedAttributes = JSON.parse(parsedAttributes);
+        } catch {
+          parsedAttributes = [];
+        }
+      }
+
+      if (Array.isArray(parsedAttributes)) {
+        updates.attributes = parsedAttributes.map(attr => ({
+          key: attr.key,
+          value: attr.value
+        }));
+      }
+    }
+
+    // ===================================================
+    // 3️⃣ HANDLE FOMO (IMPORTANT)
+    // ===================================================
+    if (updates.fomo) {
+      let parsedFomo = updates.fomo;
+
+      if (typeof parsedFomo === 'string') {
+        try {
+          parsedFomo = JSON.parse(parsedFomo);
+        } catch {
+          parsedFomo = {};
+        }
+      }
+
+      if (typeof parsedFomo === 'object') {
+        updates.fomo = {
+          ...existingProduct.fomo.toObject(),
+          ...parsedFomo
+        };
+
+        if (!isNaN(updates.fomo.value)) {
+          updates.fomo.value = Number(updates.fomo.value);
+        }
+
+        updates.fomo.enabled =
+          updates.fomo.enabled === true ||
+          updates.fomo.enabled === 'true';
+      }
+    }
+
+    // ===================================================
+    // 4️⃣ HANDLE IMAGE DELETION
     // ===================================================
     if (Array.isArray(updates.images)) {
 
@@ -375,7 +494,6 @@ const updateProduct = async (req, res) => {
         id => !updatedPublicIds.includes(id)
       );
 
-      // Delete removed images from Cloudinary
       for (const publicId of removedImages) {
         await deleteFromCloudinary(publicId);
       }
@@ -392,26 +510,17 @@ const updateProduct = async (req, res) => {
         const file = req.files[i];
 
         try {
-          // Validate dimensions
           const metadata = await sharp(file.buffer).metadata();
 
-          if (
-            metadata.width > 5000 ||
-            metadata.height > 5000
-          ) {
+          if (metadata.width > 5000 || metadata.height > 5000) {
             throw new Error('Image dimensions too large (max 5000px)');
           }
 
-          // Resize + convert to WebP
           const optimizedBuffer = await sharp(file.buffer)
-            .resize({
-              width: 1500,
-              withoutEnlargement: true
-            })
+            .resize({ width: 1500, withoutEnlargement: true })
             .webp({ quality: 80 })
             .toBuffer();
 
-          // Upload to Cloudinary
           const { url, publicId } = await uploadToCloudinary(
             optimizedBuffer,
             'products'
@@ -431,7 +540,6 @@ const updateProduct = async (req, res) => {
         }
       }
 
-      // Merge existing (after deletion) + new
       updates.images = [
         ...(updates.images || existingProduct.images),
         ...newImages
@@ -449,19 +557,17 @@ const updateProduct = async (req, res) => {
     }
 
     // ===================================================
-    // 7️⃣ Update Product
+    // 7️⃣ Regenerate slug if name changed
     // ===================================================
-    // If name changed, regenerate slug server-side
     if (updates.name && updates.name !== existingProduct.name) {
-      try {
-        const newSlug = await generateSlug(updates.name, id);
-        updates.slug = newSlug;
-      } catch (err) {
-        console.error('Failed to generate slug on update:', err.message);
-      }
+      updates.slug = await generateSlug(updates.name, id);
     }
-    const updatedProduct = await Product.findByIdAndUpdate(
-      id,
+
+    // ===================================================
+    // 8️⃣ UPDATE PRODUCT
+    // ===================================================
+    const updatedProduct = await Product.findOneAndUpdate(
+      { slug: slug },
       { $set: updates },
       { new: true, runValidators: true }
     );
@@ -481,7 +587,6 @@ const updateProduct = async (req, res) => {
     });
   }
 };
-
 module.exports = { updateProduct };
 
 
@@ -489,8 +594,8 @@ module.exports = { updateProduct };
 // Soft delete (archive)
 const deleteProduct = async (req, res) => {
   try {
-    const id = req.params.id;
-    const product = await Product.findByIdAndUpdate(id, { $set: { status: 'archived' } }, { new: true });
+    const slug = req.params.slug;
+    const product = await Product.findOneAndUpdate({ slug }, { $set: { status: 'archived' } }, { new: true });
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     return res.status(200).json({ success: true, message: 'Product archived', product });
   } catch (error) {
@@ -502,10 +607,10 @@ const deleteProduct = async (req, res) => {
 // Bulk delete (archive multiple)
 const bulkDelete = async (req, res) => {
   try {
-    const { ids } = req.body;
-    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ success: false, message: 'ids array is required' });
+    const { slugs } = req.body;
+    if (!Array.isArray(slugs) || slugs.length === 0) return res.status(400).json({ success: false, message: 'slugs array is required' });
 
-    const result = await Product.updateMany({ _id: { $in: ids } }, { $set: { status: 'archived' } });
+    const result = await Product.updateMany({ slug: { $in: slugs } }, { $set: { status: 'archived' } });
     return res.status(200).json({ success: true, message: 'Products archived', modifiedCount: result.nModified || result.modifiedCount });
   } catch (error) {
     console.error('Bulk delete error:', error);
@@ -516,8 +621,8 @@ const bulkDelete = async (req, res) => {
 // Restore archived product
 const restoreProduct = async (req, res) => {
   try {
-    const id = req.params.id;
-    const product = await Product.findByIdAndUpdate(id, { $set: { status: 'active' } }, { new: true });
+    const slug = req.params.slug;
+    const product = await Product.findOneAndUpdate({ slug }, { $set: { status: 'active' } }, { new: true });
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     return res.status(200).json({ success: true, message: 'Product restored', product });
   } catch (error) {
@@ -558,6 +663,8 @@ const getAllProducts = async (req, res) => {
 const getProductBySlug = async (req, res) => {
   try {
     const slug = req.params.slug;
+    console.log(`fetched product ${slug}`);
+    
     const product = await Product.findOne({ slug, status: 'active' }).populate('category', 'name');
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
     return res.status(200).json({ success: true, product });

@@ -169,6 +169,32 @@ const productSchema = new mongoose.Schema(
       }
     ],
 
+ // =========================
+    // FOMO (Marketing Boost)
+    // =========================
+    fomo: {
+      enabled: { type: Boolean, default: false },
+
+      type: {
+        type: String,
+        enum: ['sold_count', 'viewing_now', 'custom_message'],
+        default: 'sold_count'
+      },
+
+      value: {
+        type: Number,
+        default: 0
+      },
+
+      message: {
+        type: String,
+        default: ''
+      }
+    },
+
+
+
+
     isFeatured: {
       type: Boolean,
       default: false

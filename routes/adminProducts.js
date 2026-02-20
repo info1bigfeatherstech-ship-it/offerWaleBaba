@@ -109,19 +109,21 @@ router.post(
 );
 
 
-// PUT /admin/products/:id Update product with optional image uploads
-router.put('/:id', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
+// PUT /admin/products/:slug Update product with optional image uploads
+router.put('/:slug', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
 
-// DELETE /admin/products/:id Soft delete (archive)
-router.delete('/:id', requireAdmin, productController.deleteProduct);
+// DELETE /admin/products/:slug Soft delete (archive)
+router.delete('/:slug', requireAdmin, productController.deleteProduct);
 
 // POST /admin/products/bulk-delete Bulk delete (archive)
 router.post('/bulk-delete', requireAdmin, productController.bulkDelete);
 
-// PUT /admin/products/:id/restore Restore archived product
-router.put('/:id/restore', requireAdmin, productController.restoreProduct);
+// PUT /admin/products/:slug/restore Restore archived product
+router.put('/:slug/restore', requireAdmin, productController.restoreProduct);
 
 // GET /admin/products/low-stock Get low stock products
 router.get('/low-stock', requireAdmin, productController.getLowStockProducts);
 
+//Get /admin/products/:slug get porduct by slug name 
+router.get('/:slug', requireAdmin, productController.getProductBySlug);
 module.exports = router;
