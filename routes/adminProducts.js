@@ -19,48 +19,111 @@ const rejectSlugSku = (req, res, next) => {
 router.post(
   '/',
   requireAdmin,
-  uploadProductImages, // Handle image uploads
+  uploadProductImages,
   rejectSlugSku,
   [
-    body('name').trim().notEmpty().withMessage('Product name is required'),
-   body('price').custom(val => {
-  if (val === undefined) return true;
+    // =========================
+    // BASIC REQUIRED FIELDS
+    // =========================
+    body('name')
+      .trim()
+      .notEmpty()
+      .withMessage('Product name is required'),
 
-  if (
-    typeof val === 'number' ||
-    !isNaN(Number(val)) ||
-    typeof val === 'object'
-  ) {
-    return true;
-  }
+    body('description')
+      .trim()
+      .notEmpty()
+      .withMessage('Product description is required'),
 
-  throw new Error('price must be a number or object with base/sale properties');
-}),
-    body('status').optional().isIn(['draft', 'active', 'archived']).withMessage('Invalid status')
+    body('category')
+      .notEmpty()
+      .withMessage('Product category is required'),
+
+    // =========================
+    // PRICE VALIDATION
+    // =========================
+    body('price').custom((val) => {
+      if (val === undefined) {
+        throw new Error('Price is required');
+      }
+
+      // If simple number
+      if (typeof val === 'number' || !isNaN(Number(val))) {
+        return true;
+      }
+
+      // If object
+      if (typeof val === 'object') {
+        if (!val.base) {
+          throw new Error('Base price is required');
+        }
+        return true;
+      }
+
+      // If stringified JSON (form-data)
+      if (typeof val === 'string') {
+        try {
+          const parsed = JSON.parse(val);
+          if (!parsed.base) {
+            throw new Error('Base price is required');
+          }
+          return true;
+        } catch (err) {
+          throw new Error('Invalid price format');
+        }
+      }
+
+      throw new Error('Invalid price format');
+    }),
+
+    // =========================
+    // STATUS VALIDATION
+    // =========================
+    body('status')
+      .optional()
+      .isIn(['draft', 'active', 'archived'])
+      .withMessage('Invalid status'),
+
+    // =========================
+    // OPTIONAL BOOLEAN FIELD
+    // =========================
+    body('isFeatured')
+      .optional()
+      .isBoolean()
+      .withMessage('isFeatured must be true or false')
   ],
   (req, res, next) => {
     const errors = validationResult(req);
+
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
     }
+
     next();
   },
   productController.createProduct
 );
 
-// PUT /admin/products/:id Update product with optional image uploads
-router.put('/:id', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
 
-// DELETE /admin/products/:id Soft delete (archive)
-router.delete('/:id', requireAdmin, productController.deleteProduct);
+// PUT /admin/products/:slug Update product with optional image uploads
+router.put('/:slug', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
+
+// DELETE /admin/products/:slug Soft delete (archive)
+router.delete('/:slug', requireAdmin, productController.deleteProduct);
 
 // POST /admin/products/bulk-delete Bulk delete (archive)
 router.post('/bulk-delete', requireAdmin, productController.bulkDelete);
 
-// PUT /admin/products/:id/restore Restore archived product
-router.put('/:id/restore', requireAdmin, productController.restoreProduct);
+// PUT /admin/products/:slug/restore Restore archived product
+router.put('/:slug/restore', requireAdmin, productController.restoreProduct);
 
 // GET /admin/products/low-stock Get low stock products
 router.get('/low-stock', requireAdmin, productController.getLowStockProducts);
 
+//Get /admin/products/:slug get porduct by slug name 
+router.get('/:slug', requireAdmin, productController.getProductBySlug);
 module.exports = router;

@@ -503,6 +503,7 @@ const { initCloudinary } = require('./config/cloudinary.config');
 
 const authRoutes = require('./routes/authRoutes');
 const adminProductsRoutes = require('./routes/adminProducts');
+const categoriesRoutes = require('./routes/categories');
 
 // ============================================================================
 // CONFIGURATION
@@ -655,6 +656,7 @@ app.get('/api', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/products', adminProductsRoutes);
+app.use('/api', categoriesRoutes);
 
 // ============================================================================
 // ERROR HANDLING
