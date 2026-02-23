@@ -35,9 +35,11 @@ const verifyToken = async (req, res, next) => {
     // Verify token
     const decoded = jwt.verify(
       token,
-      process.env.JWT_SECRET || 'your-secret-key'
+      process.env.JWT_SECRET 
     );
-
+if (decoded.type !== 'access') {
+  return res.status(401).json({ success: false, message: 'Invalid token type' });
+}
     // Check blacklist (Redis first, then in-memory fallback)
     try {
       if (redisClient) {
