@@ -1,6 +1,6 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken } = require('../controllers/authController');
+const { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken, googleAuth , requestPhoneOTP } = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -67,6 +67,11 @@ router.post(
 // POST /api/auth/refresh - issues new access token using refresh cookie
 router.post('/refresh', refreshAccessToken);
 
+// POST /api/auth/google - Google Sign-In (frontend supplies idToken)
+router.post('/google', [
+  body('idToken').notEmpty().withMessage('idToken is required')
+], googleAuth);
+
 
 
 // Additional routes
@@ -87,5 +92,9 @@ router.post('/forgot-password', forgotPassword);
 
 // POST /api/auth/reset-password (public)
 router.post('/reset-password', resetPassword);
+
+
+// 📱 Request OTP
+router.post("/phone/request-otp", requestPhoneOTP);
 
 module.exports = router;

@@ -1,12 +1,20 @@
 const User = require('../models/User');
+const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const { validationResult } = require('express-validator');
 const { redisClient } = require('../config/redis.config');
 const tokenStore = require('../config/tokenBlacklist');
 const { token } = require('morgan');
+const crypto = require('crypto');
+
+
+const { sendOTP } = require("../services/otp.service");
+
+
 
 // Helper to extract token from Authorization header
+// Validate required secrets at startup
 const getTokenFromHeader = (req) => {
   const authHeader = req.headers.authorization || '';
   return authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
@@ -22,19 +30,33 @@ const transporter = nodemailer.createTransport({
 });
 
 // Generate Access and Refresh Tokens
+if (!process.env.JWT_SECRET || !process.env.REFRESH_TOKEN_SECRET) {
+  throw new Error('JWT secrets are not configured');
+}
 const ACCESS_EXPIRES = process.env.ACCESS_TOKEN_EXPIRES || '15m';
 const REFRESH_EXPIRES = process.env.REFRESH_TOKEN_EXPIRES || '7d';
 
+// Generate Access Token
 const generateAccessToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET || 'your-secret-key', {
-    expiresIn: ACCESS_EXPIRES
-  });
+  return jwt.sign(
+    { id, type: 'access' },
+    process.env.JWT_SECRET,
+    { expiresIn: ACCESS_EXPIRES }
+  );
 };
 
+// Generate Refresh Token
 const generateRefreshToken = (id) => {
-  return jwt.sign({ id }, process.env.REFRESH_TOKEN_SECRET || 'your-secret-keyy', {
-    expiresIn: REFRESH_EXPIRES
-  });
+  return jwt.sign(
+    { id, type: 'refresh' },
+    process.env.REFRESH_TOKEN_SECRET,
+    { expiresIn: REFRESH_EXPIRES }
+  );
+};
+
+// Hash Refresh Token before storing
+const hashToken = (token) => {
+  return crypto.createHash('sha256').update(token).digest('hex');
 };
 
 const getRefreshCookieOptions = () => {
@@ -43,9 +65,15 @@ const getRefreshCookieOptions = () => {
     httpOnly: true,
     secure,
     sameSite: secure ? 'none' : 'lax',
-    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    path: '/api/auth/refresh', // restrict usage
+    maxAge: 7 * 24 * 60 * 60 * 1000
   };
 };
+
+// Google OAuth2 client (verify id tokens from frontend)
+const googleClient = new OAuth2Client(
+  process.env.GOOGLE_CLIENT_ID || 'NO_CLIENT_ID_SET'
+);
 
 // Register Controller
 const register = async (req, res) => {
@@ -131,106 +159,188 @@ const register = async (req, res) => {
 const verifyRegistrationOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
-    if (!email || !otp) return res.status(400).json({ success: false, message: 'Email and OTP are required' });
 
-    const user = await User.findOne({ email }).select('+password +emailVerificationOTP +emailVerificationOTPExpires +isVerified');
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
-
-    if (user.isVerified) return res.status(400).json({ success: false, message: 'User already verified. Please login.' });
-
-    if (!user.emailVerificationOTP || !user.emailVerificationOTPExpires) {
-      return res.status(400).json({ success: false, message: 'No verification request found' });
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and OTP are required"
+      });
     }
 
-    if (user.emailVerificationOTP !== otp) return res.status(400).json({ success: false, message: 'Invalid OTP' });
-    if (new Date() > user.emailVerificationOTPExpires) return res.status(400).json({ success: false, message: 'OTP has expired' });
+    const user = await User.findOne({ email })
+      .select("+emailVerificationOTP +emailVerificationOTPExpires");
 
-    user.isVerified = true;
-    user.status = 'active';
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: "User already verified. Please login."
+      });
+    }
+
+    if (!user.emailVerificationOTP || !user.emailVerificationOTPExpires) {
+      return res.status(400).json({
+        success: false,
+        message: "No verification request found"
+      });
+    }
+
+    if (user.emailVerificationOTP !== otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP"
+      });
+    }
+
+    if (new Date() > user.emailVerificationOTPExpires) {
+      return res.status(400).json({
+        success: false,
+        message: "OTP has expired"
+      });
+    }
+
+    // ✅ Activate user
+    user.isEmailVerified = true;
+    user.status = "active";
     user.emailVerificationOTP = undefined;
     user.emailVerificationOTPExpires = undefined;
-    await user.save();
 
+    // 🔐 Generate tokens
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
-    res.cookie('refreshToken', refreshToken, getRefreshCookieOptions());
-    return res.status(200).json({ success: true, message: 'Verification successful', accessToken, user: { id: user._id, email: user.email, firstname: user.profile.firstname, lastname: user.profile.lastname } });
+
+    const hashedRefreshToken = hashToken(refreshToken);
+
+    // 🧹 Remove expired tokens
+    user.refreshTokens = user.refreshTokens.filter(
+      (t) => t.expiresAt > new Date()
+    );
+
+    // ➕ Store hashed refresh token
+    user.refreshTokens.push({
+      token: hashedRefreshToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    await user.save();
+
+    // 🍪 Send refresh token in cookie
+    res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
+
+    return res.status(200).json({
+      success: true,
+      message: "Verification successful",
+      accessToken,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      }
+    });
+
   } catch (error) {
-    console.error('Verify registration OTP error:', error);
-    return res.status(500).json({ success: false, message: 'Error verifying OTP', error: error.message });
+    console.error("Verify registration OTP error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error verifying OTP"
+    });
   }
 };
 
 // Login Controller
 const login = async (req, res) => {
   try {
-    // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
         success: false,
-        message: 'Validation failed',
+        message: "Validation failed",
         errors: errors.array()
       });
     }
 
     const { email, password } = req.body;
 
-    // Find user by email and select password field
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email }).select("+password");
 
-    // Check if user exists
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: "Invalid email or password"
       });
     }
 
-    // Check if user is verified and active
-    if (!user.isVerified) {
-      return res.status(403).json({ success: false, message: 'Account not verified. Please verify email.' });
-    }
-    if (user.status !== 'active') {
-      return res.status(403).json({ success: false, message: 'Your account is not active' });
+    // ✅ Check verification + active status
+    if (!user.isEmailVerified) {
+      return res.status(403).json({
+        success: false,
+        message: "Account not verified. Please verify email."
+      });
     }
 
-    // Compare passwords
+    if (user.status !== "active") {
+      return res.status(403).json({
+        success: false,
+        message: "Your account is not active"
+      });
+    }
+
     const isPasswordValid = await user.comparePassword(password);
 
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: "Invalid email or password"
       });
     }
 
-    // Generate token
+    // 🔐 Generate tokens
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
-    // Set refresh token in HttpOnly cookie
-    res.cookie('refreshToken', refreshToken, getRefreshCookieOptions());
-    // Return success response with access token
+
+    const hashedRefreshToken = hashToken(refreshToken);
+
+    // 🧹 Remove expired tokens
+    user.refreshTokens = user.refreshTokens.filter(
+      (t) => t.expiresAt > new Date()
+    );
+
+    // ➕ Store hashed refresh token
+    user.refreshTokens.push({
+      token: hashedRefreshToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    await user.save();
+
+    // 🍪 Set refresh token cookie
+    res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
+
     return res.status(200).json({
       success: true,
-      message: 'Login successful',
+      message: "Login successful",
       accessToken,
       user: {
         id: user._id,
         email: user.email,
-        firstname: user.profile.firstname,
-        lastname: user.profile.lastname,
-        phone: user.profile.phone,
+        name: user.name,
         role: user.role,
         status: user.status
       }
     });
+
   } catch (error) {
-    console.error('Login error:', error);
+    console.error("Login error:", error);
     return res.status(500).json({
       success: false,
-      message: 'Error during login',
-      error: error.message
+      message: "Error during login"
     });
   }
 };
@@ -238,70 +348,164 @@ const login = async (req, res) => {
 // Logout (blacklist token)
 const logout = async (req, res) => {
   try {
+    // ===== 1️⃣ BLACKLIST ACCESS TOKEN =====
     const token = getTokenFromHeader(req);
-    if (!token) {
-      return res.status(400).json({ success: false, message: 'Token is required' });
-    }
 
-  
-    // Decode token to get expiry
-    const decoded = jwt.decode(token);
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const ttl = decoded && decoded.exp ? Math.max(0, decoded.exp - nowSeconds) : 0;
+    if (token) {
+      const decoded = jwt.decode(token);
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const ttl = decoded && decoded.exp
+        ? Math.max(0, decoded.exp - nowSeconds)
+        : 0;
 
-    if (redisClient) {
-      try {
-        await redisClient.set(`bl_${token}`, '1');
-        if (ttl > 0) {
-          await redisClient.expire(`bl_${token}`, ttl);
+      if (redisClient) {
+        try {
+          await redisClient.set(`bl_${token}`, "1");
+          if (ttl > 0) {
+            await redisClient.expire(`bl_${token}`, ttl);
+          }
+        } catch (err) {
+          tokenStore.add(token, ttl);
         }
-      } catch (err) {
-        // Fallback to in-memory if Redis write fails
+      } else {
         tokenStore.add(token, ttl);
       }
-    } else {
-      tokenStore.add(token, ttl);
     }
 
-    // Clear refresh token cookie
-    try {
-      res.clearCookie('refreshToken', getRefreshCookieOptions());
-    } catch (e) {
-      // ignore if cookies not present
+    // ===== 2️⃣ REMOVE REFRESH TOKEN FROM DB =====
+    const refreshToken = req.cookies?.refreshToken;
+
+    if (refreshToken) {
+      const hashedToken = hashToken(refreshToken);
+
+      // Decode to get user id (no need to verify here)
+      const decoded = jwt.decode(refreshToken);
+
+      if (decoded?.id) {
+        const user = await User.findById(decoded.id);
+
+        if (user) {
+          user.refreshTokens = user.refreshTokens.filter(
+            (t) => t.token !== hashedToken
+          );
+          await user.save();
+        }
+      }
     }
 
-    return res.status(200).json({ success: true, message: 'Logged out successfully' });
+    // ===== 3️⃣ CLEAR COOKIE =====
+    res.clearCookie("refreshToken", getRefreshCookieOptions());
+
+    return res.status(200).json({
+      success: true,
+      message: "Logged out successfully"
+    });
+
   } catch (error) {
-    console.error('Logout error:', error);
-    return res.status(500).json({ success: false, message: 'Error during logout', error: error.message });
+    console.error("Logout error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error during logout"
+    });
   }
 };
 
-// Refresh access token using refresh token cookie
+
+// Refresh access token using refresh token cookie (Production Safe Version)
 const refreshAccessToken = async (req, res) => {
   try {
-    const refreshToken = req.cookies && req.cookies.refreshToken;
-    if (!refreshToken) return res.status(401).json({ success: false, message: 'Refresh token missing' });
+    const refreshToken = req.cookies?.refreshToken;
 
-    // Verify refresh token
-    let decoded;
-    try {
-      decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET || 'your-secret-keyy');
-    } catch (err) {
-      return res.status(401).json({ success: false, message: 'Invalid or expired refresh token' });
+    if (!refreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token missing"
+      });
     }
 
-    const userId = decoded.id;
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    // 🔐 Verify JWT
+    let decoded;
+    try {
+      decoded = jwt.verify(
+        refreshToken,
+        process.env.REFRESH_TOKEN_SECRET
+      );
+    } catch (err) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid or expired refresh token"
+      });
+    }
 
-    const accessToken = generateAccessToken(userId);
-    return res.status(200).json({ success: true, accessToken });
+    if (decoded.type !== "refresh") {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid token type"
+      });
+    }
+
+    const hashedToken = hashToken(refreshToken);
+
+    // 👇 Find user first
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    // 🧹 Remove expired tokens
+    user.refreshTokens = user.refreshTokens.filter(
+      (t) => t.expiresAt > new Date()
+    );
+
+    // 🔎 Check if hashed token exists in array
+    const tokenIndex = user.refreshTokens.findIndex(
+      (t) => t.token === hashedToken
+    );
+
+    if (tokenIndex === -1) {
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token mismatch (possible reuse detected)"
+      });
+    }
+
+    // 🔁 ROTATE TOKEN
+    const newAccessToken = generateAccessToken(user._id);
+    const newRefreshToken = generateRefreshToken(user._id);
+    const newHashedToken = hashToken(newRefreshToken);
+
+    // ❌ Remove old refresh token
+    user.refreshTokens.splice(tokenIndex, 1);
+
+    // ➕ Add new refresh token
+    user.refreshTokens.push({
+      token: newHashedToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    await user.save();
+
+    // 🍪 Send new refresh token in cookie
+    res.cookie("refreshToken", newRefreshToken, getRefreshCookieOptions());
+
+    return res.status(200).json({
+      success: true,
+      accessToken: newAccessToken
+    });
+
   } catch (error) {
-    console.error('Refresh token error:', error);
-    return res.status(500).json({ success: false, message: 'Could not refresh token', error: error.message });
+    console.error("Refresh token error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Could not refresh token"
+    });
   }
 };
+
 
 // Get current user profile
 const me = async (req, res) => {
@@ -440,5 +644,115 @@ const resetPassword = async (req, res) => {
   }
 };
 
-module.exports = { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken };
+// Google Sign-In (pass idToken from frontend)
+// ===== GOOGLE AUTH CONTROLLER =====
+const googleAuth = async (req, res) => {
+  try {
+    const { idToken } = req.body;
+
+    if (!idToken || typeof idToken !== "string") {
+      return res.status(400).json({
+        success: false,
+        message: "Valid idToken is required"
+      });
+    }
+
+    // 🔍 Verify with Google
+    const ticket = await googleClient.verifyIdToken({
+      idToken,
+      audience: process.env.GOOGLE_CLIENT_ID
+    });
+
+    const payload = ticket.getPayload();
+
+    if (!payload.email || !payload.email_verified) {
+      return res.status(400).json({
+        success: false,
+        message: "Google email not verified"
+      });
+    }
+
+    const { sub: googleId, email, name = "" } = payload;
+
+    // ===== FIND OR CREATE USER =====
+    let user = await User.findOne({ email });
+
+    if (user) {
+      if (!user.googleId) user.googleId = googleId;
+      user.isEmailVerified = true;
+      user.status = "active";
+    } else {
+      user = new User({
+        googleId,
+        email,
+        name,
+        isEmailVerified: true,
+        status: "active",
+        role: "user"
+      });
+    }
+
+    // ===== GENERATE TOKENS =====
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    const hashedRefreshToken = hashToken(refreshToken);
+
+    // 🧹 Remove expired tokens
+    user.refreshTokens = user.refreshTokens.filter(
+      (t) => t.expiresAt > new Date()
+    );
+
+    // ➕ Push new refresh token
+    user.refreshTokens.push({
+      token: hashedRefreshToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+    });
+
+    await user.save();
+
+    // 🍪 Send refresh token in cookie
+    res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
+
+    return res.status(200).json({
+      success: true,
+      message: "Google login successful",
+      accessToken,
+      user: {
+        id: user._id,
+        email: user.email,
+        role: user.role
+      }
+    });
+
+  } catch (error) {
+    console.error("[Google Auth Error]", error);
+    return res.status(500).json({
+      success: false,
+      message: "Google authentication failed"
+    });
+  }
+};
+
+
+
+requestPhoneOTP = async (req, res) => {
+  const { phone } = req.body;
+
+  const otp = await sendOTP(phone);
+
+  await User.updateOne(
+    { phone },
+    {
+      phoneVerificationOTP: otp,
+      phoneVerificationOTPExpires: Date.now() + 5 * 60 * 1000
+    },
+    { upsert: true }
+  );
+
+  res.json({ message: "OTP sent successfully" , devOTP: otp });
+};
+
+
+module.exports = { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken, googleAuth , requestPhoneOTP };
 

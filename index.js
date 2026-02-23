@@ -486,6 +486,7 @@ const helmet = require('helmet');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
+const path = require('path');
 const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
@@ -517,10 +518,10 @@ const HEALTH_CHECK_INTERVAL = 30000;
 const app = express();
 let server = null;
 
+
 // ============================================================================
 // SECURITY MIDDLEWARE
 // ============================================================================
-
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -538,7 +539,7 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: [process.env.FRONTEND_URL || 'http://localhost:5173' , 'http://127.0.0.1:5500' , 'http://localhost:5500'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cookie']
@@ -549,6 +550,7 @@ app.use('/api/', rateLimit({
   max: 100,
   skip: (req) => req.path === '/health' || req.path === '/api/health'
 }));
+
 
 // ============================================================================
 // BODY PARSING & LOGGING
@@ -561,6 +563,9 @@ app.use(morgan(NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 // Cookie parser for reading refresh-token cookie
 app.use(cookieParser());
+
+// Serve simple frontend test pages (e.g., google-test)
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.use((req, res, next) => {
   req.id = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -648,7 +653,7 @@ app.get('/health/ready', async (req, res) => {
 
 app.get('/api', (req, res) => {
   res.json({
-    message: 'E-Commerce Platform API v1.0',
+    message: 'E-Commerce Platform  v1.0',
     status: 'running',
     health: '/health'
   });
@@ -658,10 +663,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin/products', adminProductsRoutes);
 app.use('/api', categoriesRoutes);
 
+
 // ============================================================================
 // ERROR HANDLING
 // ============================================================================
-
 app.use((req, res) => {
   res.status(404).json({
     error: 'Not Found',
@@ -694,7 +699,6 @@ app.use((err, req, res, next) => {
 
 async function gracefulShutdown(signal) {
   console.log(`\n[Shutdown] ${signal} received...`);
-
   setTimeout(() => {
     console.error('[Shutdown] Forced exit');
     process.exit(1);
@@ -728,7 +732,6 @@ process.on('unhandledRejection', (reason) => {
 // ============================================================================
 // START APPLICATION
 // ============================================================================
-
 async function startApplication() {
   try {
     console.log(`Environment: ${NODE_ENV}`);
