@@ -138,10 +138,6 @@ router.get('/low-stock', requireAdmin, productController.getLowStockProducts);
 //Get /admin/products/:slug get porduct by slug name 
 router.get('/:slug', requireAdmin, productController.getProductBySlug);
 
-// POST /admin/products/import-csv Bulk create products from CSV file
-router.post( '/import-csv',upload.single('file'),importProductsFromCSV
-);
-
 // Get all active products
 router.get('/', requireAdmin, productController.getAllProducts);
 
