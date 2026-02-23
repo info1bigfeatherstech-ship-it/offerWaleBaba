@@ -1288,7 +1288,7 @@ const getProductBySlug = async (req, res) => {
 //get products with only archived status
 const getArchivedProducts = async (req, res) => {
     try {
-        const products = await Product.find({ status: 'archived' }).populate('category', 'name').sort({ createdAt: -1 });
+        const products = await Product.find({ status: { $regex: '^archived$', $options: 'i' } }).populate('category', 'name').sort({ createdAt: -1 });
         return res.status(200).json({ success: true, count: products.length, products });
     } catch (error) {
         console.error('Get archived products error:', error);

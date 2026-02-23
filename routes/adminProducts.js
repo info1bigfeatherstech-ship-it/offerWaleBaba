@@ -115,18 +115,12 @@ router.post('/bulk-create', requireAdmin, productController.bulkCreateProducts);
 // Import from CSV
 router.post('/import-csv', requireAdmin, uploadCSVFile, productController.importProductsFromCSV);
 
-// PUT /admin/products/:slug Update product with optional image uploads
-router.put('/:slug', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
 
-// DELETE /admin/products/:slug Soft delete (archive)
-router.delete('/:slug', requireAdmin, productController.deleteProduct);
+// Get archived products
+router.get('/archived', requireAdmin, productController.getArchivedProducts);
 
 // POST /admin/products/bulk-delete Bulk delete (archive)
 router.post('/bulk-delete', requireAdmin, productController.bulkDelete);
-
-
-// Restore single
-router.patch('/restore/:slug', requireAdmin, productController.restoreProduct);
 
 // Bulk restore
 router.patch('/bulk-restore', requireAdmin, productController.bulkRestore);
@@ -135,6 +129,29 @@ router.patch('/bulk-restore', requireAdmin, productController.bulkRestore);
 // GET /admin/products/low-stock Get low stock products
 router.get('/low-stock', requireAdmin, productController.getLowStockProducts);
 
+
+// Get draft products
+router.get('/drafts', requireAdmin, productController.getDraftProducts);
+
+
+// Bulk hard delete
+router.delete('/bulk-hard-delete', requireAdmin, productController.bulkHardDelete);
+
+// Restore single
+router.patch('/restore/:slug', requireAdmin, productController.restoreProduct);
+
+
+// Hard delete single (only archived)
+router.delete('/hard/:slug', requireAdmin, productController.hardDeleteProduct);
+
+
+// PUT /admin/products/:slug Update product with optional image uploads
+router.put('/:slug', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
+
+// DELETE /admin/products/:slug Soft delete (archive)
+router.delete('/:slug', requireAdmin, productController.deleteProduct);
+
+
 //Get /admin/products/:slug get porduct by slug name 
 router.get('/:slug', requireAdmin, productController.getProductBySlug);
 
@@ -142,21 +159,6 @@ router.get('/:slug', requireAdmin, productController.getProductBySlug);
 router.get('/', requireAdmin, productController.getAllProducts);
 
 
-// Get archived products
-router.get('/archived', requireAdmin, productController.getArchivedProducts);
 
-
-
-// Get draft products
-router.get('/drafts', requireAdmin, productController.getDraftProducts);
-
-
-
-
-// Hard delete single (only archived)
-router.delete('/hard/:slug', requireAdmin, productController.hardDeleteProduct);
-
-// Bulk hard delete
-router.delete('/bulk-hard-delete', requireAdmin, productController.bulkHardDelete);
 
 module.exports = router;
