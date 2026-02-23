@@ -88,7 +88,7 @@ const register = async (req, res) => {
       });
     }
 
-    const { email, password, firstname, lastname, phone } = req.body;
+    const { email, password, name, phone } = req.body;
 
     // Check if user already exists
     const existingUser = await User.findOne({ email }).select('+emailVerificationOTP +emailVerificationOTPExpires +isVerified');
@@ -102,8 +102,7 @@ const register = async (req, res) => {
       const expires = new Date(Date.now() + 15 * 60 * 1000);
       existingUser.emailVerificationOTP = otp;
       existingUser.emailVerificationOTPExpires = expires;
-      existingUser.profile.firstname = firstname || existingUser.profile.firstname;
-      if (lastname) existingUser.profile.lastname = lastname;
+      existingUser.profile.name = name || existingUser.profile.name;
       if (phone) existingUser.profile.phone = phone;
       if (password) existingUser.password = password;
       await existingUser.save();
@@ -126,7 +125,7 @@ const register = async (req, res) => {
     const user = new User({
       email,
       password,
-      profile: { firstname, lastname, phone },
+      profile: { name, phone },
       role: 'user',
       status: 'inactive',
       isVerified: false,
@@ -518,8 +517,7 @@ const me = async (req, res) => {
       user: {
         id: user._id,
         email: user.email,
-        firstname: user.profile.firstname,
-        lastname: user.profile.lastname,
+        name: user.profile.name,
         phone: user.profile.phone,
         role: user.role,
         status: user.status
@@ -534,12 +532,11 @@ const me = async (req, res) => {
 // Update user profile (protected)
 const updateProfile = async (req, res) => {
   try {
-    const allowed = ['firstname', 'lastname', 'phone', 'email'];
+    const allowed = ['name', 'phone', 'email'];
     const updates = {};
 
     if (req.body.email) updates.email = req.body.email;
-    if (req.body.firstname) updates['profile.firstname'] = req.body.firstname;
-    if (req.body.lastname) updates['profile.lastname'] = req.body.lastname;
+    if (req.body.name) updates['profile.name'] = req.body.name;
     if (req.body.phone) updates['profile.phone'] = req.body.phone;
 
     const user = await User.findByIdAndUpdate(req.userId, { $set: updates }, { new: true });

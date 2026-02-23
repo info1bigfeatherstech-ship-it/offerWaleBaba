@@ -21,17 +21,12 @@ router.post(
       .withMessage('Password is required')
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters'),
-    body('firstname')
+    body('name')
       .trim()
       .notEmpty()
-      .withMessage('First name is required')
+      .withMessage('Name is required')
       .isLength({ min: 2 })
-      .withMessage('First name must be at least 2 characters'),
-    body('lastname')
-      .optional()
-      .trim()
-      .isLength({ min: 2 })
-      .withMessage('Last name must be at least 2 characters'),
+      .withMessage('Name must be at least 2 characters')
   ],
   register
 );

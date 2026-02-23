@@ -33,9 +33,13 @@
 // module.exports = mongoose.model('Product', productSchema);
 
 
-
 const mongoose = require('mongoose');
 
+//
+// =========================
+// IMAGE SCHEMA
+// =========================
+//
 const imageSchema = new mongoose.Schema(
   {
     url: { type: String, required: true },
@@ -46,6 +50,11 @@ const imageSchema = new mongoose.Schema(
   { _id: false }
 );
 
+//
+// =========================
+// PRODUCT SCHEMA
+// =========================
+//
 const productSchema = new mongoose.Schema(
   {
     // =========================
@@ -66,14 +75,16 @@ const productSchema = new mongoose.Schema(
       index: true
     },
 
-    description: {
+    // OLD description ➜ title
+    title: {
       type: String,
       required: true
     },
 
-    shortDescription: {
+    // OLD shortDescription ➜ description (NO LIMIT)
+    description: {
       type: String,
-      maxLength: 250
+      default: ''
     },
 
     // =========================
@@ -87,7 +98,8 @@ const productSchema = new mongoose.Schema(
 
     brand: {
       type: String,
-      default: 'Generic'
+      default: 'Generic',
+      trim: true
     },
 
     // =========================
@@ -102,7 +114,7 @@ const productSchema = new mongoose.Schema(
     },
 
     // =========================
-    // PRICING SYSTEM
+    // PRICING
     // =========================
     price: {
       base: {
@@ -119,7 +131,7 @@ const productSchema = new mongoose.Schema(
       costPrice: {
         type: Number,
         default: null,
-        select: false // Hidden from normal queries
+        select: false
       },
 
       saleStartDate: {
@@ -134,7 +146,7 @@ const productSchema = new mongoose.Schema(
     },
 
     // =========================
-    // INVENTORY
+    // INVENTORY (REAL)
     // =========================
     inventory: {
       quantity: { type: Number, default: 0 },
@@ -143,10 +155,46 @@ const productSchema = new mongoose.Schema(
     },
 
     // =========================
+    // FAKE SOLD INFO (Admin Controlled)
+    // =========================
+    soldInfo: {
+      enabled: { type: Boolean, default: false },
+      count: { type: Number, default: 0 }
+    },
+
+    // =========================
+    // FAKE FOMO (Admin Controlled)
+    // =========================
+    fomo: {
+      enabled: { type: Boolean, default: false },
+
+      type: {
+        type: String,
+        enum: ['viewing_now', 'product_left', 'custom'],
+        default: 'viewing_now'
+      },
+
+      viewingNow: {
+        type: Number,
+        default: 0
+      },
+
+      productLeft: {
+        type: Number,
+        default: 0
+      },
+
+      customMessage: {
+        type: String,
+        default: ''
+      }
+    },
+
+    // =========================
     // SHIPPING
     // =========================
     shipping: {
-      weight: { type: Number, default: 0 }, // grams
+      weight: { type: Number, default: 0 },
       dimensions: {
         length: { type: Number, default: 0 },
         width: { type: Number, default: 0 },
@@ -169,29 +217,6 @@ const productSchema = new mongoose.Schema(
       }
     ],
 
- // =========================
-    // FOMO (Marketing Boost)
-    // =========================
-    fomo: {
-      enabled: { type: Boolean, default: false },
-
-      type: {
-        type: String,
-        enum: ['sold_count', 'viewing_now', 'custom_message'],
-        default: 'sold_count'
-      },
-
-      value: {
-        type: Number,
-        default: 0
-      },
-
-      message: {
-        type: String,
-        default: ''
-      }
-    },
-
     isFeatured: {
       type: Boolean,
       default: false
@@ -208,7 +233,7 @@ const productSchema = new mongoose.Schema(
 
 //
 // =========================
-// VIRTUALS (AUTO LOGIC)
+// VIRTUALS
 // =========================
 //
 
@@ -240,10 +265,36 @@ productSchema.virtual('discountPercentage').get(function () {
     ((this.price.base - this.price.sale) / this.price.base) * 100
   );
 });
+// =========================
+// MARKETING VIRTUALS
+// =========================
+
+productSchema.virtual('soldLabel').get(function () {
+  if (!this.soldInfo?.enabled) return null;
+
+  return `${this.soldInfo.count} people bought this product`;
+});
+
+productSchema.virtual('fomoLabel').get(function () {
+  if (!this.fomo?.enabled) return null;
+
+  switch (this.fomo.type) {
+    case 'viewing_now':
+      return `${this.fomo.viewingNow} people are viewing this right now`;
+
+    case 'product_left':
+      return `Only ${this.fomo.productLeft} left in stock`;
+
+    case 'custom':
+      return this.fomo.customMessage || null;
+
+    default:
+      return null;
+  }
+});
 
 productSchema.set('toJSON', { virtuals: true });
 productSchema.set('toObject', { virtuals: true });
-
 
 //
 // =========================
@@ -252,15 +303,10 @@ productSchema.set('toObject', { virtuals: true });
 //
 
 productSchema.pre('save', function () {
-  // Sale must be less than base
-  if (
-    this.price.sale &&
-    this.price.sale >= this.price.base
-  ) {
+  if (this.price.sale && this.price.sale >= this.price.base) {
     throw new Error('Sale price must be less than base price');
   }
 
-  // Sale start cannot be after end
   if (
     this.price.saleStartDate &&
     this.price.saleEndDate &&
@@ -270,14 +316,13 @@ productSchema.pre('save', function () {
   }
 });
 
-
 //
 // =========================
-// INDEXES (Performance)
+// INDEXES
 // =========================
 //
 
-productSchema.index({ name: 'text', description: 'text' });
+productSchema.index({ name: 'text', title: 'text', description: 'text' });
 productSchema.index({ category: 1, status: 1 });
 productSchema.index({ isFeatured: 1 });
 productSchema.index({ 'price.base': 1 });
