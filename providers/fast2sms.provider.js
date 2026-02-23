@@ -46,3 +46,6 @@ exports.sendSMS = async (phone, message) => {
 }   
 }
 }
+
+// MSG91 
+//FAST
