@@ -1230,7 +1230,7 @@ const getLowStockProducts = async (req, res) => {
 
     const [products, total] = await Promise.all([
       Product.find(query)
-        .select('name slug inventory price images')
+        .select('name slug inventory price images , soldInfo , fomo')
         .sort({ 'inventory.quantity': 1 })
         .skip(skip)
         .limit(Number(limit)),
