@@ -20,7 +20,7 @@ require('dotenv').config();
 // ============================================================================
 
 const { connectMongoDB, setupMongoDBEventHandlers } = require('./config/database.config');
-const { connectRedis, redisClient } = require('./config/redis.config');
+const { connectRedis, getRedisClient } = require('./config/redis.config');
 const { initCloudinary } = require('./config/cloudinary.config');
 
 // ============================================================================
@@ -125,7 +125,7 @@ app.get('/health', async (req, res) => {
       healthStatus.services.mongodb = 'disconnected';
       healthStatus.status = 'degraded';
     }
-
+const redisClient = getRedisClient();
     // Redis (Only degrade in production)
     if (redisClient && redisClient.isOpen) {
       await redisClient.ping();
@@ -188,9 +188,9 @@ app.get('/api', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/products', adminProductsRoutes);
-app.use('/api', categoriesRoutes);
-app.use('/api', productsRoutes);
-app.use('/api', wishlistRoutes);
+app.use('/api/categories', categoriesRoutes);
+app.use('/api/products', productsRoutes);
+app.use('/api/wishlist', wishlistRoutes);
 
 
 // ============================================================================

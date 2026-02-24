@@ -1,17 +1,26 @@
 const express = require('express');
 const router = express.Router();
 const wishlistController = require('../controllers/wishlistController');
+const {verifyToken} = require('../middlewares/auth'); // your auth middleware
 
-// Get wishlist - requires wishlistId or userId query
-router.get('/wishlist', wishlistController.getWishlist);
 
-// Add product to wishlist (body: productSlug, wishlistId?, userId?)
-router.post('/wishlist/add', wishlistController.addToWishlist);
+router.get('/', verifyToken, wishlistController.getWishlist);
 
-// Remove from wishlist (param: productSlug) - requires wishlistId or userId query
-router.delete('/wishlist/remove/:productSlug', wishlistController.removeFromWishlist);
+router.post('/add', verifyToken, wishlistController.addToWishlist);
 
-// Move wishlist item to cart (placeholder) - removes and returns product
-router.post('/wishlist/move-to-cart/:productSlug', wishlistController.moveToCart);
+router.delete('/remove/:productSlug', verifyToken, wishlistController.removeFromWishlist);
 
+router.post('/merge', verifyToken, wishlistController.mergeWishlist);
+
+router.delete(
+  "/remove-bulk",
+  verifyToken,
+  wishlistController.removeBulkFromWishlist
+);
+
+router.delete(
+  "/clear",
+  verifyToken,
+  wishlistController.clearWishlist
+);
 module.exports = router;
