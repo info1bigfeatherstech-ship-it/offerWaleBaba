@@ -72,7 +72,7 @@
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 
 <script>
-  const GOOGLE_CLIENT_ID = "223957179302-n5n8lt57hhrr3clidhcv687kjmkeli28.apps.googleusercontent.com";
+  const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "from env variable";
 
   const statusBox = document.getElementById("statusBox");
 
