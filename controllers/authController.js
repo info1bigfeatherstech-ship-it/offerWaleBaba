@@ -102,8 +102,8 @@ const register = async (req, res) => {
       const expires = new Date(Date.now() + 15 * 60 * 1000);
       existingUser.emailVerificationOTP = otp;
       existingUser.emailVerificationOTPExpires = expires;
-      existingUser.profile.name = name || existingUser.profile.name;
-      if (phone) existingUser.profile.phone = phone;
+      existingUser.name = name || existingUser.name;
+      if (phone) existingUser.phone = phone;
       if (password) existingUser.password = password;
       await existingUser.save();
 
@@ -125,7 +125,8 @@ const register = async (req, res) => {
     const user = new User({
       email,
       password,
-      profile: { name, phone },
+       name, 
+       phone ,
       role: 'user',
       status: 'inactive',
       isVerified: false,
@@ -446,7 +447,7 @@ const refreshAccessToken = async (req, res) => {
     const hashedToken = hashToken(refreshToken);
 
     // 👇 Find user first
-    const user = await User.findById(decoded.id);
+    const user = await User.findById(decoded.id).select("+refreshTokens.token");
 
     if (!user) {
       return res.status(401).json({
@@ -517,8 +518,8 @@ const me = async (req, res) => {
       user: {
         id: user._id,
         email: user.email,
-        name: user.profile.name,
-        phone: user.profile.phone,
+        name: user.name,
+        phone: user.phone,
         role: user.role,
         status: user.status
       } , token: getTokenFromHeader(req)
@@ -536,8 +537,8 @@ const updateProfile = async (req, res) => {
     const updates = {};
 
     if (req.body.email) updates.email = req.body.email;
-    if (req.body.name) updates['profile.name'] = req.body.name;
-    if (req.body.phone) updates['profile.phone'] = req.body.phone;
+    if (req.body.name) updates.name = req.body.name;
+    if (req.body.phone) updates.phone = req.body.phone;
 
     const user = await User.findByIdAndUpdate(req.userId, { $set: updates }, { new: true });
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
@@ -752,4 +753,3 @@ requestPhoneOTP = async (req, res) => {
 
 
 module.exports = { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken, googleAuth , requestPhoneOTP };
-
