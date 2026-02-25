@@ -11,8 +11,7 @@ const getWishlist = async (req, res) => {
       .populate({
         path: 'products.productId',
         select: 'name slug price images'
-      })
-      .lean();
+      });
 
     if (!wishlist) {
       return res.json({
@@ -164,7 +163,7 @@ const mergeWishlist = async (req, res) => {
     }).select('_id');
 
     if (!products.length) {
-      return res.json({ success: true }); // nothing to merge
+      return res.json({ success: true, message: "No products to merge" }); // nothing to merge
     }
 
     const productEntries = products.map(p => ({
@@ -181,7 +180,7 @@ const mergeWishlist = async (req, res) => {
       { upsert: true }
     );
 
-    return res.json({ success: true });
+    return res.json({ success: true  , message: "Wishlist merged successfully" });
 
   } catch (err) {
     console.error('mergeWishlist:', err);
@@ -242,7 +241,7 @@ const removeBulkFromWishlist = async (req, res) => {
 
 const clearWishlist = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.userId;
 
     const wishlist = await Wishlist.findOneAndUpdate(
       { userId },
