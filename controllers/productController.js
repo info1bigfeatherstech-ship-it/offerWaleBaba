@@ -18,383 +18,156 @@ const createProduct = async (req, res) => {
       description,
       category,
       brand,
-      price,
-      inventory,
-      shipping,
-      attributes,
-      isFeatured,
       status,
-      soldInfo,
-      fomo
+      variants: variantsRaw
     } = req.body;
 
-    // =========================
-    // REQUIRED VALIDATION
-    // =========================
-    if (!name) {
+    if (!name || !title || !category) {
       return res.status(400).json({
         success: false,
-        message: 'Product name is required'
+        message: "Name, title and category are required"
       });
     }
 
-    if (!title) {
+    // Parse variants JSON (important for form-data)
+    let variantsInput = variantsRaw;
+    if (typeof variantsRaw === "string") {
+      variantsInput = JSON.parse(variantsRaw);
+    }
+
+    if (!Array.isArray(variantsInput) || variantsInput.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Product title is required'
+        message: "At least one variant is required"
       });
     }
 
-    if (!category) {
-      return res.status(400).json({
-        success: false,
-        message: 'Product category is required'
-      });
-    }
-
-    // =========================
-    // CATEGORY RESOLVE (UNCHANGED)
-    // =========================
-    const escapeRegExp = (s) =>
-      s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-    let categoryId;
-
-    if (mongoose.Types.ObjectId.isValid(category)) {
-      const found = await Category.findById(category);
-      if (!found) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid category id'
-        });
-      }
-      categoryId = found._id;
-    } else {
-      const candidateSlug = slugify(String(category), {
-        lower: true,
-        strict: true
-      });
-
-      let found = await Category.findOne({
-        $or: [
-          { slug: candidateSlug },
-          {
-            name: new RegExp(
-              '^' + escapeRegExp(String(category)) + '$',
-              'i'
-            )
-          }
-        ]
-      });
-
-      if (!found) {
-        const newCat = new Category({
-          name: String(category),
-          slug: candidateSlug,
-          status: 'active',
-          level: 0
-        });
-
-        await newCat.save();
-        found = newCat;
-      }
-
-      categoryId = found._id;
-    }
-
-    // =========================
-    // Generate Slug & SKU
-    // =========================
     const slug = await generateSlug(name);
-    const sku = await generateSku();
 
-    // =========================
-    // HANDLE PRICE
-    // =========================
-    let parsedPrice = price;
+    const variants = [];
 
-    if (typeof price === 'string') {
-      try {
-        parsedPrice = JSON.parse(price);
-      } catch {
-        parsedPrice = {};
-      }
-    }
-
-    let priceObj = {
-      base: 0,
-      sale: null,
-      costPrice: null,
-      saleStartDate: null,
-      saleEndDate: null
-    };
-
-    if (parsedPrice !== undefined) {
-      if (!isNaN(parsedPrice)) {
-        priceObj.base = Number(parsedPrice);
-      } else if (
-        typeof parsedPrice === 'object' &&
-        parsedPrice !== null
-      ) {
-        priceObj.base = Number(parsedPrice.base) || 0;
-        priceObj.sale = parsedPrice.sale
-          ? Number(parsedPrice.sale)
-          : null;
-        priceObj.costPrice = parsedPrice.costPrice
-          ? Number(parsedPrice.costPrice)
-          : null;
-        priceObj.saleStartDate = parsedPrice.saleStartDate
-          ? new Date(parsedPrice.saleStartDate)
-          : null;
-        priceObj.saleEndDate = parsedPrice.saleEndDate
-          ? new Date(parsedPrice.saleEndDate)
-          : null;
-      }
-    }
-
-    if (priceObj.sale && priceObj.sale >= priceObj.base) {
-      return res.status(400).json({
-        success: false,
-        message: 'Sale price must be less than base price'
-      });
-    }
-
-    if (
-      priceObj.saleStartDate &&
-      priceObj.saleEndDate &&
-      priceObj.saleStartDate > priceObj.saleEndDate
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          'Sale start date cannot be after sale end date'
-      });
-    }
-
-    // =========================
-    // INVENTORY (REAL)
-    // =========================
-    const inventoryObj = {
-      quantity: inventory?.quantity || 0,
-      trackInventory:
-        inventory?.trackInventory !== false,
-      lowStockThreshold:
-        inventory?.lowStockThreshold || 5
-    };
-
-    // =========================
-    // SHIPPING
-    // =========================
-    const shippingObj = {
-      weight: shipping?.weight || 0,
-      dimensions: {
-        length: shipping?.dimensions?.length || 0,
-        width: shipping?.dimensions?.width || 0,
-        height: shipping?.dimensions?.height || 0
-      }
-    };
-
-    // =========================
-    // ATTRIBUTES
-    // =========================
-    let attributesArr = [];
-
-    if (attributes) {
-      let parsedAttributes = attributes;
-
-      if (typeof attributes === 'string') {
-        try {
-          parsedAttributes = JSON.parse(attributes);
-        } catch {
-          parsedAttributes = [];
-        }
-      }
-
-      if (Array.isArray(parsedAttributes)) {
-        attributesArr = parsedAttributes.map(
-          (attr) => ({
-            key: attr.key,
-            value: attr.value
-          })
-        );
-      }
-    }
-
-    // =========================
-    // SOLD INFO (FAKE)
-    // =========================
-    let soldInfoObj = {
-      enabled: false,
-      count: 0
-    };
-
-    if (soldInfo) {
-      let parsedSold = soldInfo;
-
-      if (typeof soldInfo === 'string') {
-        try {
-          parsedSold = JSON.parse(soldInfo);
-        } catch {
-          parsedSold = null;
-        }
-      }
-
-      if (parsedSold) {
-        soldInfoObj.enabled =
-          parsedSold.enabled === true ||
-          parsedSold.enabled === 'true';
-
-        soldInfoObj.count = !isNaN(parsedSold.count)
-          ? Number(parsedSold.count)
-          : 0;
-      }
-    }
-
-    // =========================
-    // FOMO (FAKE)
-    // =========================
-    let fomoObj = {
-      enabled: false,
-      type: 'viewing_now',
-      viewingNow: 0,
-      productLeft: 0,
-      customMessage: ''
-    };
-
-    if (fomo) {
-      let parsedFomo = fomo;
-
-      if (typeof fomo === 'string') {
-        try {
-          parsedFomo = JSON.parse(fomo);
-        } catch {
-          parsedFomo = null;
-        }
-      }
-
-      if (parsedFomo) {
-        fomoObj.enabled =
-          parsedFomo.enabled === true ||
-          parsedFomo.enabled === 'true';
-
-        if (
-          ['viewing_now', 'product_left', 'custom'].includes(
-            parsedFomo.type
-          )
-        ) {
-          fomoObj.type = parsedFomo.type;
-        }
-
-        fomoObj.viewingNow = !isNaN(
-          parsedFomo.viewingNow
-        )
-          ? Number(parsedFomo.viewingNow)
-          : 0;
-
-        fomoObj.productLeft = !isNaN(
-          parsedFomo.productLeft
-        )
-          ? Number(parsedFomo.productLeft)
-          : 0;
-
-        fomoObj.customMessage =
-          parsedFomo.customMessage || '';
-      }
-    }
-
-    // =========================
-    // IMAGE UPLOAD (UNCHANGED)
-    // =========================
-    let images = [];
+    // Group uploaded files by variant index
+    const filesByVariant = {};
 
     if (req.files && req.files.length > 0) {
-      for (let i = 0; i < req.files.length; i++) {
-        const file = req.files[i];
-
-        try {
-          const metadata = await sharp(
-            file.buffer
-          ).metadata();
-
-          if (
-            metadata.width > 5000 ||
-            metadata.height > 5000
-          ) {
-            throw new Error(
-              'Image dimensions too large'
-            );
+      for (const file of req.files) {
+        const match = file.fieldname.match(/^variantImages_(\d+)$/);
+        if (match) {
+          const index = Number(match[1]);
+          if (!filesByVariant[index]) {
+            filesByVariant[index] = [];
           }
+          filesByVariant[index].push(file);
+        }
+      }
+    }
 
-          const optimizedBuffer = await sharp(
-            file.buffer
-          )
-            .resize({
-              width: 1500,
-              withoutEnlargement: true
-            })
+    // Process each variant
+    for (let i = 0; i < variantsInput.length; i++) {
+      const v = variantsInput[i];
+
+      const priceObj = {
+        base: Number(v.price?.base) || 0,
+        sale: v.price?.sale != null ? Number(v.price.sale) : null
+      };
+
+      if (priceObj.sale != null && priceObj.sale >= priceObj.base) {
+        return res.status(400).json({
+          success: false,
+          message: `Sale price must be less than base price for variant ${i}`
+        });
+      }
+
+      const inventoryObj = {
+        quantity: Number(v.inventory?.quantity) || 0,
+        trackInventory: v.inventory?.trackInventory !== false,
+        lowStockThreshold: v.inventory?.lowStockThreshold || 5
+      };
+
+      const skuVal = v.sku
+        ? String(v.sku).toUpperCase()
+        : `${slug}-VAR${i + 1}`.toUpperCase();
+
+      // Upload images for this variant
+      const variantImages = [];
+
+      if (filesByVariant[i]) {
+        for (let imgIndex = 0; imgIndex < filesByVariant[i].length; imgIndex++) {
+          const file = filesByVariant[i][imgIndex];
+
+          const optimizedBuffer = await sharp(file.buffer)
+            .resize({ width: 1500, withoutEnlargement: true })
             .webp({ quality: 80 })
             .toBuffer();
 
-          const { url, publicId } =
-            await uploadToCloudinary(
-              optimizedBuffer,
-              `products/${slug}`
-            );
+          const { url, publicId } = await uploadToCloudinary(
+            optimizedBuffer,
+            `products/${slug}/${skuVal}`
+          );
 
-          images.push({
+          variantImages.push({
             url,
             publicId,
-            altText:
-              req.body[`images[${i}].altText`] ||
-              `Product image ${i + 1}`,
-            order: i
+            altText: `${name} ${skuVal} image ${imgIndex + 1}`,
+            order: imgIndex
           });
-        } catch (uploadError) {
-          console.error(
-            `Error processing image ${i}:`,
-            uploadError.message
-          );
         }
       }
+
+      variants.push({
+        sku: skuVal,
+        attributes: Array.isArray(v.attributes)
+          ? v.attributes.map(a => ({ key: a.key, value: a.value }))
+          : [],
+        price: priceObj,
+        inventory: inventoryObj,
+        images: variantImages,
+        isActive: v.isActive !== false
+      });
     }
 
-    // =========================
-    // CREATE PRODUCT
-    // =========================
+    // Calculate price range
+    const effectivePrices = variants.map(v =>
+      v.price.sale != null ? v.price.sale : v.price.base
+    );
+
+    const minPrice = Math.min(...effectivePrices);
+    const maxPrice = Math.max(...effectivePrices);
+
+    const totalStock = variants.reduce(
+      (sum, v) => sum + (v.inventory.quantity || 0),
+      0
+    );
+
     const product = new Product({
       name,
       slug,
-      sku,
       title,
-      description: description || '',
-      category: categoryId,
-      brand: brand || 'Generic',
-      price: priceObj,
-      inventory: inventoryObj,
-      shipping: shippingObj,
-      images,
-      attributes: attributesArr,
-      soldInfo: soldInfoObj,
-      fomo: fomoObj,
-      isFeatured:
-        isFeatured === true ||
-        isFeatured === 'true',
-      status: status || 'draft'
+      description: description || "",
+      category,
+      brand: brand || "Generic",
+      variants,
+      priceRange: {
+        min: minPrice,
+        max: maxPrice
+      },
+      totalStock,
+      status: status || "draft"
     });
 
     await product.save();
 
     return res.status(201).json({
       success: true,
-      message: 'Product created successfully',
+      message: "Product created successfully",
       product
     });
 
   } catch (error) {
-    console.error('Create product error:', error);
+    console.error("Create product error:", error);
     return res.status(500).json({
       success: false,
-      message: 'Error creating product',
+      message: "Error creating product",
       error: error.message
     });
   }
@@ -760,6 +533,9 @@ const updateProduct = async (req, res) => {
     // ===================================================
     // 1️⃣ HANDLE PRICE
     // ===================================================
+    // If product uses a single default variant, allow updating price via product update for backward compatibility
+    const singleVariant = existingProduct.variants && existingProduct.variants.length === 1 ? existingProduct.variants[0] : null;
+
     if (updates.price) {
       let parsedPrice = updates.price;
 
@@ -772,8 +548,9 @@ const updateProduct = async (req, res) => {
       }
 
       if (typeof parsedPrice === 'object') {
+        const existingPriceObj = singleVariant ? (singleVariant.price || {}) : (existingProduct.price || {});
         updates.price = {
-          ...existingProduct.price.toObject(),
+          ...(existingPriceObj.toObject ? existingPriceObj.toObject() : existingPriceObj),
           ...parsedPrice
         };
 
@@ -816,8 +593,9 @@ const updateProduct = async (req, res) => {
         }
       }
 
+      const existingInventoryObj = singleVariant ? (singleVariant.inventory || {}) : (existingProduct.inventory || {});
       updates.inventory = {
-        ...existingProduct.inventory.toObject(),
+        ...(existingInventoryObj.toObject ? existingInventoryObj.toObject() : existingInventoryObj),
         ...parsedInventory
       };
 
@@ -1012,18 +790,29 @@ const updateProduct = async (req, res) => {
 
     // ===================================================
     // 🔟 UPDATE PRODUCT
+    // Convert legacy price/inventory updates to single-variant updates if necessary
     // ===================================================
+    const finalSet = { ...updates };
+
+    if (singleVariant) {
+      // Move price/inventory into variants.0.* paths so we don't rely on top-level fields
+      if (finalSet.price) {
+        finalSet['variants.0.price'] = finalSet.price;
+        delete finalSet.price;
+      }
+      if (finalSet.inventory) {
+        finalSet['variants.0.inventory'] = finalSet.inventory;
+        delete finalSet.inventory;
+      }
+    }
+
     const updatedProduct = await Product.findByIdAndUpdate(
       existingProduct._id,
-      { $set: updates },
+      { $set: finalSet },
       { new: true, runValidators: true }
     );
 
-    return res.status(200).json({
-      success: true,
-      message: 'Product updated successfully',
-      product: updatedProduct
-    });
+    return res.status(200).json({ success: true, message: 'Product updated successfully', product: updatedProduct });
 
   } catch (error) {
     console.error('Update product error:', error);

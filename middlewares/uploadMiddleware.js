@@ -62,7 +62,7 @@ const uploadCSV = multer({
   }
 });
 
-const uploadProductImages = upload.array('images', 10);
+const uploadProductImages = upload.any();
 const uploadSingleImage = upload.single('image');
 const uploadCSVFile = uploadCSV.single('csvFile');
 
