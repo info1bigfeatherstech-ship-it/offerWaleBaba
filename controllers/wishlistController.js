@@ -10,7 +10,7 @@ const getWishlist = async (req, res) => {
     const wishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug price images'
+        select: 'name slug images variants'
       });
 
     if (!wishlist) {
@@ -40,33 +40,34 @@ const getWishlist = async (req, res) => {
 const addToWishlist = async (req, res) => {
   try {
     const userId = req.userId;
-    const { productSlug } = req.body;
+    const { productSlug, variantId } = req.body;
 
     if (!productSlug)
       return res.status(400).json({ success: false, message: 'productSlug required' });
 
-    const product = await Product.findOne({
-      slug: productSlug.toLowerCase(),
-      status: 'active'
-    });
+    const product = await Product.findOne({ slug: productSlug.toLowerCase(), status: 'active' }).select('variants');
 
     if (!product)
       return res.status(404).json({ success: false, message: 'Product not found' });
+
+    // Determine variantId to store: provided or first active variant
+    let chosenVariantId = variantId;
+    if (!chosenVariantId) {
+      const firstActive = (product.variants || []).find(v => v.isActive);
+      chosenVariantId = firstActive ? firstActive._id : null;
+    }
 
     await Wishlist.updateOne(
       { userId },
       {
         $addToSet: {
-          products: { productId: product._id }
+          products: { productId: product._id, variantId: chosenVariantId }
         }
       },
       { upsert: true }
     );
 
-    const wishlist = await Wishlist.findOne({ userId }).populate(
-      'products.productId',
-      'name slug price images'
-    );
+    const wishlist = await Wishlist.findOne({ userId }).populate('products.productId', 'name slug images variants');
 
     return res.json({ success: true, wishlist });
 
@@ -125,7 +126,7 @@ const moveToCart = async (req, res) => {
 
     if (!productSlug) return res.status(400).json({ success: false, message: 'productSlug required' });
 
-    const product = await Product.findOne({ slug: String(productSlug).toLowerCase(), status: 'active' });
+    const product = await Product.findOne({ slug: String(productSlug).toLowerCase(), status: 'active' }).select('variants');
     if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
 
     let wishlist = null;

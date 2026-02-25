@@ -15,6 +15,10 @@ const wishlistSchema = new mongoose.Schema(
           type: mongoose.Schema.Types.ObjectId,
           ref: 'Product'
         },
+        variantId: {
+          type: mongoose.Schema.Types.ObjectId,
+          default: null
+        },
         addedAt: {
           type: Date,
           default: Date.now

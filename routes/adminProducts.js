@@ -22,9 +22,6 @@ router.post(
   uploadProductImages,
   rejectSlugSku,
   [
-    // =========================
-    // BASIC REQUIRED FIELDS
-    // =========================
     body('name')
       .trim()
       .notEmpty()
@@ -39,54 +36,17 @@ router.post(
       .notEmpty()
       .withMessage('Product category is required'),
 
-    // =========================
-    // PRICE VALIDATION
-    // =========================
-    body('price').custom((val) => {
-      if (val === undefined) {
-        throw new Error('Price is required');
-      }
+    body('variants.*.price.base')
+      .notEmpty()
+      .withMessage('Variant base price is required')
+      .isNumeric()
+      .withMessage('Variant base price must be a number'),
 
-      // If simple number
-      if (typeof val === 'number' || !isNaN(Number(val))) {
-        return true;
-      }
-
-      // If object
-      if (typeof val === 'object') {
-        if (!val.base) {
-          throw new Error('Base price is required');
-        }
-        return true;
-      }
-
-      // If stringified JSON (form-data)
-      if (typeof val === 'string') {
-        try {
-          const parsed = JSON.parse(val);
-          if (!parsed.base) {
-            throw new Error('Base price is required');
-          }
-          return true;
-        } catch (err) {
-          throw new Error('Invalid price format');
-        }
-      }
-
-      throw new Error('Invalid price format');
-    }),
-
-    // =========================
-    // STATUS VALIDATION
-    // =========================
     body('status')
       .optional()
       .isIn(['draft', 'active', 'archived'])
       .withMessage('Invalid status'),
 
-    // =========================
-    // OPTIONAL BOOLEAN FIELD
-    // =========================
     body('isFeatured')
       .optional()
       .isBoolean()
@@ -107,7 +67,6 @@ router.post(
   },
   productController.createProduct
 );
-
 
 // Bulk create (JSON body)
 router.post('/bulk-create', requireAdmin, productController.bulkCreateProducts);
