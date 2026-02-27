@@ -36,6 +36,11 @@
         // Heartbeat configuration
         heartbeatFrequencyMS: 10000,
       });
+          
+      const Product = require('../models/Product'); // adjust path if needed
+      await Product.syncIndexes();
+      console.log('[MongoDB] ✓ Product indexes synced');
+
 
       mongoConnection = connection;
       console.log('[MongoDB] ✓ Connected successfully');
