@@ -5,15 +5,21 @@ const wishlistSchema = new mongoose.Schema(
     userId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      index: true,
-      sparse: true
+      required: true,
+      unique: true, // ensure 1 wishlist per user
+      index: true
     },
 
     products: [
       {
         productId: {
           type: mongoose.Schema.Types.ObjectId,
-          ref: 'Product'
+          ref: 'Product',
+          required: true
+        },
+        variantId: {
+          type: mongoose.Schema.Types.ObjectId,
+          default: null
         },
         addedAt: {
           type: Date,
@@ -25,4 +31,5 @@ const wishlistSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+wishlistSchema.index({ userId: 1, "products.productId": 1 });
 module.exports = mongoose.model('Wishlist', wishlistSchema);

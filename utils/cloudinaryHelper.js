@@ -7,17 +7,23 @@ const { cloudinary } = require('../config/cloudinary.config');
  * @returns {Promise<{url: String, publicId: String}>}
  */
 
-const uploadToCloudinary = async (fileBuffer, folderPath = 'products') => {
+const uploadToCloudinary = async (fileBuffer, folderPath = 'products', publicIdName = null) => {
   return new Promise((resolve, reject) => {
+    const opts = {
+      folder: folderPath,
+      resource_type: 'image',
+      format: 'webp', // Force WebP storage
+      transformation: [
+        { quality: 'auto' }
+      ]
+    };
+
+    if (publicIdName) {
+      opts.public_id = publicIdName;
+    }
+
     const stream = cloudinary.uploader.upload_stream(
-      {
-        folder: folderPath,
-        resource_type: 'image',
-        format: 'webp', // Force WebP storage
-        transformation: [
-          { quality: 'auto' }
-        ]
-      },
+      opts,
       (error, result) => {
         if (error) {
           reject(new Error(`Cloudinary upload error: ${error.message}`));

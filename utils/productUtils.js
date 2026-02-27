@@ -30,7 +30,10 @@ const generateSku = async () => {
     if (attempts > 10) {
       throw new Error('Failed to generate unique SKU after 10 attempts');
     }
-  } while (await Product.exists({ sku: candidateSku }));
+  } while (
+    // Ensure SKU uniqueness across all variant SKUs
+    await Product.exists({ 'variants.sku': candidateSku })
+  );
 
   return candidateSku;
 };

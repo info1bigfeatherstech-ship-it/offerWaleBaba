@@ -1,6 +1,6 @@
 const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
-const mongoose = require('mongoose');
+
 
 // GET /wishlist?wishlistId=... OR ?userId=...
 const getWishlist = async (req, res) => {
@@ -10,9 +10,8 @@ const getWishlist = async (req, res) => {
     const wishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug price images'
-      })
-      .lean();
+        select: 'name slug images variants'
+      });
 
     if (!wishlist) {
       return res.json({
@@ -41,33 +40,34 @@ const getWishlist = async (req, res) => {
 const addToWishlist = async (req, res) => {
   try {
     const userId = req.userId;
-    const { productSlug } = req.body;
+    const { productSlug, variantId } = req.body;
 
     if (!productSlug)
       return res.status(400).json({ success: false, message: 'productSlug required' });
 
-    const product = await Product.findOne({
-      slug: productSlug.toLowerCase(),
-      status: 'active'
-    });
+    const product = await Product.findOne({ slug: productSlug.toLowerCase(), status: 'active' }).select('variants');
 
     if (!product)
       return res.status(404).json({ success: false, message: 'Product not found' });
+
+    // Determine variantId to store: provided or first active variant
+    let chosenVariantId = variantId;
+    if (!chosenVariantId) {
+      const firstActive = (product.variants || []).find(v => v.isActive);
+      chosenVariantId = firstActive ? firstActive._id : null;
+    }
 
     await Wishlist.updateOne(
       { userId },
       {
         $addToSet: {
-          products: { productId: product._id }
+          products: { productId: product._id, variantId: chosenVariantId }
         }
       },
       { upsert: true }
     );
 
-    const wishlist = await Wishlist.findOne({ userId }).populate(
-      'products.productId',
-      'name slug price images'
-    );
+    const wishlist = await Wishlist.findOne({ userId }).populate('products.productId', 'name slug images variants');
 
     return res.json({ success: true, wishlist });
 
@@ -119,33 +119,128 @@ const removeFromWishlist = async (req, res) => {
 
 // POST /wishlist/move-to-cart/:productSlug?wishlistId=...&userId=...
 // For now: remove item from wishlist and return product data (cart not implemented)
+// const moveToCart = async (req, res) => {
+//   try {
+//     const { productSlug } = req.params;
+//     const userId = req.userId;
+
+//     if (!productSlug)
+//       return res.status(400).json({ success: false, message: 'productSlug required' });
+
+//     const product = await Product.findOne({
+//       slug: productSlug.toLowerCase(),
+//       status: 'active'
+//     }).select('_id');
+
+//     if (!product)
+//       return res.status(404).json({ success: false, message: 'Product not found' });
+
+//     await Wishlist.updateOne(
+//       { userId },
+//       { $pull: { products: { productId: product._id } } }
+//     );
+
+//     return res.json({
+//       success: true,
+//       message: 'Moved to cart (placeholder)',
+//       productId: product._id
+//     });
+
+//   } catch (err) {
+//     console.error('moveToCart:', err);
+//     return res.status(500).json({ success: false, message: 'Server error' });
+//   }
+// };
 const moveToCart = async (req, res) => {
+  const userId = req.userId;
+  const { productIds = [], moveAll = false } = req.body;
+
+  if (!userId)
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+
   try {
-    const { productSlug } = req.params;
-    const { wishlistId, userId } = req.query;
+    const wishlist = await Wishlist.findOne({ userId });
 
-    if (!productSlug) return res.status(400).json({ success: false, message: 'productSlug required' });
+    if (!wishlist || !wishlist.products.length)
+      return res.status(400).json({ success: false, message: 'Wishlist empty' });
 
-    const product = await Product.findOne({ slug: String(productSlug).toLowerCase(), status: 'active' });
-    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+    // Decide which products to move
+    let itemsToMove = [];
 
-    let wishlist = null;
-    if (wishlistId && mongoose.Types.ObjectId.isValid(wishlistId)) wishlist = await Wishlist.findById(wishlistId);
-    else if (userId && mongoose.Types.ObjectId.isValid(userId)) wishlist = await Wishlist.findOne({ userId });
-    else return res.status(400).json({ success: false, message: 'Provide wishlistId or userId' });
+    if (moveAll) {
+      itemsToMove = wishlist.products;
+    } else {
+      itemsToMove = wishlist.products.filter(p =>
+        productIds.includes(String(p.productId))
+      );
+    }
 
-    if (!wishlist) return res.status(404).json({ success: false, message: 'Wishlist not found' });
+    if (!itemsToMove.length)
+      return res.status(400).json({ success: false, message: 'No items selected' });
 
-    wishlist.products = wishlist.products.filter(p => String(p.productId) !== String(product._id));
+    let cart = await Cart.findOne({ userId });
+    if (!cart) cart = new Cart({ userId, items: [] });
+
+    for (const item of itemsToMove) {
+      const product = await Product.findById(item.productId).select('variants status');
+
+      if (!product || product.status !== 'active') continue;
+
+      const variant = product.variants.find(v => v.isActive);
+      if (!variant) continue;
+
+      const existing = cart.items.find(it =>
+        String(it.productId) === String(product._id) &&
+        String(it.variantId) === String(variant._id)
+      );
+
+      if (existing) {
+        existing.quantity += 1;
+      } else {
+        cart.items.push({
+          productId: product._id,
+          variantId: variant._id,
+          quantity: 1,
+          priceSnapshot: {
+            base: variant.price?.base ?? 0,
+            sale: variant.price?.sale ?? null,
+            costPrice: variant.price?.costPrice ?? null,
+            saleStartDate: variant.price?.saleStartDate ?? null,
+            saleEndDate: variant.price?.saleEndDate ?? null
+          },
+          variantAttributesSnapshot: (variant.attributes || []).map(a => ({
+            key: a.key,
+            value: a.value
+          }))
+        });
+      }
+    }
+
+    cart.calculateTotal();
+    await cart.save();
+
+    // Remove moved items from wishlist
+    if (moveAll) {
+      wishlist.products = [];
+    } else {
+      wishlist.products = wishlist.products.filter(p =>
+        !productIds.includes(String(p.productId))
+      );
+    }
+
     await wishlist.save();
 
-    return res.json({ success: true, message: 'Moved to cart (placeholder)', product });
+    return res.json({
+      success: true,
+      message: 'Wishlist items moved to cart',
+      cart
+    });
+
   } catch (err) {
-    console.error('moveToCart:', err);
+    console.error('moveWishlistToCart:', err);
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 };
-
 
 
 const mergeWishlist = async (req, res) => {
@@ -164,7 +259,7 @@ const mergeWishlist = async (req, res) => {
     }).select('_id');
 
     if (!products.length) {
-      return res.json({ success: true }); // nothing to merge
+      return res.json({ success: true, message: "No products to merge" }); // nothing to merge
     }
 
     const productEntries = products.map(p => ({
@@ -181,7 +276,7 @@ const mergeWishlist = async (req, res) => {
       { upsert: true }
     );
 
-    return res.json({ success: true });
+    return res.json({ success: true  , message: "Wishlist merged successfully" });
 
   } catch (err) {
     console.error('mergeWishlist:', err);
@@ -242,7 +337,7 @@ const removeBulkFromWishlist = async (req, res) => {
 
 const clearWishlist = async (req, res) => {
   try {
-    const userId = req.user._id;
+    const userId = req.userId;
 
     const wishlist = await Wishlist.findOneAndUpdate(
       { userId },
