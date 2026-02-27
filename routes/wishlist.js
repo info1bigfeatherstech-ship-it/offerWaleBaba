@@ -23,4 +23,6 @@ router.delete(
   verifyToken,
   wishlistController.clearWishlist
 );
+
+
 module.exports = router;

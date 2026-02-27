@@ -32,6 +32,7 @@ const adminProductsRoutes = require('./routes/adminProducts');
 const categoriesRoutes = require('./routes/categories');
 const productsRoutes = require('./routes/products');
 const wishlistRoutes = require('./routes/wishlist');
+const cartRoutes = require('./routes/cart');
 
 // ============================================================================
 // CONFIGURATION
@@ -191,6 +192,7 @@ app.use('/api/admin/products', adminProductsRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/api/wishlist', wishlistRoutes);
+app.use('/api/cart', cartRoutes);
 
 
 // ============================================================================

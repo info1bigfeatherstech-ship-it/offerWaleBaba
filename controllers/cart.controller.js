@@ -149,6 +149,110 @@ const updateCartItem = async (req, res) => {
   }
 };
 
+
+const mergeCart = async (req, res) => {
+  const userId = req.userId;
+  const { items } = req.body;
+
+  if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  if (!Array.isArray(items)) return res.status(400).json({ success: false, message: 'Invalid items' });
+
+  try {
+    let cart = await Cart.findOne({ userId });
+    if (!cart) cart = new Cart({ userId, items: [] });
+
+    for (const incoming of items) {
+      const { productId, variantId, quantity } = incoming;
+
+      const product = await Product.findById(productId).select('variants status');
+      if (!product || product.status !== 'active') continue;
+
+      const variant = product.variants.find(v => String(v._id) === String(variantId));
+      if (!variant || !variant.isActive) continue;
+
+      const existing = cart.items.find(it =>
+        String(it.productId) === String(productId) &&
+        String(it.variantId) === String(variantId)
+      );
+
+      if (existing) {
+        existing.quantity += Number(quantity);
+      } else {
+        cart.items.push({
+          productId,
+          variantId,
+          quantity: Number(quantity),
+          priceSnapshot: {
+            base: variant.price?.base ?? 0,
+            sale: variant.price?.sale ?? null,
+            costPrice: variant.price?.costPrice ?? null,
+            saleStartDate: variant.price?.saleStartDate ?? null,
+            saleEndDate: variant.price?.saleEndDate ?? null
+          },
+          variantAttributesSnapshot: (variant.attributes || []).map(a => ({
+            key: a.key,
+            value: a.value
+          }))
+        });
+      }
+    }
+
+    cart.calculateTotal();
+    await cart.save();
+
+    return res.json({ success: true, cart });
+
+  } catch (err) {
+    console.error('mergeCart:', err);
+    return res.status(500).json({ success: false, message: 'Merge failed' });
+  }
+};
+
+
+//Remove single item from cart
+const removeCartItem = async (req, res) => {
+  const userId = req.userId;
+  const { productId, variantId } = req.body;
+
+  const cart = await Cart.findOne({ userId });
+  if (!cart) return res.status(404).json({ success: false });
+
+  cart.items = cart.items.filter(it =>
+    !(String(it.productId) === String(productId) &&
+      String(it.variantId) === String(variantId))
+  );
+
+  cart.calculateTotal();
+  await cart.save();
+
+  res.json({ success: true, cart });
+};
+
+
+//Bulk remove from cart
+const bulkRemove = async (req, res) => {
+  const userId = req.userId;
+  const { items } = req.body; 
+  // items = [{productId, variantId}]
+
+  const cart = await Cart.findOne({ userId });
+  if (!cart) return res.status(404).json({ success: false });
+
+  cart.items = cart.items.filter(it =>
+    !items.some(rem =>
+      String(rem.productId) === String(it.productId) &&
+      String(rem.variantId) === String(it.variantId)
+    )
+  );
+
+  cart.calculateTotal();
+  await cart.save();
+
+  res.json({ success: true, cart });
+};
+
+
+
 // CHECKOUT: create order, deduct stock from variants atomically
 // body: { paymentInfo? }
 const checkout = async (req, res) => {
@@ -231,4 +335,24 @@ const checkout = async (req, res) => {
   }
 };
 
-module.exports = { addToCart, updateCartItem, checkout };
+
+const getCart = async (req, res) => {
+  const userId = req.userId;
+
+  try {
+    const cart = await Cart.findOne({ userId })
+      .populate('items.productId', 'name slug images status');
+
+    if (!cart) {
+      return res.json({ success: true, cart: { items: [], totalAmount: 0 } });
+    }
+
+    return res.json({ success: true, cart });
+
+  } catch (err) {
+    console.error('getCart:', err);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+module.exports = { addToCart, updateCartItem, checkout, mergeCart, getCart, removeCartItem, bulkRemove };

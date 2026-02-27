@@ -32,7 +32,15 @@ const variantSchema = new mongoose.Schema(
         value: { type: String, trim: true }
       }
     ],
-images: [imageSchema],
+    images: {
+      type: [imageSchema],
+      validate: [
+        function (val) {
+          return !val || val.length <= 5;
+        },
+        'A variant can have at most 5 images'
+      ]
+    },
     price: {
       base: { type: Number, required: true, min: 0 },
       sale: { type: Number, default: null },
@@ -193,28 +201,30 @@ productSchema.pre('save', function () {
 // PRODUCT-LEVEL VIRTUALS
 //
 productSchema.virtual('minPrice').get(function () {
-  const active = this.variants.filter(v => v.isActive);
+  if (!Array.isArray(this.variants)) return null;
 
+  const active = this.variants.filter(v => v.isActive);
   if (!active.length) return null;
 
   const prices = active.map(v => v.finalPrice).filter(p => p != null);
-
   return prices.length ? Math.min(...prices) : null;
 });
 
 productSchema.virtual('maxPrice').get(function () {
-  const active = this.variants.filter(v => v.isActive);
+  if (!Array.isArray(this.variants)) return null;
 
+  const active = this.variants.filter(v => v.isActive);
   if (!active.length) return null;
 
   const prices = active.map(v => v.finalPrice).filter(p => p != null);
-
   return prices.length ? Math.max(...prices) : null;
 });
 
 productSchema.virtual('inStock').get(function () {
+  if (!Array.isArray(this.variants)) return false;
+
   return this.variants.some(v =>
-    v.inventory.trackInventory
+    v?.inventory?.trackInventory
       ? v.inventory.quantity > 0
       : true
   );
@@ -244,12 +254,12 @@ productSchema.virtual('fomoLabel').get(function () {
 });
 
 productSchema.virtual('maxDiscountPercentage').get(function () {
-  const active = this.variants.filter(v => v.isActive);
+  if (!Array.isArray(this.variants)) return 0;
 
+  const active = this.variants.filter(v => v.isActive);
   if (!active.length) return 0;
 
   const discounts = active.map(v => v.discountPercentage || 0);
-
   return discounts.length ? Math.max(...discounts) : 0;
 });
 
