@@ -668,6 +668,9 @@ const updateProduct = async (req, res) => {
       delete updates.price;
     }
 
+
+
+    
     // =========================
     // INVENTORY (single variant compatibility)
     // =========================
@@ -828,6 +831,67 @@ const updateProduct = async (req, res) => {
         (sum, v) => sum + (v.inventory.quantity || 0),
         0
       );
+
+      // =========================
+// HANDLE VARIANT IMAGE UPLOADS
+// =========================
+if (req.files && req.files.length > 0) {
+
+  const filesByVariant = {};
+
+  for (const file of req.files) {
+    const match = file.fieldname.match(/^variantImages_(\d+)$/);
+    if (match) {
+      const index = Number(match[1]);
+      if (!filesByVariant[index]) {
+        filesByVariant[index] = [];
+      }
+      filesByVariant[index].push(file);
+    }
+  }
+
+  for (const indexStr of Object.keys(filesByVariant)) {
+    const index = Number(indexStr);
+
+    if (!updatedProduct.variants[index]) continue;
+
+    const variant = updatedProduct.variants[index];
+
+    // max 5 images rule
+    if (variant.images.length + filesByVariant[index].length > 5) {
+      return res.status(400).json({
+        success: false,
+        message: `Variant ${index} can have maximum 5 images`
+      });
+    }
+
+    for (let i = 0; i < filesByVariant[index].length; i++) {
+      const file = filesByVariant[index][i];
+
+      const optimizedBuffer = await sharp(file.buffer)
+        .resize({ width: 1500, withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer();
+
+      const publicIdName = `${updatedProduct.slug}_${variant.sku}_${Date.now()}_${i}`;
+
+      const { url, publicId } = await uploadToCloudinary(
+        optimizedBuffer,
+        `products/${updatedProduct.slug}`,
+        publicIdName
+      );
+
+      variant.images.push({
+        url,
+        publicId,
+        altText: `${updatedProduct.name} ${variant.sku}`,
+        order: variant.images.length
+      });
+    }
+  }
+
+  // await updatedProduct.save();
+}
 
     await updatedProduct.save();
 
@@ -1296,8 +1360,8 @@ const getDraftProducts = async (req, res) => {
   }
 };
 
-// Permanently delete product (only if archived)
-// Permanently delete product (only if archived)
+
+// Hard delete (permanently delete archived product)
 const hardDeleteProduct = async (req, res) => {
   try {
     const { slug } = req.params;
@@ -1318,7 +1382,6 @@ const hardDeleteProduct = async (req, res) => {
       });
     }
 
-    // 🔒 Safety check
     if (product.status !== "archived") {
       return res.status(400).json({
         success: false,
@@ -1326,45 +1389,36 @@ const hardDeleteProduct = async (req, res) => {
       });
     }
 
-    // ==========================================
-    // 1️⃣ Collect ALL publicIds first
-    // ==========================================
     const publicIds = [];
 
-    // Product-level images
     if (Array.isArray(product.images)) {
-      for (const img of product.images) {
-        if (img.publicId) {
-          publicIds.push(img.publicId);
-        }
-      }
+      product.images.forEach(img => {
+        if (img.publicId) publicIds.push(img.publicId);
+      });
     }
 
-    // Variant-level images
     if (Array.isArray(product.variants)) {
-      for (const variant of product.variants) {
+      product.variants.forEach(variant => {
         if (Array.isArray(variant.images)) {
-          for (const img of variant.images) {
-            if (img.publicId) {
-              publicIds.push(img.publicId);
-            }
-          }
+          variant.images.forEach(img => {
+            if (img.publicId) publicIds.push(img.publicId);
+          });
         }
-      }
+      });
     }
 
-    // ==========================================
-    // 2️⃣ Delete images in parallel
-    // ==========================================
-    if (publicIds.length > 0) {
-      await Promise.all(
-        publicIds.map(id => deleteFromCloudinary(id))
-      );
-    }
+    const uniquePublicIds = [...new Set(publicIds)];
 
-    // ==========================================
-    // 3️⃣ Delete product from DB
-    // ==========================================
+    await Promise.all(
+      uniquePublicIds.map(async (id) => {
+        try {
+          await deleteFromCloudinary(id);
+        } catch (err) {
+          console.error("Cloudinary delete failed:", id);
+        }
+      })
+    );
+
     await Product.deleteOne({ _id: product._id });
 
     return res.status(200).json({
@@ -1381,7 +1435,6 @@ const hardDeleteProduct = async (req, res) => {
     });
   }
 };
-
 // Bulk hard delete (permanently delete multiple archived products)
 // Bulk hard delete (permanently delete multiple archived products)
 const bulkHardDelete = async (req, res) => {
