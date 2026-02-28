@@ -33,7 +33,22 @@ const createProduct = async (req, res) => {
         message: "Name, title and category are required"
       });
     }
+   // ✅ ADD THIS BLOCK HERE
+if (!mongoose.Types.ObjectId.isValid(category)) {
+  return res.status(400).json({
+    success: false,
+    message: "Invalid category ID format"
+  });
+}
 
+const existingCategory = await Category.findById(category);
+
+if (!existingCategory) {
+  return res.status(400).json({
+    success: false,
+    message: "Selected category does not exist. Please select a valid category."
+  });
+}
     // Parse variants JSON (important for form-data)
     let variantsInput = variantsRaw;
     if (typeof variantsRaw === "string") {
@@ -191,7 +206,7 @@ try {
   slug,
   title,
   description: description || "",
-  category,
+  category:existingCategory._id,
   brand: brand || "Generic",
   variants,
   priceRange: {
@@ -218,7 +233,8 @@ soldInfo: parsedSoldInfo || { enabled: false, count: 0 },
     return res.status(201).json({
       success: true,
       message: "Product created successfully",
-      product
+      product,
+      "categoryDetails": existingCategory.name
     });
 
   } catch (error) {

@@ -14,6 +14,7 @@ const imageSchema = new mongoose.Schema(
   { _id: false }
 );
 
+
 //
 // VARIANT SUB-SCHEMA (Purchasable Unit)
 //
