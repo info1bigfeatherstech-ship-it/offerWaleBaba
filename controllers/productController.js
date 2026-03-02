@@ -7,6 +7,8 @@ const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinar
 const sharp = require('sharp');
 const fs = require('fs');
 const csv = require('csv-parser');
+const unzipper = require('unzipper');
+const path = require('path');
 
 // Create new product
 
@@ -447,165 +449,472 @@ const bulkCreateProducts = async (req, res) => {
 
 
 //Bulk create from CSV (for testing)
+// const importProductsFromCSV = async (req, res) => {
+//   try {
+//     if (!req.file) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'CSV file is required'
+//       });
+//     }
+
+//     const rows = [];
+//     const failed = [];
+//     const validProducts = [];
+
+//     fs.createReadStream(req.file.path)
+//       .pipe(csv())
+//       .on('data', (row) => rows.push(row))
+//       .on('end', async () => {
+//         try {
+
+//           for (let row of rows) {
+//             try {
+
+//               // =========================
+//               // REQUIRED FIELDS
+//               // =========================
+//               if (!row.name || !row.title || !row.category || !row.basePrice) {
+//                 throw new Error('Missing required fields');
+//               }
+
+//               // =========================
+//               // CATEGORY
+//               // =========================
+//               const categoryName = row.category.trim();
+//               const categorySlug = slugify(categoryName, { lower: true, strict: true });
+
+//               let category = await Category.findOne({
+//                 $or: [
+//                   { slug: categorySlug },
+//                   { name: new RegExp(`^${categoryName}$`, 'i') }
+//                 ]
+//               });
+
+//               if (!category) {
+//                 category = await Category.create({
+//                   name: categoryName,
+//                   slug: categorySlug,
+//                   status: 'active',
+//                   level: 0
+//                 });
+//               }
+
+//               // =========================
+//               // SLUG
+//               // =========================
+//               const slug = await generateSlug(row.name.trim());
+
+//               const sku =
+//                 'SKU-' +
+//                 Math.floor(100000 + Math.random() * 900000);
+
+//               // =========================
+//               // PRICE
+//               // =========================
+//               const basePrice = Number(row.basePrice);
+//               const salePrice =
+//                 row.salePrice && row.salePrice !== ''
+//                   ? Number(row.salePrice)
+//                   : null;
+
+//               if (salePrice !== null && salePrice >= basePrice) {
+//                 throw new Error('Sale price must be less than base price');
+//               }
+
+//               const priceObj = {
+//                 base: basePrice,
+//                 sale: salePrice,
+//                 costPrice: null,
+//                 saleStartDate: null,
+//                 saleEndDate: null
+//               };
+
+//               // =========================
+//               // INVENTORY
+//               // =========================
+//               const inventoryObj = {
+//                 quantity: row.quantity ? Number(row.quantity) : 0,
+//                 trackInventory: true,
+//                 lowStockThreshold: 5
+//               };
+
+//               // =========================
+//               // VARIANT ATTRIBUTES (ADD HERE)
+//               // =========================
+//               let variantAttributes = [];
+
+//               if (row.variantAttributes) {
+//                 variantAttributes = row.variantAttributes
+//                   .split('|')
+//                   .map(pair => {
+//                     const [key, value] = pair.split(':');
+//                     return {
+//                       key: key.trim(),
+//                       value: value.trim()
+//                     };
+//                   });
+//               }
+
+//               // =========================
+//               // IMAGES
+//               // =========================
+//               let imagesArr = [];
+
+//               if (row.images) {
+//                 const imageUrls = row.images.split('|');
+
+//                 imagesArr = imageUrls.map((url, index) => ({
+//                   url: url.trim(),
+//                   publicId: `imported-${Date.now()}-${index}`,
+//                   altText: row.name,
+//                   order: index
+//                 }));
+//               }
+
+//               // =========================
+//               // STATUS FROM CSV
+//               // =========================
+//               const allowedStatus = ['draft', 'active', 'archived'];
+
+//               const productStatus = allowedStatus.includes(
+//                 row.status?.toLowerCase()
+//               )
+//                 ? row.status.toLowerCase()
+//                 : 'draft';
+
+//               // =========================
+//               // FINAL PRODUCT OBJECT
+//               // =========================
+//               validProducts.push({
+//                 name: row.name,
+//                 slug,
+//                 title: row.title,
+//                 description: row.description || '',
+//                 category: category._id,
+//                 brand: row.brand || 'Generic',
+
+//                 variants: [
+//                   {
+//                     sku,
+//                     attributes: variantAttributes,
+//                     images: imagesArr,
+//                     price: priceObj,
+//                     inventory: inventoryObj,
+//                     isActive: true
+//                   }
+//                 ],
+
+//                 soldInfo: { enabled: false, count: 0 },
+//                 fomo: {
+//                   enabled: false,
+//                   type: 'viewing_now',
+//                   viewingNow: 0,
+//                   productLeft: 0,
+//                   customMessage: ''
+//                 },
+
+//                 status: productStatus
+//               });
+
+//             } catch (err) {
+//               failed.push({
+//                 product: row.name || 'Unknown',
+//                 error: err.message
+//               });
+//             }
+//           }
+
+//           const inserted = await Product.insertMany(validProducts);
+
+//           fs.unlinkSync(req.file.path);
+
+//           return res.status(200).json({
+//             success: true,
+//             totalRows: rows.length,
+//             insertedCount: inserted.length,
+//             failedCount: failed.length,
+//             failed
+//           });
+
+//         } catch (innerError) {
+//           fs.unlinkSync(req.file.path);
+//           return res.status(500).json({
+//             success: false,
+//             message: 'Processing failed',
+//             error: innerError.message
+//           });
+//         }
+//       });
+
+//   } catch (error) {
+//     return res.status(500).json({
+//       success: false,
+//       message: 'CSV import failed',
+//       error: error.message
+//     });
+//   }
+// };
+
+
+// Bulk Import Controller
 const importProductsFromCSV = async (req, res) => {
   try {
-
-    if (!req.file) {
+    if (!req.files || !req.files.csv) {
       return res.status(400).json({
         success: false,
-        message: 'CSV file is required'
+        message: "CSV file is required",
       });
     }
+
+    const csvFile = req.files.csv[0];
+    const zipFile = req.files.zip ? req.files.zip[0] : null;
 
     const rows = [];
     const failed = [];
     const validProducts = [];
 
-    fs.createReadStream(req.file.path)
+    // ==============================
+    // STEP 1: EXTRACT ZIP (if exists)
+    // ==============================
+    let extractedPath = null;
+    let imageMap = {};
+
+    if (zipFile) {
+      extractedPath = path.join("uploads", `extract-${Date.now()}`);
+      fs.mkdirSync(extractedPath, { recursive: true });
+
+      await fs
+        .createReadStream(zipFile.path)
+        .pipe(unzipper.Extract({ path: extractedPath }))
+        .promise();
+
+      const files = fs.readdirSync(extractedPath);
+
+      files.forEach((file) => {
+        imageMap[file.toLowerCase()] = path.join(extractedPath, file);
+      });
+    }
+
+    // ==============================
+    // STEP 2: READ CSV
+    // ==============================
+    fs.createReadStream(csvFile.path)
       .pipe(csv())
-      .on('data', (row) => {
-        rows.push(row);
-      })
-      .on('end', async () => {
+      .on("data", (row) => rows.push(row))
+      .on("end", async () => {
+        try {
+          for (let row of rows) {
+            try {
+              // ======================
+              // REQUIRED FIELDS
+              // ======================
+              if (!row.name || !row.title || !row.category || !row.basePrice) {
+                throw new Error("Missing required fields");
+              }
 
-        for (let row of rows) {
-          try {
+              // ======================
+              // BASE SLUG (for image matching)
+              // ======================
+              const baseSlug = slugify(row.name.trim(), {
+                lower: true,
+                strict: true,
+              });
 
-            if (!row.name || !row.title || !row.category) {
-              throw new Error('Missing required fields');
-            }
+              // ======================
+              // UNIQUE SLUG (for DB)
+              // ======================
+              const slug = await generateSlug(row.name.trim());
 
-            // =========================
-            // CATEGORY RESOLVE / AUTO CREATE
-            // =========================
-            let categoryName = row.category.trim();
-            let categorySlug = slugify(categoryName, { lower: true, strict: true });
+              // ======================
+              // CATEGORY
+              // ======================
+              const categoryName = row.category.trim();
+              const categorySlug = slugify(categoryName, {
+                lower: true,
+                strict: true,
+              });
 
-            let category = await Category.findOne({
-              $or: [
-                { slug: categorySlug },
-                { name: new RegExp(`^${categoryName}$`, 'i') }
-              ]
-            });
-
-            if (!category) {
-              category = await Category.create({
-                name: categoryName,
+              let category = await Category.findOne({
                 slug: categorySlug,
-                status: 'active',
-                level: 0
+              });
+
+              if (!category) {
+                category = await Category.create({
+                  name: categoryName,
+                  slug: categorySlug,
+                  status: "active",
+                  level: 0,
+                });
+              }
+
+              // ======================
+              // STATUS FIX (trim + lowercase)
+              // ======================
+              const status = row.status
+                ? row.status.trim().toLowerCase()
+                : "draft";
+
+              // ======================
+              // PRICE
+              // ======================
+              const basePrice = Number(row.basePrice);
+              const salePrice =
+                row.salePrice && row.salePrice !== ""
+                  ? Number(row.salePrice)
+                  : null;
+
+              const priceObj = {
+                base: basePrice,
+                sale: salePrice,
+              };
+
+              // ======================
+              // INVENTORY
+              // ======================
+              const inventoryObj = {
+                quantity: row.quantity ? Number(row.quantity) : 0,
+                trackInventory: true,
+                lowStockThreshold: 5,
+              };
+
+              // ======================
+              // VARIANT ATTRIBUTES
+              // Format: Color:Blue|Size:M
+              // ======================
+              let variantAttributes = [];
+
+              if (row.variantAttributes) {
+                variantAttributes = row.variantAttributes
+                  .split("|")
+                  .map((pair) => {
+                    const [key, value] = pair.split(":");
+                    return {
+                      key: key.trim(),
+                      value: value.trim(),
+                    };
+                  });
+              }
+
+              // ======================
+              // BUILD VARIANT KEY
+              // ======================
+              let variantKey = baseSlug;
+
+              variantAttributes.forEach((attr) => {
+                variantKey +=
+                  "-" +
+                  slugify(attr.value, {
+                    lower: true,
+                    strict: true,
+                  });
+              });
+
+              // ======================
+              // IMAGE MATCHING
+              // ======================
+              let imagesArr = [];
+
+              if (imageMap) {
+                for (const fileName in imageMap) {
+                  if (fileName.includes(variantKey)) {
+                    const uploadResult = await cloudinary.uploader.upload(
+                      imageMap[fileName]
+                    );
+
+                    imagesArr.push({
+                      url: uploadResult.secure_url,
+                      publicId: uploadResult.public_id,
+                      altText: row.name,
+                      order: imagesArr.length,
+                    });
+                  }
+                }
+              }
+
+              // ======================
+              // SKU
+              // ======================
+              const sku =
+                "SKU-" + Math.floor(100000 + Math.random() * 900000);
+
+              // ======================
+              // FINAL PRODUCT
+              // ======================
+              validProducts.push({
+                name: row.name.trim(),
+                slug,
+                title: row.title.trim(),
+                description: row.description || "",
+                category: category._id,
+                brand: row.brand || "Generic",
+                status,
+                isFeatured: false,
+
+                variants: [
+                  {
+                    sku,
+                    attributes: variantAttributes,
+                    images: imagesArr,
+                    price: priceObj,
+                    inventory: inventoryObj,
+                    isActive: true,
+                  },
+                ],
+
+                soldInfo: { enabled: false, count: 0 },
+                fomo: {
+                  enabled: false,
+                  type: "viewing_now",
+                  viewingNow: 0,
+                  productLeft: 0,
+                  customMessage: "",
+                },
+              });
+            } catch (err) {
+              failed.push({
+                product: row.name || "Unknown",
+                error: err.message,
               });
             }
-
-            // =========================
-            // SLUG + SKU
-            // =========================
-            const slug = slugify(row.name, { lower: true, strict: true }) + '-' + Date.now();
-            const sku = 'SKU-' + Math.floor(Math.random() * 1000000);
-
-            // =========================
-            // PRICE
-            // =========================
-            const basePrice = Number(row.basePrice || 0);
-            const salePrice = row.salePrice ? Number(row.salePrice) : null;
-
-            if (salePrice && salePrice >= basePrice) {
-              throw new Error('Invalid sale price');
-            }
-
-            const priceObj = {
-              base: basePrice,
-              sale: salePrice,
-              costPrice: null,
-              saleStartDate: null,
-              saleEndDate: null
-            };
-
-            // =========================
-            // INVENTORY
-            // =========================
-            const inventoryObj = {
-              quantity: Number(row.quantity || 0),
-              trackInventory: true,
-              lowStockThreshold: 5
-            };
-
-            // =========================
-            // IMAGES (Comma Separated URLs)
-            // =========================
-            let imagesArr = [];
-
-            if (row.images) {
-              const imageUrls = row.images.split(',');
-
-              imagesArr = imageUrls.map((url, index) => ({
-                url: url.trim(),
-                publicId: null,
-                altText: row.name,
-                order: index
-              }));
-            }
-
-            // =========================
-            // PRODUCT OBJECT
-            // =========================
-            validProducts.push({
-              name: row.name,
-              slug,
-              sku,
-              title: row.title,
-              description: row.description || '',
-              category: category._id,
-              brand: row.brand || 'Generic',
-              price: priceObj,
-              inventory: inventoryObj,
-              images: imagesArr,
-              attributes: [],
-              soldInfo: { enabled: false, count: 0 },
-              fomo: {
-                enabled: false,
-                type: 'viewing_now',
-                viewingNow: 0,
-                productLeft: 0,
-                customMessage: ''
-              },
-              status: 'draft'
-            });
-
-          } catch (err) {
-            failed.push({
-              product: row.name || 'Unknown',
-              error: err.message
-            });
           }
+
+          // ======================
+          // BULK INSERT
+          // ======================
+          const inserted = await Product.insertMany(validProducts);
+
+          // Cleanup
+          fs.unlinkSync(csvFile.path);
+          if (zipFile) fs.unlinkSync(zipFile.path);
+          if (extractedPath)
+            fs.rmSync(extractedPath, { recursive: true, force: true });
+
+          return res.status(200).json({
+            success: true,
+            totalRows: rows.length,
+            insertedCount: inserted.length,
+            failedCount: failed.length,
+            failed,
+          });
+        } catch (innerError) {
+          return res.status(500).json({
+            success: false,
+            message: "Processing failed",
+            error: innerError.message,
+          });
         }
-
-        // =========================
-        // BULK INSERT
-        // =========================
-        const inserted = await Product.insertMany(validProducts);
-
-        fs.unlinkSync(req.file.path); // delete uploaded file
-
-        return res.status(200).json({
-          success: true,
-          totalRows: rows.length,
-          insertedCount: inserted.length,
-          failedCount: failed.length,
-          failed
-        });
-
       });
-
   } catch (error) {
-    console.error('CSV import error:', error);
     return res.status(500).json({
       success: false,
-      message: 'CSV import failed',
-      error: error.message
+      message: "CSV import failed",
+      error: error.message,
     });
   }
 };
+
+module.exports = { importProductsFromCSV };
 
 
 
@@ -1157,7 +1466,6 @@ const getLowStockProducts = async (req, res) => {
 
     const [products, total] = await Promise.all([
       Product.find(query)
-        .select("name slug variants price images")
         .sort({ "variants.inventory.quantity": 1 })
         .skip(skip)
         .limit(limitNumber),
@@ -1186,7 +1494,7 @@ const getLowStockProducts = async (req, res) => {
 
 //get all the products
 // Get all active products (paginated)
-const getAllProducts = async (req, res) => {
+const getAllActiveProducts = async (req, res) => {
   try {
     let { page = 1, limit = 20 } = req.query;
 
@@ -1198,7 +1506,6 @@ const getAllProducts = async (req, res) => {
 
     const [products, total] = await Promise.all([
       Product.find(query)
-        .select("name slug price images category createdAt")
         .populate("category", "name")
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -1245,9 +1552,6 @@ const getProductBySlug = async (req, res) => {
       slug,
       status: "active"
     })
-      .select(
-        "name slug description price images category variants inventory soldInfo fomo createdAt"
-      )
       .populate("category", "name")
       .lean();
 
@@ -1287,7 +1591,6 @@ const getArchivedProducts = async (req, res) => {
 
     const [products, total] = await Promise.all([
       Product.find(query)
-        .select("name slug price images category archivedAt createdAt")
         .populate("category", "name")
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -1331,7 +1634,6 @@ const getDraftProducts = async (req, res) => {
 
     const [products, total] = await Promise.all([
       Product.find(query)
-        .select("name slug price images category createdAt")
         .populate("category", "name")
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -1526,7 +1828,48 @@ const bulkHardDelete = async (req, res) => {
   }
 };
 
+//get All prodcuts or admin with limits and q 
 
+const getAllProductsAdmin = async (req, res) => {
+  try {
+    let { page = 1, limit = 20, status } = req.query;
+
+    page = Number(page);
+    limit = Number(limit);
+
+    const skip = (page - 1) * limit;
+
+    let query = {};
+
+    // Optional status filter
+    if (status) {
+      query.status = status.trim().toLowerCase();
+    }
+
+    const products = await Product.find(query)
+      .sort({ createdAt: -1 }) // latest first
+      .skip(skip)
+      .limit(limit);
+
+    const totalProducts = await Product.countDocuments(query);
+
+    return res.status(200).json({
+      success: true,
+      products,
+      totalProducts,
+      totalPages: Math.ceil(totalProducts / limit),
+      currentPage: page,
+    });
+
+  } catch (error) {
+    console.error("Get all products error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching products",
+      error: error.message
+    });
+  }
+};
 
 module.exports = {
   createProduct,
@@ -1539,9 +1882,10 @@ module.exports = {
   getLowStockProducts,
   getArchivedProducts,
   getDraftProducts,
-  getAllProducts,
+  getAllActiveProducts,
   getProductBySlug , 
    bulkCreateProducts ,
     bulkRestore  , 
-    importProductsFromCSV 
+    importProductsFromCSV ,
+    getAllProductsAdmin
 };

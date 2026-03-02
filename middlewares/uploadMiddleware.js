@@ -52,19 +52,30 @@ const upload = multer({
   limits: { fileSize: 8 * 1024 * 1024 } // 8MB max
 });
 
-const uploadCSV = multer({
+const uploadCSVZip = multer({
   dest: 'uploads/',
   fileFilter: (req, file, cb) => {
-    if (file.mimetype !== 'text/csv') {
-      cb(new Error('Only CSV files allowed'), false);
+    const allowedTypes = [
+      'text/csv',
+      'application/zip',
+      'application/x-zip-compressed'
+    ];
+
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV and ZIP files allowed'), false);
     }
-    cb(null, true);
   }
 });
 
 const uploadProductImages = upload.any();
 const uploadSingleImage = upload.single('image');
-const uploadCSVFile = uploadCSV.single('csvFile');
+// const uploadCSVFile = uploadCSV.single('csvFile');
+const uploadCSVZipFiles = uploadCSVZip.fields([
+  { name: 'csv', maxCount: 1 },
+  { name: 'zip', maxCount: 1 }
+]);
 
 
-module.exports = { uploadProductImages, uploadSingleImage, uploadCSVFile };
+module.exports = { uploadProductImages, uploadSingleImage, uploadCSVZipFiles };

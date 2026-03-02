@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const { requireAdmin } = require('../middlewares/isAdmin');
-const { uploadProductImages, uploadCSVFile } = require('../middlewares/uploadMiddleware');
+const { uploadProductImages, uploadCSVZipFiles } = require('../middlewares/uploadMiddleware');
 const productController = require('../controllers/productController');
 
 // Validation middleware to check for rejected fields
@@ -72,7 +72,7 @@ router.post(
 router.post('/bulk-create', requireAdmin, productController.bulkCreateProducts);
 
 // Import from CSV
-router.post('/import-csv', requireAdmin, uploadCSVFile, productController.importProductsFromCSV);
+router.post('/import-csv', requireAdmin, uploadCSVZipFiles, productController.importProductsFromCSV);
 
 
 // Get archived products
@@ -115,9 +115,10 @@ router.delete('/:slug', requireAdmin, productController.deleteProduct);
 router.get('/:slug', requireAdmin, productController.getProductBySlug);
 
 // Get all active products
-router.get('/', requireAdmin, productController.getAllProducts);
+router.get('/', requireAdmin, productController.getAllActiveProducts);
 
-
+//with limit and page query
+router.get('/all', requireAdmin, productController.getAllProductsAdmin);
 
 
 module.exports = router;
