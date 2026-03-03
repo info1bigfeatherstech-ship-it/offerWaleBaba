@@ -7,6 +7,7 @@ const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinar
 const sharp = require('sharp');
 const fs = require('fs');
 const csv = require('csv-parser');
+const { log } = require('console');
 
 // Create new product
 
@@ -1130,18 +1131,16 @@ const getAllProducts = async (req, res) => {
     const limitNumber = Math.min(100, Number(limit));
     const skip = (pageNumber - 1) * limitNumber;
 
-    const query = { status: "active" };
+    // const query = { status: "active" };
 
     const [products, total] = await Promise.all([
-      Product.find(query)
-        .select("name slug price images category createdAt")
-        .populate("category", "name")
+      Product.find()
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNumber)
         .lean(),
 
-      Product.countDocuments(query)
+      // Product.countDocuments(query)
     ]);
 
     return res.status(200).json({
@@ -1164,6 +1163,49 @@ const getAllProducts = async (req, res) => {
 };
 
 
+// get all ADMIN PRODUCTS (including draft and archived, paginated)
+// const getAdminProducts = async (req, res) => {
+//   try {
+//     // let { page = 1, limit = 20 } = req.query; 
+
+//     // const pageNumber = Math.max(1, Number(page));
+//     // const limitNumber = Math.min(100, Number(limit));
+//     // const skip = (pageNumber - 1) * limitNumber;
+
+//     // const query = { status: { $in: ["draft", "active", "archived"] } };
+
+//     // const [products, total] = await Promise.all([
+//     //   Product.find()
+//     //     .select("name slug price images category status createdAt")
+//     //     .populate("category", "name")
+//     //     .sort({ createdAt: -1 })
+//     //     .skip(skip)
+//     //     .limit(limitNumber)
+//     //     .lean(),
+
+//     //   Product.countDocuments()
+//     // ]);
+
+//     const products = await Product.find()
+//       // .lean();
+
+//     return res.status(200).json({
+//       success: true,
+//       products
+//     });
+
+//   } catch (error) {
+//     console.error("Get admin products error:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Error fetching admin products",
+//       error: error.message
+//     });
+//   }
+// };
+
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
 //get single product by slug
 // Get single product by slug
 const getProductBySlug = async (req, res) => {
@@ -1182,7 +1224,7 @@ const getProductBySlug = async (req, res) => {
       status: "active"
     })
       .select(
-        "name slug description price images category variants inventory soldInfo fomo createdAt"
+        "name slug description price images category sku variants inventory soldInfo fomo createdAt"
       )
       .populate("category", "name")
       .lean();
@@ -1474,6 +1516,29 @@ const bulkHardDelete = async (req, res) => {
 };
 
 
+//get all active + draft + archived products (paginated) for admin view
+const getAdminProducts = async (req, res) => {
+  try {
+        const products = await Product.find()
+        console.log(products)
+        return res.status(200).json({
+          success: true,
+          products
+        });
+  } catch (error) {
+    console.error("Get admin products error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching admin products",
+      error: error.message
+    });
+  }
+}
+
+
+
+
+
 
 module.exports = {
   createProduct,
@@ -1490,5 +1555,6 @@ module.exports = {
   getProductBySlug , 
    bulkCreateProducts ,
     bulkRestore  , 
-    importProductsFromCSV 
+    importProductsFromCSV,
+    getAdminProducts
 };
