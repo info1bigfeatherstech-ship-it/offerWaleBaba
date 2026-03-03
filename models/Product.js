@@ -26,7 +26,11 @@ const variantSchema = new mongoose.Schema(
       uppercase: true,
       trim: true
     },
-
+  // ✅ ADDED THIS
+    barcode: {
+      type: Number,
+      required: true
+    },
     attributes: [
       {
         key: { type: String, trim: true },
@@ -275,5 +279,5 @@ productSchema.index({ category: 1, status: 1 });
 productSchema.index({ isFeatured: 1 });
 productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
 productSchema.index({ createdAt: -1 });
-
+productSchema.index({'variants.barcode': 1}, { unique: true, sparse: true });
 module.exports = mongoose.model('Product', productSchema);

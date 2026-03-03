@@ -11,23 +11,23 @@ const unzipper = require('unzipper');
 const path = require('path');
 
 // Create new product
-
+// Create new product
 const createProduct = async (req, res) => {
   try {
-   const {
-  name,
-  title,
-  description,
-  category,
-  brand,
-  status,
-  isFeatured,
-  soldInfo,
-  fomo,
-  shipping,
-  attributes,
-  variants: variantsRaw
-} = req.body;
+    const {
+      name,
+      title,
+      description,
+      category,
+      brand,
+      status,
+      isFeatured,
+      soldInfo,
+      fomo,
+      shipping,
+      attributes,
+      variants: variantsRaw
+    } = req.body;
 
     if (!name || !title || !category) {
       return res.status(400).json({
@@ -35,23 +35,22 @@ const createProduct = async (req, res) => {
         message: "Name, title and category are required"
       });
     }
-   // ✅ ADD THIS BLOCK HERE
-if (!mongoose.Types.ObjectId.isValid(category)) {
-  return res.status(400).json({
-    success: false,
-    message: "Invalid category ID format"
-  });
-}
 
-const existingCategory = await Category.findById(category);
+    if (!mongoose.Types.ObjectId.isValid(category)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid category ID format"
+      });
+    }
 
-if (!existingCategory) {
-  return res.status(400).json({
-    success: false,
-    message: "Selected category does not exist. Please select a valid category."
-  });
-}
-    // Parse variants JSON (important for form-data)
+    const existingCategory = await Category.findById(category);
+    if (!existingCategory) {
+      return res.status(400).json({
+        success: false,
+        message: "Selected category does not exist."
+      });
+    }
+
     let variantsInput = variantsRaw;
     if (typeof variantsRaw === "string") {
       variantsInput = JSON.parse(variantsRaw);
@@ -65,29 +64,26 @@ if (!existingCategory) {
     }
 
     const slug = await generateSlug(name);
-
     const variants = [];
-
-    // Group uploaded files by variant index
     const filesByVariant = {};
 
+    // =============================
+    // Group variant images
+    // =============================
     if (req.files && req.files.length > 0) {
       for (const file of req.files) {
         const match = file.fieldname.match(/^variantImages_(\d+)$/);
         if (match) {
           const index = Number(match[1]);
-          if (!filesByVariant[index]) {
-            filesByVariant[index] = [];
-          }
+          if (!filesByVariant[index]) filesByVariant[index] = [];
           filesByVariant[index].push(file);
         }
       }
     }
 
-    // Validate max images per variant (5)
     for (const idxStr of Object.keys(filesByVariant)) {
       const idx = Number(idxStr);
-      if (filesByVariant[idx] && filesByVariant[idx].length > 5) {
+      if (filesByVariant[idx].length > 5) {
         return res.status(400).json({
           success: false,
           message: `Variant ${idx} can have at most 5 images`
@@ -95,9 +91,42 @@ if (!existingCategory) {
       }
     }
 
-    // Process each variant
+    // =============================
+    // PROCESS EACH VARIANT
+    // =============================
     for (let i = 0; i < variantsInput.length; i++) {
       const v = variantsInput[i];
+
+      // 🔒 BARCODE REQUIRED
+      if (!v.barcode) {
+        return res.status(400).json({
+          success: false,
+          message: `Barcode is required for variant ${i}`
+        });
+      }
+
+      const barcodeNumber = Number(v.barcode);
+      if (isNaN(barcodeNumber)) {
+        return res.status(400).json({
+          success: false,
+          message: `Barcode must be a valid number for variant ${i}`
+        });
+      }
+
+      // 🔒 CHECK DUPLICATE BARCODE IN DB
+      const existingBarcode = await Product.findOne({
+        "variants.barcode": barcodeNumber
+      });
+
+      if (existingBarcode) {
+        return res.status(400).json({
+          success: false,
+          message: `Barcode ${barcodeNumber} already exists`
+        });
+      }
+
+      // 🔥 AUTO GENERATE SKU
+      const skuVal = await generateSku();
 
       const priceObj = {
         base: Number(v.price?.base) || 0,
@@ -117,13 +146,11 @@ if (!existingCategory) {
         lowStockThreshold: v.inventory?.lowStockThreshold || 5
       };
 
-      const skuVal = v.sku
-        ? String(v.sku).toUpperCase()
-        : `${slug}-VAR${i + 1}`.toUpperCase();
-
-      // Upload images for this variant
       const variantImages = [];
 
+      // =============================
+      // Upload Variant Images
+      // =============================
       if (filesByVariant[i]) {
         for (let imgIndex = 0; imgIndex < filesByVariant[i].length; imgIndex++) {
           const file = filesByVariant[i][imgIndex];
@@ -151,7 +178,8 @@ if (!existingCategory) {
       }
 
       variants.push({
-        sku: skuVal,
+        sku: skuVal, // ✅ FROM UTILS
+        barcode: barcodeNumber,
         attributes: Array.isArray(v.attributes)
           ? v.attributes.map(a => ({ key: a.key, value: a.value }))
           : [],
@@ -162,7 +190,9 @@ if (!existingCategory) {
       });
     }
 
-    // Calculate price range
+    // =============================
+    // Price Range & Stock
+    // =============================
     const effectivePrices = variants.map(v =>
       v.price.sale != null ? v.price.sale : v.price.base
     );
@@ -175,60 +205,46 @@ if (!existingCategory) {
       0
     );
 
+    // =============================
+    // Parse Optional JSON Fields
+    // =============================
+    let parsedSoldInfo = soldInfo;
+    let parsedFomo = fomo;
+    let parsedShipping = shipping;
+    let parsedAttributes = attributes;
 
-let parsedSoldInfo = soldInfo;
-let parsedFomo = fomo;
-let parsedShipping = shipping;
-let parsedAttributes = attributes;
-
-
-try {
-  if (typeof soldInfo === "string") {
-    parsedSoldInfo = JSON.parse(soldInfo);
-  }
-  if (typeof fomo === "string") {
-    parsedFomo = JSON.parse(fomo);
-  }
-  if (typeof shipping === "string") {
-    parsedShipping = JSON.parse(shipping);
-  }
-  if (typeof attributes === "string") {
-    parsedAttributes = JSON.parse(attributes);
-  }
-} catch (err) {
-  return res.status(400).json({
-    success: false,
-    message: "Invalid JSON format in request body"
-  });
-}
-
+    try {
+      if (typeof soldInfo === "string") parsedSoldInfo = JSON.parse(soldInfo);
+      if (typeof fomo === "string") parsedFomo = JSON.parse(fomo);
+      if (typeof shipping === "string") parsedShipping = JSON.parse(shipping);
+      if (typeof attributes === "string") parsedAttributes = JSON.parse(attributes);
+    } catch {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid JSON format in request body"
+      });
+    }
 
     const product = new Product({
-  name,
-  slug,
-  title,
-  description: description || "",
-  category:existingCategory._id,
-  brand: brand || "Generic",
-  variants,
-  priceRange: {
-    min: minPrice,
-    max: maxPrice
-  },
-  totalStock,
-
-  // ADD THESE 👇
-  isFeatured: isFeatured || false,
-soldInfo: parsedSoldInfo || { enabled: false, count: 0 },
-  fomo: parsedFomo || { enabled: false, type: "viewing_now", viewingNow: 0 },
-  shipping: parsedShipping || {
-    weight: 0,
-    dimensions: { length: 0, width: 0, height: 0 }
-  },
-  attributes: parsedAttributes || [],
-
-  status: status || "draft"
-});
+      name,
+      slug,
+      title,
+      description: description || "",
+      category: existingCategory._id,
+      brand: brand || "Generic",
+      variants,
+      priceRange: { min: minPrice, max: maxPrice },
+      totalStock,
+      isFeatured: isFeatured || false,
+      soldInfo: parsedSoldInfo || { enabled: false, count: 0 },
+      fomo: parsedFomo || { enabled: false, type: "viewing_now", viewingNow: 0 },
+      shipping: parsedShipping || {
+        weight: 0,
+        dimensions: { length: 0, width: 0, height: 0 }
+      },
+      attributes: parsedAttributes || [],
+      status: status || "draft"
+    });
 
     await product.save();
 
@@ -236,7 +252,7 @@ soldInfo: parsedSoldInfo || { enabled: false, count: 0 },
       success: true,
       message: "Product created successfully",
       product,
-      "categoryDetails": existingCategory.name
+      categoryDetails: existingCategory.name
     });
 
   } catch (error) {
@@ -919,6 +935,8 @@ module.exports = { importProductsFromCSV };
 
 
 //Update existing product
+// Update existing product
+// Update existing product
 const updateProduct = async (req, res) => {
   try {
     const slug = req.params.slug;
@@ -932,15 +950,9 @@ const updateProduct = async (req, res) => {
     }
 
     const updates = { ...req.body };
-
     delete updates.slug;
     delete updates.sku;
-
-    const singleVariant =
-      existingProduct.variants &&
-      existingProduct.variants.length === 1
-        ? existingProduct.variants[0]
-        : null;
+    delete updates.variants; // safety
 
     const parseIfString = (value, fallback) => {
       if (typeof value === "string") {
@@ -953,97 +965,155 @@ const updateProduct = async (req, res) => {
       return value;
     };
 
-    // =========================
-    // PRICE (single variant compatibility)
-    // =========================
-    if (updates.price && singleVariant) {
-      const parsedPrice = parseIfString(updates.price, {});
-      const mergedPrice = {
-        ...singleVariant.price.toObject(),
-        ...parsedPrice
-      };
+    // =====================================================
+    // ✅ VARIANT UPDATE BY BARCODE
+    // =====================================================
+    if (updates.barcode) {
 
-      if (
-        mergedPrice.sale &&
-        mergedPrice.sale >= mergedPrice.base
-      ) {
+      const barcodeNumber = Number(updates.barcode);
+      if (isNaN(barcodeNumber)) {
         return res.status(400).json({
           success: false,
-          message: "Sale price must be less than base price"
+          message: "Invalid barcode"
         });
       }
 
-      updates["variants.0.price"] = mergedPrice;
-      delete updates.price;
-    }
-
-
-
-    
-    // =========================
-    // INVENTORY (single variant compatibility)
-    // =========================
-    if (updates.inventory && singleVariant) {
-      const parsedInventory = parseIfString(
-        updates.inventory,
-        {}
+      const variantIndex = existingProduct.variants.findIndex(
+        v => v.barcode === barcodeNumber
       );
 
-      const mergedInventory = {
-        ...singleVariant.inventory.toObject(),
-        ...parsedInventory
+      if (variantIndex === -1) {
+        return res.status(404).json({
+          success: false,
+          message: "Variant not found for given barcode"
+        });
+      }
+
+      const existingVariant = existingProduct.variants[variantIndex];
+      const updateFields = {};
+
+      // =========================
+      // PRICE UPDATE (SAFE)
+      // =========================
+      if (updates.price) {
+        const parsedPrice = parseIfString(updates.price, {});
+
+        const base =
+          parsedPrice.base !== undefined
+            ? Number(parsedPrice.base)
+            : existingVariant.price.base;
+
+        const sale =
+          parsedPrice.sale !== undefined
+            ? parsedPrice.sale != null
+              ? Number(parsedPrice.sale)
+              : null
+            : existingVariant.price.sale;
+
+        if (sale != null && sale >= base) {
+          return res.status(400).json({
+            success: false,
+            message: "Sale price must be less than base price"
+          });
+        }
+
+        if (parsedPrice.base !== undefined) {
+          updateFields["variants.$.price.base"] = base;
+        }
+
+        if (parsedPrice.sale !== undefined) {
+          updateFields["variants.$.price.sale"] = sale;
+        }
+      }
+
+      // =========================
+      // INVENTORY UPDATE
+      // =========================
+      if (updates.inventory) {
+        const parsedInventory = parseIfString(updates.inventory, {});
+
+        if (parsedInventory.quantity !== undefined) {
+          updateFields["variants.$.inventory.quantity"] =
+            Number(parsedInventory.quantity);
+        }
+
+        if (parsedInventory.lowStockThreshold !== undefined) {
+          updateFields["variants.$.inventory.lowStockThreshold"] =
+            Number(parsedInventory.lowStockThreshold);
+        }
+
+        if (parsedInventory.trackInventory !== undefined) {
+          updateFields["variants.$.inventory.trackInventory"] =
+            parsedInventory.trackInventory;
+        }
+      }
+
+      const updatedProduct = await Product.findOneAndUpdate(
+        { slug, "variants.barcode": barcodeNumber },
+        { $set: updateFields },
+        { new: true }
+      );
+
+      // 🔁 Recalculate totals
+      const effectivePrices = updatedProduct.variants.map(v =>
+        v.price.sale != null ? v.price.sale : v.price.base
+      );
+
+      updatedProduct.priceRange = {
+        min: Math.min(...effectivePrices),
+        max: Math.max(...effectivePrices)
       };
 
-      mergedInventory.quantity = Number(
-        mergedInventory.quantity ?? 0
-      );
-      mergedInventory.lowStockThreshold = Number(
-        mergedInventory.lowStockThreshold ?? 5
-      );
+      updatedProduct.totalStock =
+        updatedProduct.variants.reduce(
+          (sum, v) => sum + (v.inventory.quantity || 0),
+          0
+        );
 
-      updates["variants.0.inventory"] = mergedInventory;
-      delete updates.inventory;
+      await updatedProduct.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Variant updated successfully",
+        product: updatedProduct
+      });
     }
 
-    // =========================
-    // SOLD INFO
-    // =========================
+    // =====================================================
+    // PRODUCT FIELD UPDATE
+    // =====================================================
+
+    if (updates.name && updates.name !== existingProduct.name) {
+      updates.slug = await generateSlug(
+        updates.name,
+        existingProduct._id
+      );
+    }
+
     if (updates.soldInfo) {
       const parsed = parseIfString(updates.soldInfo, {});
       updates.soldInfo = {
         ...existingProduct.soldInfo.toObject(),
         ...parsed,
-        enabled:
-          parsed.enabled === true ||
-          parsed.enabled === "true",
+        enabled: parsed.enabled === true || parsed.enabled === "true",
         count: Number(parsed.count ?? 0)
       };
     }
 
-    // =========================
-    // FOMO
-    // =========================
     if (updates.fomo) {
       const parsed = parseIfString(updates.fomo, {});
       updates.fomo = {
         ...existingProduct.fomo.toObject(),
         ...parsed,
-        enabled:
-          parsed.enabled === true ||
-          parsed.enabled === "true",
+        enabled: parsed.enabled === true || parsed.enabled === "true",
         viewingNow: Number(parsed.viewingNow ?? 0),
         productLeft: Number(parsed.productLeft ?? 0),
-        type: ["viewing_now", "product_left", "custom"].includes(
-          parsed.type
-        )
+        type: ["viewing_now", "product_left", "custom"].includes(parsed.type)
           ? parsed.type
           : existingProduct.fomo.type
       };
     }
 
-    // =========================
-    // SHIPPING
-    // =========================
     if (updates.shipping) {
       const parsed = parseIfString(updates.shipping, {});
       updates.shipping = {
@@ -1058,151 +1128,18 @@ const updateProduct = async (req, res) => {
       };
     }
 
-    // =========================
-    // ATTRIBUTES
-    // =========================
     if (updates.attributes) {
       const parsed = parseIfString(updates.attributes, []);
       updates.attributes = Array.isArray(parsed)
-        ? parsed.map(a => ({
-            key: a.key,
-            value: a.value
-          }))
+        ? parsed.map(a => ({ key: a.key, value: a.value }))
         : [];
     }
 
-    // =========================
-    // FULL VARIANT REPLACEMENT
-    // =========================
-    if (updates.variants) {
-      const parsedVariants = parseIfString(
-        updates.variants,
-        []
-      );
-
-      if (Array.isArray(parsedVariants)) {
-        updates.variants = parsedVariants.map(v => ({
-          ...v,
-          price: {
-            base: Number(v.price?.base ?? 0),
-            sale:
-              v.price?.sale != null
-                ? Number(v.price.sale)
-                : null
-          },
-          inventory: {
-            quantity: Number(v.inventory?.quantity ?? 0),
-            trackInventory:
-              v.inventory?.trackInventory ?? true,
-            lowStockThreshold:
-              Number(v.inventory?.lowStockThreshold ?? 5)
-          }
-        }));
-      }
-    }
-
-    // =========================
-    // Slug regeneration
-    // =========================
-    if (
-      updates.name &&
-      updates.name !== existingProduct.name
-    ) {
-      updates.slug = await generateSlug(
-        updates.name,
-        existingProduct._id
-      );
-    }
-
-    // =========================
-    // UPDATE
-    // =========================
     const updatedProduct = await Product.findByIdAndUpdate(
       existingProduct._id,
       { $set: updates },
       { new: true, runValidators: true }
     );
-
-    // =========================
-    // RECALCULATE priceRange & totalStock
-    // =========================
-    const effectivePrices = updatedProduct.variants.map(v =>
-      v.price.sale != null ? v.price.sale : v.price.base
-    );
-
-    updatedProduct.priceRange = {
-      min: Math.min(...effectivePrices),
-      max: Math.max(...effectivePrices)
-    };
-
-    updatedProduct.totalStock =
-      updatedProduct.variants.reduce(
-        (sum, v) => sum + (v.inventory.quantity || 0),
-        0
-      );
-
-      // =========================
-// HANDLE VARIANT IMAGE UPLOADS
-// =========================
-if (req.files && req.files.length > 0) {
-
-  const filesByVariant = {};
-
-  for (const file of req.files) {
-    const match = file.fieldname.match(/^variantImages_(\d+)$/);
-    if (match) {
-      const index = Number(match[1]);
-      if (!filesByVariant[index]) {
-        filesByVariant[index] = [];
-      }
-      filesByVariant[index].push(file);
-    }
-  }
-
-  for (const indexStr of Object.keys(filesByVariant)) {
-    const index = Number(indexStr);
-
-    if (!updatedProduct.variants[index]) continue;
-
-    const variant = updatedProduct.variants[index];
-
-    // max 5 images rule
-    if (variant.images.length + filesByVariant[index].length > 5) {
-      return res.status(400).json({
-        success: false,
-        message: `Variant ${index} can have maximum 5 images`
-      });
-    }
-
-    for (let i = 0; i < filesByVariant[index].length; i++) {
-      const file = filesByVariant[index][i];
-
-      const optimizedBuffer = await sharp(file.buffer)
-        .resize({ width: 1500, withoutEnlargement: true })
-        .webp({ quality: 80 })
-        .toBuffer();
-
-      const publicIdName = `${updatedProduct.slug}_${variant.sku}_${Date.now()}_${i}`;
-
-      const { url, publicId } = await uploadToCloudinary(
-        optimizedBuffer,
-        `products/${updatedProduct.slug}`,
-        publicIdName
-      );
-
-      variant.images.push({
-        url,
-        publicId,
-        altText: `${updatedProduct.name} ${variant.sku}`,
-        order: variant.images.length
-      });
-    }
-  }
-
-  // await updatedProduct.save();
-}
-
-    await updatedProduct.save();
 
     return res.status(200).json({
       success: true,
@@ -1219,8 +1156,7 @@ if (req.files && req.files.length > 0) {
     });
   }
 };
-    
-   
+
 
 // Soft delete (archive)
 // Soft delete (archive)
@@ -1832,33 +1768,31 @@ const bulkHardDelete = async (req, res) => {
 
 const getAllProductsAdmin = async (req, res) => {
   try {
-    let { page = 1, limit = 20, status } = req.query;
+    let { page = 1, limit = 20 } = req.query;
 
     page = Number(page);
-    limit = Number(limit);
+    // limit = Number(limit);
+    limit = Math.min(100, Math.max(1, Number(limit))); // max 10
 
     const skip = (page - 1) * limit;
 
     let query = {};
 
-    // Optional status filter
-    if (status) {
-      query.status = status.trim().toLowerCase();
-    }
+   
 
-    const products = await Product.find(query)
+    const products = await Product.find()
       .sort({ createdAt: -1 }) // latest first
       .skip(skip)
       .limit(limit);
 
-    const totalProducts = await Product.countDocuments(query);
+    const totalProducts = await Product.countDocuments();
 
     return res.status(200).json({
       success: true,
-      products,
-      totalProducts,
+       totalProducts,
       totalPages: Math.ceil(totalProducts / limit),
       currentPage: page,
+      products
     });
 
   } catch (error) {
@@ -1871,6 +1805,314 @@ const getAllProductsAdmin = async (req, res) => {
   }
 };
 
+
+
+//Add variant to existing product
+// Add variant to existing product
+const addVariant = async (req, res) => {
+  try {
+    const { slug } = req.params;
+
+    const product = await Product.findOne({ slug });
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found"
+      });
+    }
+
+    // =========================
+    // Parse body safely
+    // =========================
+    let variant = req.body;
+
+    if (typeof variant === "string") {
+      variant = JSON.parse(variant);
+    }
+
+    // =========================
+    // 🔒 BARCODE VALIDATION
+    // =========================
+    if (!variant.barcode) {
+      return res.status(400).json({
+        success: false,
+        message: "Barcode is required"
+      });
+    }
+
+    const barcodeNumber = Number(variant.barcode);
+
+    if (isNaN(barcodeNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Barcode must be a valid number"
+      });
+    }
+
+    // 🔒 Global duplicate check (VERY IMPORTANT)
+    const barcodeExists = await Product.exists({
+      "variants.barcode": barcodeNumber
+    });
+
+    if (barcodeExists) {
+      return res.status(400).json({
+        success: false,
+        message: "Variant with this barcode already exists"
+      });
+    }
+
+    // =========================
+    // 🔒 PRICE VALIDATION
+    // =========================
+    if (!variant.price?.base) {
+      return res.status(400).json({
+        success: false,
+        message: "Base price is required"
+      });
+    }
+
+    const basePrice = Number(variant.price.base);
+    const salePrice =
+      variant.price.sale != null
+        ? Number(variant.price.sale)
+        : null;
+
+    if (salePrice != null && salePrice >= basePrice) {
+      return res.status(400).json({
+        success: false,
+        message: "Sale price must be less than base price"
+      });
+    }
+
+    // =========================
+    // 🔥 AUTO GENERATE SKU
+    // =========================
+    const skuVal = await generateSku();
+
+    // =========================
+    // BUILD NEW VARIANT
+    // =========================
+    const newVariant = {
+      sku: skuVal,
+      barcode: barcodeNumber,
+      attributes: Array.isArray(variant.attributes)
+        ? variant.attributes.map(a => ({
+            key: a.key,
+            value: a.value
+          }))
+        : [],
+      price: {
+        base: basePrice,
+        sale: salePrice
+      },
+      inventory: {
+        quantity: Number(variant.inventory?.quantity || 0),
+        lowStockThreshold: Number(
+          variant.inventory?.lowStockThreshold || 5
+        ),
+        trackInventory:
+          variant.inventory?.trackInventory ?? true
+      },
+      images: [], // images handled separately if needed
+      isActive: variant.isActive !== false
+    };
+
+    product.variants.push(newVariant);
+
+    // =========================
+    // 🔁 RECALCULATE TOTALS
+    // =========================
+    const effectivePrices = product.variants.map(v =>
+      v.price.sale != null ? v.price.sale : v.price.base
+    );
+
+    product.priceRange = {
+      min: Math.min(...effectivePrices),
+      max: Math.max(...effectivePrices)
+    };
+
+    product.totalStock = product.variants.reduce(
+      (sum, v) => sum + (v.inventory.quantity || 0),
+      0
+    );
+
+    await product.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Variant added successfully",
+      product
+    });
+
+  } catch (error) {
+    console.error("Add variant error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error adding variant",
+      error: error.message
+    });
+  }
+};
+
+//delete variant from existing product
+//Add variant to existing product
+// Add variant to existing product
+// Delete variant from existing product
+const deleteVariant = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const { barcode } = req.body;
+
+    if (!barcode) {
+      return res.status(400).json({
+        success: false,
+        message: "Barcode is required"
+      });
+    }
+
+    const barcodeNumber = Number(barcode);
+
+    if (isNaN(barcodeNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid barcode"
+      });
+    }
+
+    const product = await Product.findOne({ slug });
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found"
+      });
+    }
+
+    // 🔒 Check variant exists
+    const variantExists = product.variants.some(
+      v => v.barcode === barcodeNumber
+    );
+
+    if (!variantExists) {
+      return res.status(404).json({
+        success: false,
+        message: "Variant not found"
+      });
+    }
+
+    // 🔒 Prevent deleting last variant (recommended)
+    if (product.variants.length === 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete last variant of product"
+      });
+    }
+
+    // 🔥 REMOVE VARIANT
+    product.variants = product.variants.filter(
+      v => v.barcode !== barcodeNumber
+    );
+
+    // 🔁 RECALCULATE PRICE RANGE
+    const effectivePrices = product.variants.map(v =>
+      v.price.sale != null ? v.price.sale : v.price.base
+    );
+
+    product.priceRange = {
+      min: Math.min(...effectivePrices),
+      max: Math.max(...effectivePrices)
+    };
+
+    // 🔁 RECALCULATE STOCK
+    product.totalStock = product.variants.reduce(
+      (sum, v) => sum + (v.inventory.quantity || 0),
+      0
+    );
+
+    await product.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Variant deleted successfully",
+      product
+    });
+
+  } catch (error) {
+    console.error("Delete variant error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error deleting variant",
+      error: error.message
+    });
+  }
+};
+
+//get variant by barcode
+// Get product + specific variant by barcode
+const getVariantByBarcode = async (req, res) => {
+  try {
+    const { barcode } = req.params;
+
+    if (!barcode) {
+      return res.status(400).json({
+        success: false,
+        message: "Barcode is required"
+      });
+    }
+
+    const barcodeNumber = Number(barcode);
+
+    if (isNaN(barcodeNumber)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid barcode"
+      });
+    }
+
+    // 🔍 Optimized query (returns only matched variant)
+    const product = await Product.findOne(
+      { "variants.barcode": barcodeNumber },
+      {
+        name: 1,
+        slug: 1,
+        brand: 1,
+        category: 1,
+        fomo: 1,
+        soldInfo: 1,
+        "variants.$": 1
+      }
+    );
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "No product found for this barcode"
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      product: {
+        _id: product._id,
+        name: product.name,
+        slug: product.slug,
+        brand: product.brand,
+        category: product.category,
+        fomo: product.fomo,
+        soldInfo: product.soldInfo
+      },
+      variant: product.variants[0] // matched variant
+    });
+
+  } catch (error) {
+    console.error("Get variant by barcode error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching variant",
+      error: error.message
+    });
+  }
+};
 module.exports = {
   createProduct,
   updateProduct,
@@ -1887,5 +2129,8 @@ module.exports = {
    bulkCreateProducts ,
     bulkRestore  , 
     importProductsFromCSV ,
-    getAllProductsAdmin
+    getAllProductsAdmin , 
+    addVariant,
+    deleteVariant,
+    getVariantByBarcode
 };
