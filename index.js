@@ -32,7 +32,7 @@ const adminProductsRoutes = require('./routes/adminProducts');
 const categoriesRoutes = require('./routes/categories');
 const productsRoutes = require('./routes/products');
 const wishlistRoutes = require('./routes/wishlist');
-const cartRoutes = require('./routes/cart');
+const cartRoutes = require('./routes/Cart');
 
 // ============================================================================
 // CONFIGURATION

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const { requireAdmin } = require('../middlewares/isAdmin');
-const { uploadProductImages, uploadCSVFile } = require('../middlewares/uploadMiddleware');
+const { uploadProductImages, uploadCSVZipFiles } = require('../middlewares/uploadMiddleware');
 const productController = require('../controllers/productController');
 
 // Validation middleware to check for rejected fields
@@ -72,7 +72,7 @@ router.post(
 router.post('/bulk-create', requireAdmin, productController.bulkCreateProducts);
 
 // Import from CSV
-router.post('/import-csv', requireAdmin, uploadCSVFile, productController.importProductsFromCSV);
+router.post('/import-csv', requireAdmin, uploadCSVZipFiles, productController.importProductsFromCSV);
 
 
 // Get archived products
@@ -92,6 +92,12 @@ router.get('/low-stock', requireAdmin, productController.getLowStockProducts);
 // Get draft products
 router.get('/drafts', requireAdmin, productController.getDraftProducts);
 
+//with limit and page query
+router.get('/all', requireAdmin, productController.getAllProductsAdmin);
+
+// Get all active products
+router.get('/', requireAdmin, productController.getAllActiveProducts);
+
 
 // Bulk hard delete
 router.delete('/bulk-hard-delete', requireAdmin, productController.bulkHardDelete);
@@ -104,6 +110,17 @@ router.patch('/restore/:slug', requireAdmin, productController.restoreProduct);
 router.delete('/hard/:slug', requireAdmin, productController.hardDeleteProduct);
 
 
+
+//post //add variant to product
+router.post('/:slug/variants', requireAdmin, productController.addVariant);
+
+//delete variant from product
+router.delete('/:slug/variants', requireAdmin, productController.deleteVariant);
+
+//get variant by barcode
+router.get('/variant/:barcode', requireAdmin, productController.getVariantByBarcode);
+
+
 // PUT /admin/products/:slug Update product with optional image uploads
 router.put('/:slug', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
 
@@ -113,10 +130,6 @@ router.delete('/:slug', requireAdmin, productController.deleteProduct);
 
 //Get /admin/products/:slug get porduct by slug name 
 router.get('/:slug', requireAdmin, productController.getProductBySlug);
-
-// Get all active products
-router.get('/', requireAdmin, productController.getAllProducts);
-
 
 
 
