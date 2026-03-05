@@ -112,7 +112,7 @@ router.delete('/hard/:slug', requireAdmin, productController.hardDeleteProduct);
 
 
 //post //add variant to product
-router.post('/:slug/variants', requireAdmin, productController.addVariant);
+router.post('/:slug/variants', requireAdmin,  uploadProductImages, productController.addVariant);
 
 //delete variant from product
 router.delete('/:slug/variants', requireAdmin, productController.deleteVariant);
