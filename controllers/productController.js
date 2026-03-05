@@ -1,3 +1,4 @@
+const { cloudinary , initCloudinary } = require('../config/cloudinary.config');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const mongoose = require('mongoose');
@@ -9,7 +10,7 @@ const fs = require('fs');
 const csv = require('csv-parser');
 const unzipper = require('unzipper');
 const path = require('path');
-
+const axios = require('axios');
 // Create new product
 // Create new product
 const createProduct = async (req, res) => {
@@ -465,339 +466,403 @@ const bulkCreateProducts = async (req, res) => {
 
 
 //Bulk create from CSV (for testing)
+
 // const importProductsFromCSV = async (req, res) => {
 //   try {
 //     if (!req.file) {
 //       return res.status(400).json({
 //         success: false,
-//         message: 'CSV file is required'
+//         message: "CSV file is required",
 //       });
 //     }
 
 //     const rows = [];
 //     const failed = [];
-//     const validProducts = [];
+//     const productMap = {};
 
-//     fs.createReadStream(req.file.path)
-//       .pipe(csv())
-//       .on('data', (row) => rows.push(row))
-//       .on('end', async () => {
+//  fs.createReadStream(req.file.path)
+//   .pipe(
+//     csv({
+//       mapHeaders: ({ header }) => header.trim(),
+//     })
+//   )
+//       .on("data", (row) => rows.push(row))
+//       .on("end", async () => {
 //         try {
-
 //           for (let row of rows) {
 //             try {
-
-//               // =========================
-//               // REQUIRED FIELDS
-//               // =========================
-//               if (!row.name || !row.title || !row.category || !row.basePrice) {
-//                 throw new Error('Missing required fields');
-//               }
-
-//               // =========================
-//               // CATEGORY
-//               // =========================
-//               const categoryName = row.category.trim();
-//               const categorySlug = slugify(categoryName, { lower: true, strict: true });
-
-//               let category = await Category.findOne({
-//                 $or: [
-//                   { slug: categorySlug },
-//                   { name: new RegExp(`^${categoryName}$`, 'i') }
-//                 ]
+//               // ===============================
+//               // TRIM ALL VALUES
+//               // ===============================
+//               Object.keys(row).forEach((key) => {
+//                 if (typeof row[key] === "string") {
+//                   row[key] = row[key].trim();
+//                 }
 //               });
 
-//               if (!category) {
-//                 category = await Category.create({
-//                   name: categoryName,
-//                   slug: categorySlug,
-//                   status: 'active',
-//                   level: 0
+//               // ===============================
+//               // REQUIRED FIELD VALIDATION
+//               // ===============================
+//               if (!row.name || !row.category || !row.basePrice) {
+//                 throw new Error("Missing required fields");
+//               }
+
+//               const productName = row.name;
+//               const baseSlug = slugify(productName, {
+//                 lower: true,
+//                 strict: true,
+//               });
+
+//               // ===============================
+//               // CREATE PRODUCT IF NOT EXISTS
+//               // ===============================
+//               if (!productMap[productName]) {
+//                 const slug = await generateSlug(productName);
+
+//                 // CATEGORY CHECK
+//                 const categorySlug = slugify(row.category, {
+//                   lower: true,
+//                   strict: true,
 //                 });
+
+//                 let category = await Category.findOne({
+//                   slug: categorySlug,
+//                 });
+
+//                 if (!category) {
+//                   category = await Category.create({
+//                     name: row.category,
+//                     slug: categorySlug,
+//                     status: "active",
+//                     level: 0,
+//                   });
+//                 }
+
+//                 productMap[productName] = {
+//                   name: productName,
+//                   slug,
+//                   title: row.title || productName,
+//                   description: row.description || "",
+//                   category: category._id,
+//                   brand: row.brand || "Generic",
+//                   status: row.status?.toLowerCase() || "draft",
+//                   isFeatured: row.isfeatured === "true",
+
+//                   variants: [],
+
+//                   soldInfo: {
+//                     enabled: row.soldEnabled === "true",
+//                     count: Number(row.soldCount) || 0,
+//                   },
+
+//                   fomo: {
+//                     enabled: row.fomoEnabled === "true",
+//                     type: row.fomoType || "viewing_now",
+//                     viewingNow: Number(row.viewingNow) || 0,
+//                     productLeft: Number(row.productLeft) || 0,
+//                     customMessage: row.customMessage || "",
+//                   },
+//                 };
 //               }
 
-//               // =========================
-//               // SLUG
-//               // =========================
-//               const slug = await generateSlug(row.name.trim());
-
-//               const sku =
-//                 'SKU-' +
-//                 Math.floor(100000 + Math.random() * 900000);
-
-//               // =========================
-//               // PRICE
-//               // =========================
-//               const basePrice = Number(row.basePrice);
-//               const salePrice =
-//                 row.salePrice && row.salePrice !== ''
-//                   ? Number(row.salePrice)
-//                   : null;
-
-//               if (salePrice !== null && salePrice >= basePrice) {
-//                 throw new Error('Sale price must be less than base price');
-//               }
-
-//               const priceObj = {
-//                 base: basePrice,
-//                 sale: salePrice,
-//                 costPrice: null,
-//                 saleStartDate: null,
-//                 saleEndDate: null
-//               };
-
-//               // =========================
-//               // INVENTORY
-//               // =========================
-//               const inventoryObj = {
-//                 quantity: row.quantity ? Number(row.quantity) : 0,
-//                 trackInventory: true,
-//                 lowStockThreshold: 5
-//               };
-
-//               // =========================
-//               // VARIANT ATTRIBUTES (ADD HERE)
-//               // =========================
+//               // ===============================
+//               // VARIANT ATTRIBUTES
+//               // ===============================
 //               let variantAttributes = [];
 
 //               if (row.variantAttributes) {
 //                 variantAttributes = row.variantAttributes
-//                   .split('|')
-//                   .map(pair => {
-//                     const [key, value] = pair.split(':');
+//                   .split("|")
+//                   .map((pair) => {
+//                     const [key, value] = pair.split(":");
 //                     return {
-//                       key: key.trim(),
-//                       value: value.trim()
+//                       key: key?.trim(),
+//                       value: value?.trim(),
 //                     };
 //                   });
 //               }
 
-//               // =========================
-//               // IMAGES
-//               // =========================
-//               let imagesArr = [];
+//               // ===============================
+//               // PRODUCT ATTRIBUTES (optional)
+//               // ===============================
+//               let productAttributes = [];
 
-//               if (row.images) {
-//                 const imageUrls = row.images.split('|');
-
-//                 imagesArr = imageUrls.map((url, index) => ({
-//                   url: url.trim(),
-//                   publicId: `imported-${Date.now()}-${index}`,
-//                   altText: row.name,
-//                   order: index
-//                 }));
+//               if (row.productAttributes) {
+//                 productAttributes = row.productAttributes
+//                   .split("|")
+//                   .map((pair) => {
+//                     const [key, value] = pair.split(":");
+//                     return {
+//                       key: key?.trim(),
+//                       value: value?.trim(),
+//                     };
+//                   });
 //               }
 
-//               // =========================
-//               // STATUS FROM CSV
-//               // =========================
-//               const allowedStatus = ['draft', 'active', 'archived'];
+//               // ===============================
+//               // IMAGE UPLOAD FROM URL (max 5)
+//               // ===============================
+//               const axios = require("axios");
 
-//               const productStatus = allowedStatus.includes(
-//                 row.status?.toLowerCase()
-//               )
-//                 ? row.status.toLowerCase()
-//                 : 'draft';
+// let imagesArr = [];
 
-//               // =========================
-//               // FINAL PRODUCT OBJECT
-//               // =========================
-//               validProducts.push({
-//                 name: row.name,
-//                 slug,
-//                 title: row.title,
-//                 description: row.description || '',
-//                 category: category._id,
-//                 brand: row.brand || 'Generic',
+// if (row.images) {
+//   const imageUrls = row.images
+//     .split(",")
+//     .map((u) => u.trim())
+//     .slice(0, 5);
 
-//                 variants: [
-//                   {
-//                     sku,
-//                     attributes: variantAttributes,
-//                     images: imagesArr,
-//                     price: priceObj,
-//                     inventory: inventoryObj,
-//                     isActive: true
-//                   }
-//                 ],
+//   for (let url of imageUrls) {
+//     if (!url) continue;
 
-//                 soldInfo: { enabled: false, count: 0 },
-//                 fomo: {
-//                   enabled: false,
-//                   type: 'viewing_now',
-//                   viewingNow: 0,
-//                   productLeft: 0,
-//                   customMessage: ''
+//     try {
+
+//       // 🔥 CASE 1: Already Base64
+//       if (url.startsWith("data:image")) {
+
+//         const uploadResult = await cloudinary.uploader.upload(url, {
+//           resource_type: "image"
+//         });
+
+//         imagesArr.push({
+//           url: uploadResult.secure_url,
+//           publicId: uploadResult.public_id,
+//           altText: productName,
+//           order: imagesArr.length
+//         });
+
+//       } 
+      
+//       // 🔥 CASE 2: Normal URL
+//       else if (url.startsWith("http")) {
+
+//         const response = await axios({
+//           method: "GET",
+//           url: url,
+//           responseType: "arraybuffer",
+//           timeout: 15000,
+//           headers: {
+//             "User-Agent": "Mozilla/5.0"
+//           }
+//         });
+
+//         const base64 = Buffer.from(response.data).toString("base64");
+//         const mimeType = response.headers["content-type"];
+//         const dataURI = `data:${mimeType};base64,${base64}`;
+
+//         const uploadResult = await cloudinary.uploader.upload(dataURI, {
+//           resource_type: "image"
+//         });
+
+//         imagesArr.push({
+//           url: uploadResult.secure_url,
+//           publicId: uploadResult.public_id,
+//           altText: productName,
+//           order: imagesArr.length
+//         });
+//       }
+
+//     } catch (err) {
+//   console.log("Image upload failed:", url);
+//   console.log("ERROR:", err.message);
+// }
+    
+//   }
+// }
+
+//               // ===============================
+//               // BUILD VARIANT OBJECT
+//               // ===============================
+//               const variant = {
+//                 sku:
+//                   "SKU-" +
+//                   Math.floor(100000 + Math.random() * 900000),
+//                 barcode: row.barcode || "",
+//                 attributes: variantAttributes,
+//                 weight: Number(row.weight) || 0,
+//                 dimensions: {
+//                   length: Number(row.length) || 0,
+//                   width: Number(row.width) || 0,
+//                   height: Number(row.height) || 0,
 //                 },
+//                 price: {
+//                   base: Number(row.basePrice),
+//                   sale: row.salePrice
+//                     ? Number(row.salePrice)
+//                     : null,
+//                 },
+//                 inventory: {
+//                   quantity: Number(row.quantity) || 0,
+//                   trackInventory: true,
+//                   lowStockThreshold: 5,
+//                 },
+//                 images: imagesArr,
+//                 isActive: true,
+//               };
 
-//                 status: productStatus
-//               });
+//               productMap[productName].variants.push(variant);
+
+//               // attach product attributes once
+//               if (
+//                 productAttributes.length &&
+//                 !productMap[productName].productAttributes
+//               ) {
+//                 productMap[productName].productAttributes =
+//                   productAttributes;
+//               }
 
 //             } catch (err) {
 //               failed.push({
-//                 product: row.name || 'Unknown',
-//                 error: err.message
+//                 product: row.name || "Unknown",
+//                 error: err.message,
 //               });
 //             }
 //           }
 
-//           const inserted = await Product.insertMany(validProducts);
+//           // ===============================
+//           // INSERT INTO DATABASE
+//           // ===============================
+//           const finalProducts = Object.values(productMap);
+
+//           let inserted = [];
+
+//           if (finalProducts.length > 0) {
+//             inserted = await Product.insertMany(finalProducts);
+//           }
 
 //           fs.unlinkSync(req.file.path);
 
 //           return res.status(200).json({
 //             success: true,
 //             totalRows: rows.length,
-//             insertedCount: inserted.length,
+//             insertedProducts: inserted.length,
 //             failedCount: failed.length,
-//             failed
+//             failed,
 //           });
-
-//         } catch (innerError) {
-//           fs.unlinkSync(req.file.path);
+//         } catch (err) {
 //           return res.status(500).json({
 //             success: false,
-//             message: 'Processing failed',
-//             error: innerError.message
+//             message: "Processing failed",
+//             error: err.message,
 //           });
 //         }
 //       });
-
 //   } catch (error) {
 //     return res.status(500).json({
 //       success: false,
-//       message: 'CSV import failed',
-//       error: error.message
+//       message: "CSV import failed",
+//       error: error.message,
 //     });
 //   }
 // };
-
-
-// Bulk Import Controller
 const importProductsFromCSV = async (req, res) => {
   try {
-    if (!req.files || !req.files.csv) {
+    if (!req.file) {
       return res.status(400).json({
         success: false,
         message: "CSV file is required",
       });
     }
 
-    const csvFile = req.files.csv[0];
-    const zipFile = req.files.zip ? req.files.zip[0] : null;
-
     const rows = [];
     const failed = [];
-    const validProducts = [];
+    const productMap = {};
 
-    // ==============================
-    // STEP 1: EXTRACT ZIP (if exists)
-    // ==============================
-    let extractedPath = null;
-    let imageMap = {};
-
-    if (zipFile) {
-      extractedPath = path.join("uploads", `extract-${Date.now()}`);
-      fs.mkdirSync(extractedPath, { recursive: true });
-
-      await fs
-        .createReadStream(zipFile.path)
-        .pipe(unzipper.Extract({ path: extractedPath }))
-        .promise();
-
-      const files = fs.readdirSync(extractedPath);
-
-      files.forEach((file) => {
-        imageMap[file.toLowerCase()] = path.join(extractedPath, file);
-      });
-    }
-
-    // ==============================
-    // STEP 2: READ CSV
-    // ==============================
-    fs.createReadStream(csvFile.path)
-      .pipe(csv())
+    fs.createReadStream(req.file.path)
+      .pipe(
+        csv({
+          mapHeaders: ({ header }) => header.trim(),
+        })
+      )
       .on("data", (row) => rows.push(row))
       .on("end", async () => {
         try {
           for (let row of rows) {
             try {
-              // ======================
-              // REQUIRED FIELDS
-              // ======================
-              if (!row.name || !row.title || !row.category || !row.basePrice) {
+              // ===============================
+              // TRIM ALL VALUES
+              // ===============================
+              Object.keys(row).forEach((key) => {
+                if (typeof row[key] === "string") {
+                  row[key] = row[key].trim();
+                }
+              });
+
+              // ===============================
+              // REQUIRED FIELD VALIDATION
+              // ===============================
+              if (!row.name || !row.category || !row.basePrice) {
                 throw new Error("Missing required fields");
               }
 
-              // ======================
-              // BASE SLUG (for image matching)
-              // ======================
-              const baseSlug = slugify(row.name.trim(), {
-                lower: true,
-                strict: true,
-              });
+              const productName = row.name;
 
-              // ======================
-              // UNIQUE SLUG (for DB)
-              // ======================
-              const slug = await generateSlug(row.name.trim());
+              // ===============================
+              // 🔥 PRICE SANITIZATION (NEW FIX)
+              // ===============================
+              const cleanBasePrice = parseFloat(
+                row.basePrice?.replace(/[^0-9.]/g, "")
+              );
 
-              // ======================
-              // CATEGORY
-              // ======================
-              const categoryName = row.category.trim();
-              const categorySlug = slugify(categoryName, {
-                lower: true,
-                strict: true,
-              });
+              const cleanSalePrice = row.salePrice
+                ? parseFloat(row.salePrice.replace(/[^0-9.]/g, ""))
+                : null;
 
-              let category = await Category.findOne({
-                slug: categorySlug,
-              });
-
-              if (!category) {
-                category = await Category.create({
-                  name: categoryName,
-                  slug: categorySlug,
-                  status: "active",
-                  level: 0,
-                });
+              if (isNaN(cleanBasePrice)) {
+                throw new Error("Invalid basePrice format");
               }
 
-              // ======================
-              // STATUS FIX (trim + lowercase)
-              // ======================
-              const status = row.status
-                ? row.status.trim().toLowerCase()
-                : "draft";
+              // ===============================
+              // CREATE PRODUCT IF NOT EXISTS
+              // ===============================
+              if (!productMap[productName]) {
+                const slug = await generateSlug(productName);
 
-              // ======================
-              // PRICE
-              // ======================
-              const basePrice = Number(row.basePrice);
-              const salePrice =
-                row.salePrice && row.salePrice !== ""
-                  ? Number(row.salePrice)
-                  : null;
+                const categorySlug = slugify(row.category, {
+                  lower: true,
+                  strict: true,
+                });
 
-              const priceObj = {
-                base: basePrice,
-                sale: salePrice,
-              };
+                let category = await Category.findOne({
+                  slug: categorySlug,
+                });
 
-              // ======================
-              // INVENTORY
-              // ======================
-              const inventoryObj = {
-                quantity: row.quantity ? Number(row.quantity) : 0,
-                trackInventory: true,
-                lowStockThreshold: 5,
-              };
+                if (!category) {
+                  category = await Category.create({
+                    name: row.category,
+                    slug: categorySlug,
+                    status: "active",
+                    level: 0,
+                  });
+                }
 
-              // ======================
+                productMap[productName] = {
+                  name: productName,
+                  slug,
+                  title: row.title || productName,
+                  description: row.description || "",
+                  category: category._id,
+                  brand: row.brand || "Generic",
+                  status: row.status?.toLowerCase() || "draft",
+                  isFeatured: row.isfeatured === "true",
+                  variants: [],
+                  soldInfo: {
+                    enabled: row.soldEnabled === "true",
+                    count: Number(row.soldCount) || 0,
+                  },
+                  fomo: {
+                    enabled: row.fomoEnabled === "true",
+                    type: row.fomoType || "viewing_now",
+                    viewingNow: Number(row.viewingNow) || 0,
+                    productLeft: Number(row.productLeft) || 0,
+                    customMessage: row.customMessage || "",
+                  },
+                };
+              }
+
+              // ===============================
               // VARIANT ATTRIBUTES
-              // Format: Color:Blue|Size:M
-              // ======================
+              // ===============================
               let variantAttributes = [];
 
               if (row.variantAttributes) {
@@ -806,87 +871,129 @@ const importProductsFromCSV = async (req, res) => {
                   .map((pair) => {
                     const [key, value] = pair.split(":");
                     return {
-                      key: key.trim(),
-                      value: value.trim(),
+                      key: key?.trim(),
+                      value: value?.trim(),
                     };
                   });
               }
 
-              // ======================
-              // BUILD VARIANT KEY
-              // ======================
-              let variantKey = baseSlug;
+              // ===============================
+              // PRODUCT ATTRIBUTES
+              // ===============================
+              let productAttributes = [];
 
-              variantAttributes.forEach((attr) => {
-                variantKey +=
-                  "-" +
-                  slugify(attr.value, {
-                    lower: true,
-                    strict: true,
+              if (row.productAttributes) {
+                productAttributes = row.productAttributes
+                  .split("|")
+                  .map((pair) => {
+                    const [key, value] = pair.split(":");
+                    return {
+                      key: key?.trim(),
+                      value: value?.trim(),
+                    };
                   });
-              });
+              }
 
-              // ======================
-              // IMAGE MATCHING
-              // ======================
+              // ===============================
+              // IMAGE UPLOAD FROM URL (UNCHANGED)
+              // ===============================
               let imagesArr = [];
 
-              if (imageMap) {
-                for (const fileName in imageMap) {
-                  if (fileName.includes(variantKey)) {
-                    const uploadResult = await cloudinary.uploader.upload(
-                      imageMap[fileName]
-                    );
+              if (row.images) {
+                const imageUrls = row.images
+                  .split(",")
+                  .map((u) => u.trim())
+                  .slice(0, 5);
 
-                    imagesArr.push({
-                      url: uploadResult.secure_url,
-                      publicId: uploadResult.public_id,
-                      altText: row.name,
-                      order: imagesArr.length,
-                    });
+                for (let url of imageUrls) {
+                  if (!url) continue;
+
+                  try {
+                    if (url.startsWith("data:image")) {
+                      const uploadResult =
+                        await cloudinary.uploader.upload(url, {
+                          resource_type: "image",
+                        });
+
+                      imagesArr.push({
+                        url: uploadResult.secure_url,
+                        publicId: uploadResult.public_id,
+                        altText: productName,
+                        order: imagesArr.length,
+                      });
+                    } else if (url.startsWith("http")) {
+                      const response = await axios({
+                        method: "GET",
+                        url: url,
+                        responseType: "arraybuffer",
+                        timeout: 15000,
+                        headers: {
+                          "User-Agent": "Mozilla/5.0",
+                        },
+                      });
+
+                      const base64 = Buffer.from(response.data).toString(
+                        "base64"
+                      );
+                      const mimeType = response.headers["content-type"];
+                      const dataURI = `data:${mimeType};base64,${base64}`;
+
+                      const uploadResult =
+                        await cloudinary.uploader.upload(dataURI, {
+                          resource_type: "image",
+                        });
+
+                      imagesArr.push({
+                        url: uploadResult.secure_url,
+                        publicId: uploadResult.public_id,
+                        altText: productName,
+                        order: imagesArr.length,
+                      });
+                    }
+                  } catch (err) {
+                    console.log("Image upload failed:", url);
+                    console.log("ERROR:", err.message);
                   }
                 }
               }
 
-              // ======================
-              // SKU
-              // ======================
-              const sku =
-                "SKU-" + Math.floor(100000 + Math.random() * 900000);
-
-              // ======================
-              // FINAL PRODUCT
-              // ======================
-              validProducts.push({
-                name: row.name.trim(),
-                slug,
-                title: row.title.trim(),
-                description: row.description || "",
-                category: category._id,
-                brand: row.brand || "Generic",
-                status,
-                isFeatured: false,
-
-                variants: [
-                  {
-                    sku,
-                    attributes: variantAttributes,
-                    images: imagesArr,
-                    price: priceObj,
-                    inventory: inventoryObj,
-                    isActive: true,
-                  },
-                ],
-
-                soldInfo: { enabled: false, count: 0 },
-                fomo: {
-                  enabled: false,
-                  type: "viewing_now",
-                  viewingNow: 0,
-                  productLeft: 0,
-                  customMessage: "",
+              // ===============================
+              // BUILD VARIANT OBJECT
+              // ===============================
+              const variant = {
+                sku:
+                  "SKU-" +
+                  Math.floor(100000 + Math.random() * 900000),
+                barcode: row.barcode || "",
+                attributes: variantAttributes,
+                weight: Number(row.weight) || 0,
+                dimensions: {
+                  length: Number(row.length) || 0,
+                  width: Number(row.width) || 0,
+                  height: Number(row.height) || 0,
                 },
-              });
+                price: {
+                  base: cleanBasePrice,   // ✅ FIXED
+                  sale: cleanSalePrice,   // ✅ FIXED
+                },
+                inventory: {
+                  quantity: Number(row.quantity) || 0,
+                  trackInventory: true,
+                  lowStockThreshold: 5,
+                },
+                images: imagesArr,
+                isActive: true,
+              };
+
+              productMap[productName].variants.push(variant);
+
+              if (
+                productAttributes.length &&
+                !productMap[productName].productAttributes
+              ) {
+                productMap[productName].productAttributes =
+                  productAttributes;
+              }
             } catch (err) {
               failed.push({
                 product: row.name || "Unknown",
@@ -895,29 +1002,27 @@ const importProductsFromCSV = async (req, res) => {
             }
           }
 
-          // ======================
-          // BULK INSERT
-          // ======================
-          const inserted = await Product.insertMany(validProducts);
+          const finalProducts = Object.values(productMap);
+          let inserted = [];
 
-          // Cleanup
-          fs.unlinkSync(csvFile.path);
-          if (zipFile) fs.unlinkSync(zipFile.path);
-          if (extractedPath)
-            fs.rmSync(extractedPath, { recursive: true, force: true });
+          if (finalProducts.length > 0) {
+            inserted = await Product.insertMany(finalProducts);
+          }
+
+          fs.unlinkSync(req.file.path);
 
           return res.status(200).json({
             success: true,
             totalRows: rows.length,
-            insertedCount: inserted.length,
+            insertedProducts: inserted.length,
             failedCount: failed.length,
             failed,
           });
-        } catch (innerError) {
+        } catch (err) {
           return res.status(500).json({
             success: false,
             message: "Processing failed",
-            error: innerError.message,
+            error: err.message,
           });
         }
       });
@@ -930,18 +1035,239 @@ const importProductsFromCSV = async (req, res) => {
   }
 };
 
-module.exports = { importProductsFromCSV };
+
 
 
 
 //Update existing product
 // Update existing product
 // Update existing product
+// const updateProduct = async (req, res) => {
+//   try {
+//     const slug = req.params.slug;
+
+//     const existingProduct = await Product.findOne({ slug });
+//     if (!existingProduct) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "Product not found"
+//       });
+//     }
+
+//     const updates = { ...req.body };
+//     delete updates.slug;
+//     delete updates.sku;
+//     delete updates.variants; // safety
+
+//     const parseIfString = (value, fallback) => {
+//       if (typeof value === "string") {
+//         try {
+//           return JSON.parse(value);
+//         } catch {
+//           return fallback;
+//         }
+//       }
+//       return value;
+//     };
+
+//     // =====================================================
+//     // ✅ VARIANT UPDATE BY BARCODE
+//     // =====================================================
+//     if (updates.barlicode) {
+
+//       const barcodeNumber = Number(updates.barcode);
+//       if (isNaN(barcodeNumber)) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "Invalid barcode"
+//         });
+//       }
+
+//       const variantIndex = existingProduct.variants.findIndex(
+//         v => v.barcode === barcodeNumber
+//       );
+
+//       if (variantIndex === -1) {
+//         return res.status(404).json({
+//           success: false,
+//           message: "Variant not found for given barcode"
+//         });
+//       }
+
+//       const existingVariant = existingProduct.variants[variantIndex];
+//       const updateFields = {};
+
+//       // =========================
+//       // PRICE UPDATE (SAFE)
+//       // =========================
+//       if (updates.price) {
+//         const parsedPrice = parseIfString(updates.price, {});
+
+//         const base =
+//           parsedPrice.base !== undefined
+//             ? Number(parsedPrice.base)
+//             : existingVariant.price.base;
+
+//         const sale =
+//           parsedPrice.sale !== undefined
+//             ? parsedPrice.sale != null
+//               ? Number(parsedPrice.sale)
+//               : null
+//             : existingVariant.price.sale;
+
+//         if (sale != null && sale >= base) {
+//           return res.status(400).json({
+//             success: false,
+//             message: "Sale price must be less than base price"
+//           });
+//         }
+
+//         if (parsedPrice.base !== undefined) {
+//           updateFields["variants.$.price.base"] = base;
+//         }
+
+//         if (parsedPrice.sale !== undefined) {
+//           updateFields["variants.$.price.sale"] = sale;
+//         }
+//       }
+
+//       // =========================
+//       // INVENTORY UPDATE
+//       // =========================
+//       if (updates.inventory) {
+//         const parsedInventory = parseIfString(updates.inventory, {});
+
+//         if (parsedInventory.quantity !== undefined) {
+//           updateFields["variants.$.inventory.quantity"] =
+//             Number(parsedInventory.quantity);
+//         }
+
+//         if (parsedInventory.lowStockThreshold !== undefined) {
+//           updateFields["variants.$.inventory.lowStockThreshold"] =
+//             Number(parsedInventory.lowStockThreshold);
+//         }
+
+//         if (parsedInventory.trackInventory !== undefined) {
+//           updateFields["variants.$.inventory.trackInventory"] =
+//             parsedInventory.trackInventory;
+//         }
+//       }
+
+//       const updatedProduct = await Product.findOneAndUpdate(
+//         { slug, "variants.barcode": barcodeNumber },
+//         { $set: updateFields },
+//         { new: true }
+//       );
+
+//       // 🔁 Recalculate totals
+//       const effectivePrices = updatedProduct.variants.map(v =>
+//         v.price.sale != null ? v.price.sale : v.price.base
+//       );
+
+//       updatedProduct.priceRange = {
+//         min: Math.min(...effectivePrices),
+//         max: Math.max(...effectivePrices)
+//       };
+
+//       updatedProduct.totalStock =
+//         updatedProduct.variants.reduce(
+//           (sum, v) => sum + (v.inventory.quantity || 0),
+//           0
+//         );
+
+//       await updatedProduct.save();
+
+//       return res.status(200).json({
+//         success: true,
+//         message: "Variant updated successfully",
+//         product: updatedProduct
+//       });
+//     }
+
+//     // =====================================================
+//     // PRODUCT FIELD UPDATE
+//     // =====================================================
+
+//     if (updates.name && updates.name !== existingProduct.name) {
+//       updates.slug = await generateSlug(
+//         updates.name,
+//         existingProduct._id
+//       );
+//     }
+
+//     if (updates.soldInfo) {
+//       const parsed = parseIfString(updates.soldInfo, {});
+//       updates.soldInfo = {
+//         ...existingProduct.soldInfo.toObject(),
+//         ...parsed,
+//         enabled: parsed.enabled === true || parsed.enabled === "true",
+//         count: Number(parsed.count ?? 0)
+//       };
+//     }
+
+//     if (updates.fomo) {
+//       const parsed = parseIfString(updates.fomo, {});
+//       updates.fomo = {
+//         ...existingProduct.fomo.toObject(),
+//         ...parsed,
+//         enabled: parsed.enabled === true || parsed.enabled === "true",
+//         viewingNow: Number(parsed.viewingNow ?? 0),
+//         productLeft: Number(parsed.productLeft ?? 0),
+//         type: ["viewing_now", "product_left", "custom"].includes(parsed.type)
+//           ? parsed.type
+//           : existingProduct.fomo.type
+//       };
+//     }
+
+//     if (updates.shipping) {
+//       const parsed = parseIfString(updates.shipping, {});
+//       updates.shipping = {
+//         ...existingProduct.shipping.toObject(),
+//         ...parsed,
+//         weight: Number(parsed.weight ?? 0),
+//         dimensions: {
+//           length: Number(parsed.dimensions?.length ?? 0),
+//           width: Number(parsed.dimensions?.width ?? 0),
+//           height: Number(parsed.dimensions?.height ?? 0)
+//         }
+//       };
+//     }
+
+//     if (updates.attributes) {
+//       const parsed = parseIfString(updates.attributes, []);
+//       updates.attributes = Array.isArray(parsed)
+//         ? parsed.map(a => ({ key: a.key, value: a.value }))
+//         : [];
+//     }
+
+//     const updatedProduct = await Product.findByIdAndUpdate(
+//       existingProduct._id,
+//       { $set: updates },
+//       { new: true, runValidators: true }
+//     );
+
+//     return res.status(200).json({
+//       success: true,
+//       message: "Product updated successfully",
+//       product: updatedProduct
+//     });
+
+//   } catch (error) {
+//     console.error("Update product error:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Error updating product",
+//       error: error.message
+//     });
+//   }
+// };
 const updateProduct = async (req, res) => {
   try {
+
     const slug = req.params.slug;
 
     const existingProduct = await Product.findOne({ slug });
+
     if (!existingProduct) {
       return res.status(404).json({
         success: false,
@@ -950,9 +1276,10 @@ const updateProduct = async (req, res) => {
     }
 
     const updates = { ...req.body };
+
     delete updates.slug;
     delete updates.sku;
-    delete updates.variants; // safety
+    delete updates.variants;
 
     const parseIfString = (value, fallback) => {
       if (typeof value === "string") {
@@ -968,9 +1295,11 @@ const updateProduct = async (req, res) => {
     // =====================================================
     // ✅ VARIANT UPDATE BY BARCODE
     // =====================================================
+
     if (updates.barcode) {
 
       const barcodeNumber = Number(updates.barcode);
+
       if (isNaN(barcodeNumber)) {
         return res.status(400).json({
           success: false,
@@ -985,17 +1314,20 @@ const updateProduct = async (req, res) => {
       if (variantIndex === -1) {
         return res.status(404).json({
           success: false,
-          message: "Variant not found for given barcode"
+          message: "No product found with this barcode"
         });
       }
 
       const existingVariant = existingProduct.variants[variantIndex];
+
       const updateFields = {};
 
       // =========================
-      // PRICE UPDATE (SAFE)
+      // PRICE UPDATE
       // =========================
+
       if (updates.price) {
+
         const parsedPrice = parseIfString(updates.price, {});
 
         const base =
@@ -1029,7 +1361,9 @@ const updateProduct = async (req, res) => {
       // =========================
       // INVENTORY UPDATE
       // =========================
+
       if (updates.inventory) {
+
         const parsedInventory = parseIfString(updates.inventory, {});
 
         if (parsedInventory.quantity !== undefined) {
@@ -1048,6 +1382,54 @@ const updateProduct = async (req, res) => {
         }
       }
 
+      // =========================
+      // ✅ IMAGES UPDATE (FIXED)
+      // =========================
+
+      if (req.files && req.files.length > 0) {
+
+        // delete old images
+        if (existingVariant.images && existingVariant.images.length > 0) {
+
+          for (const img of existingVariant.images) {
+
+            if (img.publicId) {
+              await deleteFromCloudinary(img.publicId);
+            }
+
+          }
+
+        }
+
+        const uploadedImages = [];
+
+        for (let i = 0; i < req.files.length; i++) {
+
+          const file = req.files[i];
+
+          // ensure buffer exists
+          if (!file.buffer) {
+            continue;
+          }
+
+          const uploadResult = await uploadToCloudinary(
+            file.buffer,
+            "products"
+          );
+
+          uploadedImages.push({
+            url: uploadResult.url,
+            publicId: uploadResult.publicId,
+            altText: existingProduct.name,
+            order: i
+          });
+
+        }
+
+        updateFields["variants.$.images"] = uploadedImages;
+
+      }
+
       const updatedProduct = await Product.findOneAndUpdate(
         { slug, "variants.barcode": barcodeNumber },
         { $set: updateFields },
@@ -1055,6 +1437,7 @@ const updateProduct = async (req, res) => {
       );
 
       // 🔁 Recalculate totals
+
       const effectivePrices = updatedProduct.variants.map(v =>
         v.price.sale != null ? v.price.sale : v.price.base
       );
@@ -1077,6 +1460,7 @@ const updateProduct = async (req, res) => {
         message: "Variant updated successfully",
         product: updatedProduct
       });
+
     }
 
     // =====================================================
@@ -1084,24 +1468,31 @@ const updateProduct = async (req, res) => {
     // =====================================================
 
     if (updates.name && updates.name !== existingProduct.name) {
+
       updates.slug = await generateSlug(
         updates.name,
         existingProduct._id
       );
+
     }
 
     if (updates.soldInfo) {
+
       const parsed = parseIfString(updates.soldInfo, {});
+
       updates.soldInfo = {
         ...existingProduct.soldInfo.toObject(),
         ...parsed,
         enabled: parsed.enabled === true || parsed.enabled === "true",
         count: Number(parsed.count ?? 0)
       };
+
     }
 
     if (updates.fomo) {
+
       const parsed = parseIfString(updates.fomo, {});
+
       updates.fomo = {
         ...existingProduct.fomo.toObject(),
         ...parsed,
@@ -1112,10 +1503,13 @@ const updateProduct = async (req, res) => {
           ? parsed.type
           : existingProduct.fomo.type
       };
+
     }
 
     if (updates.shipping) {
+
       const parsed = parseIfString(updates.shipping, {});
+
       updates.shipping = {
         ...existingProduct.shipping.toObject(),
         ...parsed,
@@ -1126,13 +1520,17 @@ const updateProduct = async (req, res) => {
           height: Number(parsed.dimensions?.height ?? 0)
         }
       };
+
     }
 
     if (updates.attributes) {
+
       const parsed = parseIfString(updates.attributes, []);
+
       updates.attributes = Array.isArray(parsed)
         ? parsed.map(a => ({ key: a.key, value: a.value }))
         : [];
+
     }
 
     const updatedProduct = await Product.findByIdAndUpdate(
@@ -1148,16 +1546,17 @@ const updateProduct = async (req, res) => {
     });
 
   } catch (error) {
+
     console.error("Update product error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Error updating product",
       error: error.message
     });
+
   }
 };
-
-
 // Soft delete (archive)
 // Soft delete (archive)
 const deleteProduct = async (req, res) => {
@@ -2193,10 +2592,10 @@ module.exports = {
   getAllActiveProducts,
   getProductBySlug , 
    bulkCreateProducts ,
-    bulkRestore  , 
-    importProductsFromCSV ,
-    getAllProductsAdmin , 
-    addVariant,
-    deleteVariant,
-    getVariantByBarcode
+   bulkRestore  , 
+   importProductsFromCSV ,
+   getAllProductsAdmin , 
+   addVariant,
+   deleteVariant,
+   getVariantByBarcode
 };

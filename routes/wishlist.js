@@ -24,5 +24,6 @@ router.delete(
   wishlistController.clearWishlist
 );
 
+router.post("/move-to-cart", verifyToken, wishlistController.moveToCart)
 
 module.exports = router;

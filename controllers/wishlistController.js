@@ -1,5 +1,6 @@
 const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
+const Cart = require('../models/cart');
 
 
 // GET /wishlist?wishlistId=... OR ?userId=...
