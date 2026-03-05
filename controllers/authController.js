@@ -308,9 +308,15 @@ const login = async (req, res) => {
     const hashedRefreshToken = hashToken(refreshToken);
 
     // 🧹 Remove expired tokens
+    // user.refreshTokens = user.refreshTokens.filter(
+    //   (t) => t.expiresAt > new Date()
+    // );
+    if (!Array.isArray(user.refreshTokens)) {
+  user.refreshTokens = [];
+}
     user.refreshTokens = user.refreshTokens.filter(
-      (t) => t.expiresAt > new Date()
-    );
+  (t) => t.token && t.expiresAt && t.expiresAt > new Date()
+);
 
     // ➕ Store hashed refresh token
     user.refreshTokens.push({

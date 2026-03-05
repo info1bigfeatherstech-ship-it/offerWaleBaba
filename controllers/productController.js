@@ -1042,11 +1042,232 @@ const importProductsFromCSV = async (req, res) => {
 //Update existing product
 // Update existing product
 // Update existing product
+// const updateProduct = async (req, res) => {
+//   try {
+//     const slug = req.params.slug;
+
+//     const existingProduct = await Product.findOne({ slug });
+//     if (!existingProduct) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "Product not found"
+//       });
+//     }
+
+//     const updates = { ...req.body };
+//     delete updates.slug;
+//     delete updates.sku;
+//     delete updates.variants; // safety
+
+//     const parseIfString = (value, fallback) => {
+//       if (typeof value === "string") {
+//         try {
+//           return JSON.parse(value);
+//         } catch {
+//           return fallback;
+//         }
+//       }
+//       return value;
+//     };
+
+//     // =====================================================
+//     // ✅ VARIANT UPDATE BY BARCODE
+//     // =====================================================
+//     if (updates.barlicode) {
+
+//       const barcodeNumber = Number(updates.barcode);
+//       if (isNaN(barcodeNumber)) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "Invalid barcode"
+//         });
+//       }
+
+//       const variantIndex = existingProduct.variants.findIndex(
+//         v => v.barcode === barcodeNumber
+//       );
+
+//       if (variantIndex === -1) {
+//         return res.status(404).json({
+//           success: false,
+//           message: "Variant not found for given barcode"
+//         });
+//       }
+
+//       const existingVariant = existingProduct.variants[variantIndex];
+//       const updateFields = {};
+
+//       // =========================
+//       // PRICE UPDATE (SAFE)
+//       // =========================
+//       if (updates.price) {
+//         const parsedPrice = parseIfString(updates.price, {});
+
+//         const base =
+//           parsedPrice.base !== undefined
+//             ? Number(parsedPrice.base)
+//             : existingVariant.price.base;
+
+//         const sale =
+//           parsedPrice.sale !== undefined
+//             ? parsedPrice.sale != null
+//               ? Number(parsedPrice.sale)
+//               : null
+//             : existingVariant.price.sale;
+
+//         if (sale != null && sale >= base) {
+//           return res.status(400).json({
+//             success: false,
+//             message: "Sale price must be less than base price"
+//           });
+//         }
+
+//         if (parsedPrice.base !== undefined) {
+//           updateFields["variants.$.price.base"] = base;
+//         }
+
+//         if (parsedPrice.sale !== undefined) {
+//           updateFields["variants.$.price.sale"] = sale;
+//         }
+//       }
+
+//       // =========================
+//       // INVENTORY UPDATE
+//       // =========================
+//       if (updates.inventory) {
+//         const parsedInventory = parseIfString(updates.inventory, {});
+
+//         if (parsedInventory.quantity !== undefined) {
+//           updateFields["variants.$.inventory.quantity"] =
+//             Number(parsedInventory.quantity);
+//         }
+
+//         if (parsedInventory.lowStockThreshold !== undefined) {
+//           updateFields["variants.$.inventory.lowStockThreshold"] =
+//             Number(parsedInventory.lowStockThreshold);
+//         }
+
+//         if (parsedInventory.trackInventory !== undefined) {
+//           updateFields["variants.$.inventory.trackInventory"] =
+//             parsedInventory.trackInventory;
+//         }
+//       }
+
+//       const updatedProduct = await Product.findOneAndUpdate(
+//         { slug, "variants.barcode": barcodeNumber },
+//         { $set: updateFields },
+//         { new: true }
+//       );
+
+//       // 🔁 Recalculate totals
+//       const effectivePrices = updatedProduct.variants.map(v =>
+//         v.price.sale != null ? v.price.sale : v.price.base
+//       );
+
+//       updatedProduct.priceRange = {
+//         min: Math.min(...effectivePrices),
+//         max: Math.max(...effectivePrices)
+//       };
+
+//       updatedProduct.totalStock =
+//         updatedProduct.variants.reduce(
+//           (sum, v) => sum + (v.inventory.quantity || 0),
+//           0
+//         );
+
+//       await updatedProduct.save();
+
+//       return res.status(200).json({
+//         success: true,
+//         message: "Variant updated successfully",
+//         product: updatedProduct
+//       });
+//     }
+
+//     // =====================================================
+//     // PRODUCT FIELD UPDATE
+//     // =====================================================
+
+//     if (updates.name && updates.name !== existingProduct.name) {
+//       updates.slug = await generateSlug(
+//         updates.name,
+//         existingProduct._id
+//       );
+//     }
+
+//     if (updates.soldInfo) {
+//       const parsed = parseIfString(updates.soldInfo, {});
+//       updates.soldInfo = {
+//         ...existingProduct.soldInfo.toObject(),
+//         ...parsed,
+//         enabled: parsed.enabled === true || parsed.enabled === "true",
+//         count: Number(parsed.count ?? 0)
+//       };
+//     }
+
+//     if (updates.fomo) {
+//       const parsed = parseIfString(updates.fomo, {});
+//       updates.fomo = {
+//         ...existingProduct.fomo.toObject(),
+//         ...parsed,
+//         enabled: parsed.enabled === true || parsed.enabled === "true",
+//         viewingNow: Number(parsed.viewingNow ?? 0),
+//         productLeft: Number(parsed.productLeft ?? 0),
+//         type: ["viewing_now", "product_left", "custom"].includes(parsed.type)
+//           ? parsed.type
+//           : existingProduct.fomo.type
+//       };
+//     }
+
+//     if (updates.shipping) {
+//       const parsed = parseIfString(updates.shipping, {});
+//       updates.shipping = {
+//         ...existingProduct.shipping.toObject(),
+//         ...parsed,
+//         weight: Number(parsed.weight ?? 0),
+//         dimensions: {
+//           length: Number(parsed.dimensions?.length ?? 0),
+//           width: Number(parsed.dimensions?.width ?? 0),
+//           height: Number(parsed.dimensions?.height ?? 0)
+//         }
+//       };
+//     }
+
+//     if (updates.attributes) {
+//       const parsed = parseIfString(updates.attributes, []);
+//       updates.attributes = Array.isArray(parsed)
+//         ? parsed.map(a => ({ key: a.key, value: a.value }))
+//         : [];
+//     }
+
+//     const updatedProduct = await Product.findByIdAndUpdate(
+//       existingProduct._id,
+//       { $set: updates },
+//       { new: true, runValidators: true }
+//     );
+
+//     return res.status(200).json({
+//       success: true,
+//       message: "Product updated successfully",
+//       product: updatedProduct
+//     });
+
+//   } catch (error) {
+//     console.error("Update product error:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Error updating product",
+//       error: error.message
+//     });
+//   }
+// };
 const updateProduct = async (req, res) => {
   try {
+
     const slug = req.params.slug;
 
     const existingProduct = await Product.findOne({ slug });
+
     if (!existingProduct) {
       return res.status(404).json({
         success: false,
@@ -1055,9 +1276,10 @@ const updateProduct = async (req, res) => {
     }
 
     const updates = { ...req.body };
+
     delete updates.slug;
     delete updates.sku;
-    delete updates.variants; // safety
+    delete updates.variants;
 
     const parseIfString = (value, fallback) => {
       if (typeof value === "string") {
@@ -1073,9 +1295,11 @@ const updateProduct = async (req, res) => {
     // =====================================================
     // ✅ VARIANT UPDATE BY BARCODE
     // =====================================================
+
     if (updates.barcode) {
 
       const barcodeNumber = Number(updates.barcode);
+
       if (isNaN(barcodeNumber)) {
         return res.status(400).json({
           success: false,
@@ -1090,17 +1314,20 @@ const updateProduct = async (req, res) => {
       if (variantIndex === -1) {
         return res.status(404).json({
           success: false,
-          message: "Variant not found for given barcode"
+          message: "No product found with this barcode"
         });
       }
 
       const existingVariant = existingProduct.variants[variantIndex];
+
       const updateFields = {};
 
       // =========================
-      // PRICE UPDATE (SAFE)
+      // PRICE UPDATE
       // =========================
+
       if (updates.price) {
+
         const parsedPrice = parseIfString(updates.price, {});
 
         const base =
@@ -1134,7 +1361,9 @@ const updateProduct = async (req, res) => {
       // =========================
       // INVENTORY UPDATE
       // =========================
+
       if (updates.inventory) {
+
         const parsedInventory = parseIfString(updates.inventory, {});
 
         if (parsedInventory.quantity !== undefined) {
@@ -1153,6 +1382,54 @@ const updateProduct = async (req, res) => {
         }
       }
 
+      // =========================
+      // ✅ IMAGES UPDATE (FIXED)
+      // =========================
+
+      if (req.files && req.files.length > 0) {
+
+        // delete old images
+        if (existingVariant.images && existingVariant.images.length > 0) {
+
+          for (const img of existingVariant.images) {
+
+            if (img.publicId) {
+              await deleteFromCloudinary(img.publicId);
+            }
+
+          }
+
+        }
+
+        const uploadedImages = [];
+
+        for (let i = 0; i < req.files.length; i++) {
+
+          const file = req.files[i];
+
+          // ensure buffer exists
+          if (!file.buffer) {
+            continue;
+          }
+
+          const uploadResult = await uploadToCloudinary(
+            file.buffer,
+            "products"
+          );
+
+          uploadedImages.push({
+            url: uploadResult.url,
+            publicId: uploadResult.publicId,
+            altText: existingProduct.name,
+            order: i
+          });
+
+        }
+
+        updateFields["variants.$.images"] = uploadedImages;
+
+      }
+
       const updatedProduct = await Product.findOneAndUpdate(
         { slug, "variants.barcode": barcodeNumber },
         { $set: updateFields },
@@ -1160,6 +1437,7 @@ const updateProduct = async (req, res) => {
       );
 
       // 🔁 Recalculate totals
+
       const effectivePrices = updatedProduct.variants.map(v =>
         v.price.sale != null ? v.price.sale : v.price.base
       );
@@ -1182,6 +1460,7 @@ const updateProduct = async (req, res) => {
         message: "Variant updated successfully",
         product: updatedProduct
       });
+
     }
 
     // =====================================================
@@ -1189,24 +1468,31 @@ const updateProduct = async (req, res) => {
     // =====================================================
 
     if (updates.name && updates.name !== existingProduct.name) {
+
       updates.slug = await generateSlug(
         updates.name,
         existingProduct._id
       );
+
     }
 
     if (updates.soldInfo) {
+
       const parsed = parseIfString(updates.soldInfo, {});
+
       updates.soldInfo = {
         ...existingProduct.soldInfo.toObject(),
         ...parsed,
         enabled: parsed.enabled === true || parsed.enabled === "true",
         count: Number(parsed.count ?? 0)
       };
+
     }
 
     if (updates.fomo) {
+
       const parsed = parseIfString(updates.fomo, {});
+
       updates.fomo = {
         ...existingProduct.fomo.toObject(),
         ...parsed,
@@ -1217,10 +1503,13 @@ const updateProduct = async (req, res) => {
           ? parsed.type
           : existingProduct.fomo.type
       };
+
     }
 
     if (updates.shipping) {
+
       const parsed = parseIfString(updates.shipping, {});
+
       updates.shipping = {
         ...existingProduct.shipping.toObject(),
         ...parsed,
@@ -1231,13 +1520,17 @@ const updateProduct = async (req, res) => {
           height: Number(parsed.dimensions?.height ?? 0)
         }
       };
+
     }
 
     if (updates.attributes) {
+
       const parsed = parseIfString(updates.attributes, []);
+
       updates.attributes = Array.isArray(parsed)
         ? parsed.map(a => ({ key: a.key, value: a.value }))
         : [];
+
     }
 
     const updatedProduct = await Product.findByIdAndUpdate(
@@ -1253,16 +1546,17 @@ const updateProduct = async (req, res) => {
     });
 
   } catch (error) {
+
     console.error("Update product error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Error updating product",
       error: error.message
     });
+
   }
 };
-
-
 // Soft delete (archive)
 // Soft delete (archive)
 const deleteProduct = async (req, res) => {
