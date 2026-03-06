@@ -2276,9 +2276,11 @@ const getAdminProducts = async (req, res) => {
 // Add variant to existing product
 const addVariant = async (req, res) => {
   try {
+
     const { slug } = req.params;
 
     const product = await Product.findOne({ slug });
+
     if (!product) {
       return res.status(404).json({
         success: false,
@@ -2314,7 +2316,7 @@ const addVariant = async (req, res) => {
       });
     }
 
-    // 🔒 Global duplicate check (VERY IMPORTANT)
+    // 🔒 Global duplicate check
     const barcodeExists = await Product.exists({
       "variants.barcode": barcodeNumber
     });
@@ -2337,6 +2339,7 @@ const addVariant = async (req, res) => {
     }
 
     const basePrice = Number(variant.price.base);
+
     const salePrice =
       variant.price.sale != null
         ? Number(variant.price.sale)
@@ -2355,21 +2358,53 @@ const addVariant = async (req, res) => {
     const skuVal = await generateSku();
 
     // =========================
+    // 📸 IMAGE UPLOAD
+    // =========================
+    let uploadedImages = [];
+
+    if (req.files && req.files.length > 0) {
+
+      for (let i = 0; i < req.files.length; i++) {
+
+        const file = req.files[i];
+
+        if (!file.buffer) continue;
+
+        const uploadResult = await uploadToCloudinary(
+          file.buffer,
+          "products"
+        );
+
+        uploadedImages.push({
+          url: uploadResult.url,
+          publicId: uploadResult.publicId,
+          altText: product.name,
+          order: i
+        });
+
+      }
+
+    }
+
+    // =========================
     // BUILD NEW VARIANT
     // =========================
     const newVariant = {
       sku: skuVal,
       barcode: barcodeNumber,
+
       attributes: Array.isArray(variant.attributes)
         ? variant.attributes.map(a => ({
             key: a.key,
             value: a.value
           }))
         : [],
+
       price: {
         base: basePrice,
         sale: salePrice
       },
+
       inventory: {
         quantity: Number(variant.inventory?.quantity || 0),
         lowStockThreshold: Number(
@@ -2378,7 +2413,9 @@ const addVariant = async (req, res) => {
         trackInventory:
           variant.inventory?.trackInventory ?? true
       },
-      images: [], // images handled separately if needed
+
+      images: uploadedImages,
+
       isActive: variant.isActive !== false
     };
 
@@ -2410,12 +2447,15 @@ const addVariant = async (req, res) => {
     });
 
   } catch (error) {
+
     console.error("Add variant error:", error);
+
     return res.status(500).json({
       success: false,
       message: "Error adding variant",
       error: error.message
     });
+
   }
 };
 
