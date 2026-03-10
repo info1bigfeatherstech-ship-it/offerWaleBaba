@@ -1,6 +1,6 @@
 const express = require('express');
 const { body } = require('express-validator');
-const { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken, googleAuth , requestPhoneOTP } = require('../controllers/authController');
+const { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken, googleAuth , requestPhoneOTP , verifyPhoneOTP , loginWithPhone } = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/auth');
 
 const router = express.Router();
@@ -89,7 +89,11 @@ router.post('/forgot-password', forgotPassword);
 router.post('/reset-password', resetPassword);
 
 
+
 // 📱 Request OTP
-router.post("/phone/request-otp", requestPhoneOTP);
+// requestPhoneOTP, verifyPhoneOTP, loginWithPhone
+router.post('/request-phone-otp', requestPhoneOTP);
+router.post('/verify-phone-otp', verifyPhoneOTP);
+router.post('/login-with-phone', loginWithPhone);
 
 module.exports = router;

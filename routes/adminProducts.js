@@ -98,18 +98,14 @@ router.get('/all', requireAdmin, productController.getAllProductsAdmin);
 // Get all active products
 router.get('/', requireAdmin, productController.getAllActiveProducts);
 
-
 // Bulk hard delete
 router.delete('/bulk-hard-delete', requireAdmin, productController.bulkHardDelete);
 
 // Restore single
 router.patch('/restore/:slug', requireAdmin, productController.restoreProduct);
 
-
 // Hard delete single (only archived)
 router.delete('/hard/:slug', requireAdmin, productController.hardDeleteProduct);
-
-
 
 //post //add variant to product
 router.post('/:slug/variants', requireAdmin,  uploadProductImages, productController.addVariant);
@@ -120,17 +116,14 @@ router.delete('/:slug/variants', requireAdmin, productController.deleteVariant);
 //get variant by barcode
 router.get('/variant/:barcode', requireAdmin, productController.getVariantByBarcode);
 
-
 // PUT /admin/products/:slug Update product with optional image uploads
 router.put('/:slug', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
 
 // DELETE /admin/products/:slug Soft delete (archive)
 router.delete('/:slug', requireAdmin, productController.deleteProduct);
 
-
 //Get /admin/products/:slug get porduct by slug name 
 router.get('/:slug', requireAdmin, productController.getProductBySlug);
-
 
 
 module.exports = router;

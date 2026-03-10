@@ -24,8 +24,8 @@ const getTokenFromHeader = (req) => {
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: process.env.EMAIL_USER || 'your-email@gmail.com',
-    pass: process.env.EMAIL_PASSWORD || 'your-app-password'
+    user: process.env.EMAIL_USER ,
+    pass: process.env.EMAIL_PASSWORD 
   }
 });
 
@@ -265,11 +265,9 @@ const login = async (req, res) => {
         errors: errors.array()
       });
     }
-
     const { email, password } = req.body;
 
     const user = await User.findOne({ email }).select("+password");
-
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -291,7 +289,6 @@ const login = async (req, res) => {
         message: "Your account is not active"
       });
     }
-
     const isPasswordValid = await user.comparePassword(password);
 
     if (!isPasswordValid) {
@@ -599,7 +596,7 @@ const forgotPassword = async (req, res) => {
 
     const mailOptions = {
       from: process.env.EMAIL_USER || 'info1.bigfeatherstech@gmail.com',
-      to: email,
+      to: email,  
       subject: 'Password Reset OTP',
       html: `<p>Your password reset OTP is <strong>${otp}</strong>. It expires in 15 minutes.</p>`
     };
@@ -740,23 +737,225 @@ const googleAuth = async (req, res) => {
 
 
 
-requestPhoneOTP = async (req, res) => {
-  const { phone } = req.body;
 
-  const otp = await sendOTP(phone);
+const requestPhoneOTP = async (req, res) => {
+    try {
 
-  await User.updateOne(
-    { phone },
-    {
-      phoneVerificationOTP: otp,
+    const { name, email, phone, password } = req.body;
+
+    if (!name || !email || !phone || !password) {
+      return res.status(400).json({
+        message: "All fields are required"
+      });
+    }
+
+    let user = await User.findOne({
+      $or: [{ email }, { phone }]
+    });
+
+    if (user && user.isPhoneVerified) {
+      return res.status(400).json({
+        message: "User already registered. Please login."
+      });
+    }
+
+    const otp = generateOTP();
+    await sendOTP(phone, otp);
+
+    const hashedOTP = await bcrypt.hash(otp, 10);
+
+    if (user && !user.isPhoneVerified) {
+
+      user.phoneVerificationOTP = hashedOTP;
+      user.phoneVerificationOTPExpires = Date.now() + 5 * 60 * 1000;
+
+      await user.save();
+
+      return res.json({
+        message: "OTP resent successfully",
+           otp: otp
+      });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    user = new User({
+      name,
+      email,
+      phone,
+      password: hashedPassword,
+      isPhoneVerified: false,
+      phoneVerificationOTP: hashedOTP,
       phoneVerificationOTPExpires: Date.now() + 5 * 60 * 1000
-    },
-    { upsert: true }
-  );
+    });
 
-  res.json({ message: "OTP sent successfully" , devOTP: otp });
+    await user.save();
+  
+    res.json({
+      message: "OTP sent successfully",
+      otp: otp
+    });
+
+  } catch (error) {
+
+    res.status(500).json({
+      message: "Registration failed",
+      error: error.message
+    });
+
+  }
+};
+
+//verify phone OTP
+const verifyPhoneOTP = async (req, res) => {
+   try {
+
+    const { phone, otp } = req.body;
+
+    const user = await User.findOne({ phone })
+      .select("+phoneVerificationOTP +phoneVerificationOTPExpires +refreshTokens");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (user.phoneVerificationOTPExpires < Date.now()) {
+      return res.status(400).json({ message: "OTP expired" });
+    }
+
+    const match = await bcrypt.compare(otp, user.phoneVerificationOTP);
+
+    if (!match) {
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    user.isPhoneVerified = true;
+
+    user.phoneVerificationOTP = undefined;
+    user.phoneVerificationOTPExpires = undefined;
+
+    // 🔐 Generate tokens
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    const hashedRefreshToken = hashToken(refreshToken);
+
+    // 🧹 Remove expired tokens
+    user.refreshTokens = user.refreshTokens.filter(
+      (t) => t.expiresAt > new Date()
+    );
+
+    // ➕ Store hashed refresh token
+    user.refreshTokens.push({
+      token: hashedRefreshToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    await user.save();
+
+    // 🍪 Send refresh token in cookie
+    res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
+
+    res.json({
+      message: "Phone verified",
+      accessToken
+    });
+
+  } catch (error) {
+
+    console.error("Phone OTP verification error:", error);
+
+    res.status(500).json({
+      message: "OTP verification failed"
+    });
+
+  }
 };
 
 
-module.exports = { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken, googleAuth , requestPhoneOTP };
+//login with number and password
+const loginWithPhone=async(req, res)=>{
+    try {
+
+    // const { phone, email, password } = req.body;
+      const phone = req.body.phone?.trim();
+      const password = req.body.password?.trim();
+      const email = req.body.email;
+
+      // const query = phone ? { phone } : { email };
+
+    const user = await User.findOne({phone: phone })
+      .select("+password +refreshTokens");
+   
+       console.log("testingg 2");
+       console.log("User found:", user);
+
+    if (!user) {
+      return res.status(400).json({
+        message: "User not found"
+      });
+    }
+
+    if (!user.isPhoneVerified) {
+      return res.status(403).json({
+        message: "Phone number not verified"
+      });
+    } 
+// console.log("Entered password:", password);
+// console.log("Entered length:", password.length);
+
+// console.log("Stored hash:", user.password);
+
+// console.log("Password JSON:", JSON.stringify(password));
+ 
+    
+    // const isMatch = await user.comparePassword(password);
+
+ const isMatch = await bcrypt.compare(password, user.password);
+
+    console.log("isMatch:", isMatch);
+    if (!isMatch) {
+      return res.status(400).json({
+        message: "password match nahin hua"
+      });
+    }
+
+    // 🔐 Generate tokens
+    const accessToken = generateAccessToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    const hashedRefreshToken = hashToken(refreshToken);
+
+    // 🧹 Remove expired tokens
+    user.refreshTokens = user.refreshTokens.filter(
+      (t) => t.expiresAt > new Date()
+    );
+
+    // ➕ Store hashed refresh token
+    user.refreshTokens.push({
+      token: hashedRefreshToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    await user.save();
+
+    // 🍪 Send refresh token in cookie
+    res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
+
+    res.json({
+      message: "Login successful",
+      accessToken
+    });
+
+  } catch (error) {
+
+    res.status(500).json({
+      message: "Login failed"
+    });
+
+  }
+}
+
+
+module.exports = { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken, googleAuth , requestPhoneOTP, verifyPhoneOTP, loginWithPhone };
 

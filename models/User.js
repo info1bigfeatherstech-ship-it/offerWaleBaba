@@ -146,7 +146,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       trim: true
     },
-
+    
     email: {
       type: String,
       lowercase: true,
@@ -163,7 +163,6 @@ const userSchema = new mongoose.Schema(
       unique: true,     // phone login ke liye unique hona better hai
       sparse: true
     },
-
     // ===== PASSWORD =====
     password: {
       type: String,
@@ -231,32 +230,32 @@ const userSchema = new mongoose.Schema(
       select: false
     },
 
-    // ===== 🔐 TRUSTED DEVICES (UPDATED - SECURE) =====
-    trustedDevices: [
-      {
-        deviceId: {
-          type: String
-        },
+    // // ===== 🔐 TRUSTED DEVICES (UPDATED - SECURE) =====
+    // trustedDevices: [
+    //   {
+    //     deviceId: {
+    //       type: String
+    //     },
 
-        // hashed version of deviceTrustToken (httpOnly cookie)
-        deviceTokenHash: {
-          type: String,
-          select: false
-        },
+    //     // hashed version of deviceTrustToken (httpOnly cookie)
+    //     deviceTokenHash: {
+    //       type: String,
+    //       select: false
+    //     },
 
-        userAgent: String,
-        ipAddress: String,
+    //     userAgent: String,
+    //     ipAddress: String,
 
-        addedAt: {
-          type: Date,
-          default: Date.now
-        },
+    //     addedAt: {
+    //       type: Date,
+    //       default: Date.now
+    //     },
 
-        lastUsedAt: Date,
+    //     lastUsedAt: Date,
 
-        expiresAt: Date
-      }
-    ],
+    //     expiresAt: Date
+    //   }
+    // ],
 
     role: {
       type: String,
@@ -275,7 +274,8 @@ const userSchema = new mongoose.Schema(
 
 // ================= PASSWORD HASH =================
 userSchema.pre("save", async function () {
-  if (!this.isModified("password") || !this.password) return;
+    if (!this.isModified("password") || !this.password) return; // nothing to do
+  if (this.password.startsWith("$2b$")) return; // already hashed
 
   const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
@@ -283,6 +283,7 @@ userSchema.pre("save", async function () {
 
 // ================= PASSWORD COMPARE =================
 userSchema.methods.comparePassword = async function (enteredPassword) {
+   if (!this.password) throw new Error("No password set for this user");
   return await bcrypt.compare(enteredPassword, this.password);
 };
 
