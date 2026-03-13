@@ -11,6 +11,8 @@ const csv = require('csv-parser');
 const unzipper = require('unzipper');
 const path = require('path');
 const axios = require('axios');
+const AdmZip = require("adm-zip");
+const { Parser } = require("json2csv");   // ✅ ADD THIS
 // Create new product
 // Create new product
 const createProduct = async (req, res) => {
@@ -1035,232 +1037,280 @@ const importProductsFromCSV = async (req, res) => {
   }
 };
 
+const bulkUploadNewProductsWithImages = async (req, res) => {
+  try {
 
+    if (!req.files?.csvFile || !req.files?.imagesZip) {
+      return res.status(400).json({
+        success: false,
+        message: "CSV file and images ZIP are required"
+      });
+    }
 
+    const csvPath = req.files.csvFile[0].path;
+    const zipPath = req.files.imagesZip[0].path;
 
+    const extractPath = path.join(__dirname, "../uploads/extracted");
 
-//Update existing product
-// Update existing product
-// Update existing product
-// const updateProduct = async (req, res) => {
-//   try {
-//     const slug = req.params.slug;
+    // =============================
+    // CLEAN OLD EXTRACTED FOLDER
+    // =============================
 
-//     const existingProduct = await Product.findOne({ slug });
-//     if (!existingProduct) {
-//       return res.status(404).json({
-//         success: false,
-//         message: "Product not found"
-//       });
-//     }
+    if (fs.existsSync(extractPath)) {
+      fs.rmSync(extractPath, { recursive: true, force: true });
+    }
 
-//     const updates = { ...req.body };
-//     delete updates.slug;
-//     delete updates.sku;
-//     delete updates.variants; // safety
+    fs.mkdirSync(extractPath, { recursive: true });
 
-//     const parseIfString = (value, fallback) => {
-//       if (typeof value === "string") {
-//         try {
-//           return JSON.parse(value);
-//         } catch {
-//           return fallback;
-//         }
-//       }
-//       return value;
-//     };
+    // =============================
+    // Extract ZIP
+    // =============================
 
-//     // =====================================================
-//     // ✅ VARIANT UPDATE BY BARCODE
-//     // =====================================================
-//     if (updates.barlicode) {
+    const zip = new AdmZip(zipPath);
+    zip.extractAllTo(extractPath, true);
 
-//       const barcodeNumber = Number(updates.barcode);
-//       if (isNaN(barcodeNumber)) {
-//         return res.status(400).json({
-//           success: false,
-//           message: "Invalid barcode"
-//         });
-//       }
+    const extractedFolders = fs.readdirSync(extractPath);
 
-//       const variantIndex = existingProduct.variants.findIndex(
-//         v => v.barcode === barcodeNumber
-//       );
+    const rootFolder =
+      extractedFolders.length === 1
+        ? path.join(extractPath, extractedFolders[0])
+        : extractPath;
 
-//       if (variantIndex === -1) {
-//         return res.status(404).json({
-//           success: false,
-//           message: "Variant not found for given barcode"
-//         });
-//       }
+    // =============================
+    // Parse CSV
+    // =============================
 
-//       const existingVariant = existingProduct.variants[variantIndex];
-//       const updateFields = {};
+    const rows = [];
 
-//       // =========================
-//       // PRICE UPDATE (SAFE)
-//       // =========================
-//       if (updates.price) {
-//         const parsedPrice = parseIfString(updates.price, {});
+    await new Promise((resolve, reject) => {
+      fs.createReadStream(csvPath)
+        .pipe(csv())
+        .on("data", (data) => rows.push(data))
+        .on("end", resolve)
+        .on("error", reject);
+    });
 
-//         const base =
-//           parsedPrice.base !== undefined
-//             ? Number(parsedPrice.base)
-//             : existingVariant.price.base;
+    // =============================
+    // Attribute Parsers
+    // =============================
 
-//         const sale =
-//           parsedPrice.sale !== undefined
-//             ? parsedPrice.sale != null
-//               ? Number(parsedPrice.sale)
-//               : null
-//             : existingVariant.price.sale;
+    const parseAttributes = (attrString) => {
 
-//         if (sale != null && sale >= base) {
-//           return res.status(400).json({
-//             success: false,
-//             message: "Sale price must be less than base price"
-//           });
-//         }
+      if (!attrString) return [];
 
-//         if (parsedPrice.base !== undefined) {
-//           updateFields["variants.$.price.base"] = base;
-//         }
+      return attrString.split("|").map(item => {
 
-//         if (parsedPrice.sale !== undefined) {
-//           updateFields["variants.$.price.sale"] = sale;
-//         }
-//       }
+        const [key, value] = item.split(":");
 
-//       // =========================
-//       // INVENTORY UPDATE
-//       // =========================
-//       if (updates.inventory) {
-//         const parsedInventory = parseIfString(updates.inventory, {});
+        return {
+          key: key?.trim(),
+          value: value?.trim()
+        };
 
-//         if (parsedInventory.quantity !== undefined) {
-//           updateFields["variants.$.inventory.quantity"] =
-//             Number(parsedInventory.quantity);
-//         }
+      }).filter(attr => attr.key && attr.value);
 
-//         if (parsedInventory.lowStockThreshold !== undefined) {
-//           updateFields["variants.$.inventory.lowStockThreshold"] =
-//             Number(parsedInventory.lowStockThreshold);
-//         }
+    };
 
-//         if (parsedInventory.trackInventory !== undefined) {
-//           updateFields["variants.$.inventory.trackInventory"] =
-//             parsedInventory.trackInventory;
-//         }
-//       }
+    const success = [];
+    const failed = [];
 
-//       const updatedProduct = await Product.findOneAndUpdate(
-//         { slug, "variants.barcode": barcodeNumber },
-//         { $set: updateFields },
-//         { new: true }
-//       );
+    for (const row of rows) {
 
-//       // 🔁 Recalculate totals
-//       const effectivePrices = updatedProduct.variants.map(v =>
-//         v.price.sale != null ? v.price.sale : v.price.base
-//       );
+      try {
 
-//       updatedProduct.priceRange = {
-//         min: Math.min(...effectivePrices),
-//         max: Math.max(...effectivePrices)
-//       };
+        const barcode = Number(row.barcode);
 
-//       updatedProduct.totalStock =
-//         updatedProduct.variants.reduce(
-//           (sum, v) => sum + (v.inventory.quantity || 0),
-//           0
-//         );
+        if (isNaN(barcode)) {
+          throw new Error("Invalid barcode");
+        }
 
-//       await updatedProduct.save();
+        // =============================
+        // CATEGORY LOOKUP
+        // =============================
 
-//       return res.status(200).json({
-//         success: true,
-//         message: "Variant updated successfully",
-//         product: updatedProduct
-//       });
-//     }
+        const categoryDoc = await Category.findOne({
+          name: row.category
+        });
 
-//     // =====================================================
-//     // PRODUCT FIELD UPDATE
-//     // =====================================================
+        if (!categoryDoc) {
+          throw new Error(`Category not found: ${row.category}`);
+        }
 
-//     if (updates.name && updates.name !== existingProduct.name) {
-//       updates.slug = await generateSlug(
-//         updates.name,
-//         existingProduct._id
-//       );
-//     }
+        let product = await Product.findOne({ name: row.name });
 
-//     if (updates.soldInfo) {
-//       const parsed = parseIfString(updates.soldInfo, {});
-//       updates.soldInfo = {
-//         ...existingProduct.soldInfo.toObject(),
-//         ...parsed,
-//         enabled: parsed.enabled === true || parsed.enabled === "true",
-//         count: Number(parsed.count ?? 0)
-//       };
-//     }
+        // =============================
+        // IMAGE FOLDER
+        // =============================
 
-//     if (updates.fomo) {
-//       const parsed = parseIfString(updates.fomo, {});
-//       updates.fomo = {
-//         ...existingProduct.fomo.toObject(),
-//         ...parsed,
-//         enabled: parsed.enabled === true || parsed.enabled === "true",
-//         viewingNow: Number(parsed.viewingNow ?? 0),
-//         productLeft: Number(parsed.productLeft ?? 0),
-//         type: ["viewing_now", "product_left", "custom"].includes(parsed.type)
-//           ? parsed.type
-//           : existingProduct.fomo.type
-//       };
-//     }
+        const imageFolder = path.join(rootFolder, String(barcode));
 
-//     if (updates.shipping) {
-//       const parsed = parseIfString(updates.shipping, {});
-//       updates.shipping = {
-//         ...existingProduct.shipping.toObject(),
-//         ...parsed,
-//         weight: Number(parsed.weight ?? 0),
-//         dimensions: {
-//           length: Number(parsed.dimensions?.length ?? 0),
-//           width: Number(parsed.dimensions?.width ?? 0),
-//           height: Number(parsed.dimensions?.height ?? 0)
-//         }
-//       };
-//     }
+        if (!fs.existsSync(imageFolder)) {
+          throw new Error(`Image folder not found for barcode ${barcode}`);
+        }
 
-//     if (updates.attributes) {
-//       const parsed = parseIfString(updates.attributes, []);
-//       updates.attributes = Array.isArray(parsed)
-//         ? parsed.map(a => ({ key: a.key, value: a.value }))
-//         : [];
-//     }
+        const files = fs.readdirSync(imageFolder);
 
-//     const updatedProduct = await Product.findByIdAndUpdate(
-//       existingProduct._id,
-//       { $set: updates },
-//       { new: true, runValidators: true }
-//     );
+        if (!files.length) {
+          throw new Error(`No images found for barcode ${barcode}`);
+        }
 
-//     return res.status(200).json({
-//       success: true,
-//       message: "Product updated successfully",
-//       product: updatedProduct
-//     });
+        // =============================
+        // PARALLEL CLOUDINARY UPLOAD
+        // =============================
 
-//   } catch (error) {
-//     console.error("Update product error:", error);
-//     return res.status(500).json({
-//       success: false,
-//       message: "Error updating product",
-//       error: error.message
-//     });
-//   }
-// };
+        const uploadPromises = files.map(async (file, index) => {
+
+          const filePath = path.join(imageFolder, file);
+
+          const buffer = fs.readFileSync(filePath);
+
+          const upload = await uploadToCloudinary(
+            buffer,
+            "products",
+            `${row.name}-${barcode}-${index}`
+          );
+
+          return {
+            url: upload.url,
+            publicId: upload.publicId,
+            altText: row.name,
+            order: index
+          };
+
+        });
+
+        const variantImages = await Promise.all(uploadPromises);
+
+        // =============================
+        // PRICE VALIDATION
+        // =============================
+
+        const basePrice = Number(row.basePrice);
+
+        if (isNaN(basePrice)) {
+          throw new Error(`Invalid base price for barcode ${barcode}`);
+        }
+
+        const salePrice = row.salePrice ? Number(row.salePrice) : null;
+
+        // =============================
+        // ATTRIBUTES
+        // =============================
+
+        const variantAttributes = parseAttributes(row.variantAttributes);
+        const productAttributes = parseAttributes(row.productAttributes);
+
+        // =============================
+        // VARIANT
+        // =============================
+
+        const sku = await generateSku();
+
+        const newVariant = {
+          sku,
+          barcode,
+          attributes: variantAttributes,
+          price: {
+            base: basePrice,
+            sale: salePrice
+          },
+          inventory: {
+            quantity: Number(row.quantity || 0)
+          },
+          images: variantImages
+        };
+
+        // =============================
+        // PRODUCT CREATE / UPDATE
+        // =============================
+
+        if (product) {
+
+          product.variants.push(newVariant);
+
+          await product.save();
+
+        } else {
+
+          const slug = await generateSlug(row.name);
+
+          product = new Product({
+            name: row.name,
+            title: row.title || row.name,
+            slug,
+            description: row.description || "",
+            category: categoryDoc._id,
+            brand: row.brand || null,
+            status: row.status || "draft",
+            isFeatured: row.isfeatured === "true",
+            attributes: productAttributes,
+            variants: [newVariant]
+          });
+
+          await product.save();
+        }
+
+        success.push({
+          name: row.name,
+          barcode
+        });
+
+      } catch (err) {
+
+        failed.push({
+          name: row.name || "Unknown",
+          barcode: row.barcode || null,
+          error: err.message
+        });
+
+      }
+    }
+
+    // =============================
+    // ERROR CSV GENERATION
+    // =============================
+
+    let errorCsvPath = null;
+
+    if (failed.length > 0) {
+
+      const parser = new Parser({
+        fields: ["name", "barcode", "error"]
+      });
+
+      const csvData = parser.parse(failed);
+
+      const fileName = `failed-products-${Date.now()}.csv`;
+
+      errorCsvPath = path.join(__dirname, "../uploads", fileName);
+
+      fs.writeFileSync(errorCsvPath, csvData);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Bulk upload completed",
+      totalRows: rows.length,
+      successfulUploads: success.length,
+      failedUploads: failed.length,
+      errorReport: errorCsvPath
+        ? `/uploads/${path.basename(errorCsvPath)}`
+        : null,
+      errors: failed
+    });
+
+  } catch (error) {
+
+    console.error("Bulk upload error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Bulk upload failed",
+      error: error.message
+    });
+  }
+};
+
 const updateProduct = async (req, res) => {
   try {
 
@@ -2571,5 +2621,6 @@ module.exports = {
    getAllProductsAdmin , 
    addVariant,
    deleteVariant,
-   getVariantByBarcode
+   getVariantByBarcode,
+   bulkUploadNewProductsWithImages
 };

@@ -1,0 +1,3 @@
+"name","barcode","error"
+"iPhone 15","25474","ENOENT: no such file or directory, scandir 'C:\BigFeathers\offerWaaleBaba\backend\uploads\extracted\25474'"
+"Nike Shoes","46833","ENOENT: no such file or directory, scandir 'C:\BigFeathers\offerWaaleBaba\backend\uploads\extracted\46833'"
