@@ -8,9 +8,6 @@ const orderItemSchema = new mongoose.Schema(
     priceSnapshot: {
       base: { type: Number, required: true },
       sale: { type: Number, default: null },
-      costPrice: { type: Number, default: null, select: false },
-      saleStartDate: { type: Date, default: null },
-      saleEndDate: { type: Date, default: null }
     },
     variantAttributesSnapshot: [
       { key: String, value: String }

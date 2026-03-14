@@ -247,7 +247,6 @@ const bulkRemove = async (req, res) => {
 
   cart.calculateTotal();
   await cart.save();
-
   res.json({ success: true, cart });
 };
 
@@ -289,11 +288,8 @@ const checkout = async (req, res) => {
 
       const priceSnapshot = {
         base: variant.price?.base ?? 0,
-        sale: variant.price?.sale ?? null,
-        costPrice: variant.price?.costPrice ?? null,
-        saleStartDate: variant.price?.saleStartDate ?? null,
-        saleEndDate: variant.price?.saleEndDate ?? null
-      };
+        sale: variant.price?.sale ?? null
+      }
 
       const saleValid = isSaleValid(priceSnapshot);
       const unit = saleValid ? priceSnapshot.sale : priceSnapshot.base;
