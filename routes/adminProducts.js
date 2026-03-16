@@ -1,3 +1,5 @@
+
+// this code have both functionality upload zip plus exel link 
 const express = require('express');
 const router  = express.Router();
 const { body, validationResult } = require('express-validator');
@@ -5,30 +7,25 @@ const { requireAdmin } = require('../middlewares/isAdmin');
 const {
   uploadProductImages,
   uploadCSVFile,
-  uploadZIPFile,          // ← NEW: added for Step 2
+  uploadBulkFiles,
 } = require('../middlewares/uploadMiddleware');
 const productController = require('../controllers/productController');
 
 const rejectSlugSku = (req, res, next) => {
-  if ('slug' in req.body || 'sku' in req.body) {
-    return res.status(400).json({ success: false, message: 'slug and sku are auto-generated; do not provide them' });
-  }
+  if ('slug' in req.body || 'sku' in req.body)
+    return res.status(400).json({ success: false, message: 'slug and sku are auto-generated' });
   next();
 };
 
-// POST — create single product
-router.post(
-  '/',
-  requireAdmin,
-  uploadProductImages,
-  rejectSlugSku,
+// ── single product create ───────────────────────────────────
+router.post('/', requireAdmin, uploadProductImages, rejectSlugSku,
   [
     body('name').trim().notEmpty().withMessage('Product name is required'),
-    body('description').trim().notEmpty().withMessage('Product description is required'),
-    body('category').notEmpty().withMessage('Product category is required'),
-    body('variants.*.price.base').notEmpty().withMessage('Variant base price is required').isNumeric().withMessage('Variant base price must be a number'),
-    body('status').optional().isIn(['draft', 'active', 'archived']).withMessage('Invalid status'),
-    body('isFeatured').optional().isBoolean().withMessage('isFeatured must be true or false'),
+    body('description').trim().notEmpty().withMessage('Description is required'),
+    body('category').notEmpty().withMessage('Category is required'),
+    body('variants.*.price.base').notEmpty().isNumeric().withMessage('Base price required'),
+    body('status').optional().isIn(['draft','active','archived']).withMessage('Invalid status'),
+    body('isFeatured').optional().isBoolean(),
   ],
   (req, res, next) => {
     const errors = validationResult(req);
@@ -38,27 +35,25 @@ router.post(
   productController.createProduct
 );
 
-// Bulk create (JSON body — for testing)
 router.post('/bulk-create', requireAdmin, productController.bulkCreateProducts);
 
-// ─────────────────────────────────────────────────────────────
-// BULK UPLOAD — TWO STEP
-// Step 1: parse CSV/Excel, return preview (no DB writes)
-// Step 2: upload ZIP images + products JSON → save to DB
-// ─────────────────────────────────────────────────────────────
-router.post('/preview-csv', requireAdmin, uploadCSVFile,  productController.previewCSV);
-router.post('/import-csv',  requireAdmin, uploadZIPFile,  productController.importProductsFromCSV);
+// ── BULK UPLOAD ─────────────────────────────────────────────
+// Step 1 — preview (CSV/Excel only, no DB writes)
+router.post('/preview-csv', requireAdmin, uploadCSVFile, productController.previewCSV);
 
-// ─────────────────────────────────────────────────────────────
-// PRODUCT MANAGEMENT ROUTES (all unchanged)
-// ─────────────────────────────────────────────────────────────
-router.get('/archived',   requireAdmin, productController.getArchivedProducts);
-router.post('/bulk-delete', requireAdmin, productController.bulkDelete);
-router.patch('/bulk-restore', requireAdmin, productController.bulkRestore);
-router.get('/low-stock',  requireAdmin, productController.getLowStockProducts);
-router.get('/drafts',     requireAdmin, productController.getDraftProducts);
-router.get('/all',        requireAdmin, productController.getAllProductsAdmin);
-router.get('/',           requireAdmin, productController.getAllActiveProducts);
+// Step 2 — import
+//   Mode A:  csvFile + imageMode=url          (image URLs in Excel)
+//   Mode B:  csvFile + zipFile + imageMode=zip (ZIP folder of images)
+router.post('/import-csv', requireAdmin, uploadBulkFiles, productController.importProductsFromCSV);
+
+// ── other product routes (all unchanged) ───────────────────
+router.get('/archived',            requireAdmin, productController.getArchivedProducts);
+router.post('/bulk-delete',        requireAdmin, productController.bulkDelete);
+router.patch('/bulk-restore',      requireAdmin, productController.bulkRestore);
+router.get('/low-stock',           requireAdmin, productController.getLowStockProducts);
+router.get('/drafts',              requireAdmin, productController.getDraftProducts);
+router.get('/all',                 requireAdmin, productController.getAllProductsAdmin);
+router.get('/',                    requireAdmin, productController.getAllActiveProducts);
 router.delete('/bulk-hard-delete', requireAdmin, productController.bulkHardDelete);
 router.patch('/restore/:slug',     requireAdmin, productController.restoreProduct);
 router.delete('/hard/:slug',       requireAdmin, productController.hardDeleteProduct);
@@ -70,8 +65,83 @@ router.delete('/:slug',            requireAdmin, productController.deleteProduct
 router.get('/:slug',               requireAdmin, productController.getProductBySlug);
 
 module.exports = router;
+// this code have both functionality upload zip plus exel link 
 
+// karan changes images upload with zip >>>>>>
+// const express = require('express');
+// const router  = express.Router();
+// const { body, validationResult } = require('express-validator');
+// const { requireAdmin } = require('../middlewares/isAdmin');
+// const {
+//   uploadProductImages,
+//   uploadCSVFile,
+//   uploadZIPFile,          // ← NEW: added for Step 2
+// } = require('../middlewares/uploadMiddleware');
+// const productController = require('../controllers/productController');
 
+// const rejectSlugSku = (req, res, next) => {
+//   if ('slug' in req.body || 'sku' in req.body) {
+//     return res.status(400).json({ success: false, message: 'slug and sku are auto-generated; do not provide them' });
+//   }
+//   next();
+// };
+
+// // POST — create single product
+// router.post(
+//   '/',
+//   requireAdmin,
+//   uploadProductImages,
+//   rejectSlugSku,
+//   [
+//     body('name').trim().notEmpty().withMessage('Product name is required'),
+//     body('description').trim().notEmpty().withMessage('Product description is required'),
+//     body('category').notEmpty().withMessage('Product category is required'),
+//     body('variants.*.price.base').notEmpty().withMessage('Variant base price is required').isNumeric().withMessage('Variant base price must be a number'),
+//     body('status').optional().isIn(['draft', 'active', 'archived']).withMessage('Invalid status'),
+//     body('isFeatured').optional().isBoolean().withMessage('isFeatured must be true or false'),
+//   ],
+//   (req, res, next) => {
+//     const errors = validationResult(req);
+//     if (!errors.isEmpty()) return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+//     next();
+//   },
+//   productController.createProduct
+// );
+
+// // Bulk create (JSON body — for testing)
+// router.post('/bulk-create', requireAdmin, productController.bulkCreateProducts);
+
+// // ─────────────────────────────────────────────────────────────
+// // BULK UPLOAD — TWO STEP
+// // Step 1: parse CSV/Excel, return preview (no DB writes)
+// // Step 2: upload ZIP images + products JSON → save to DB
+// // ─────────────────────────────────────────────────────────────
+// router.post('/preview-csv', requireAdmin, uploadCSVFile,  productController.previewCSV);
+// router.post('/import-csv',  requireAdmin, uploadZIPFile,  productController.importProductsFromCSV);
+
+// // ─────────────────────────────────────────────────────────────
+// // PRODUCT MANAGEMENT ROUTES (all unchanged)
+// // ─────────────────────────────────────────────────────────────
+// router.get('/archived',   requireAdmin, productController.getArchivedProducts);
+// router.post('/bulk-delete', requireAdmin, productController.bulkDelete);
+// router.patch('/bulk-restore', requireAdmin, productController.bulkRestore);
+// router.get('/low-stock',  requireAdmin, productController.getLowStockProducts);
+// router.get('/drafts',     requireAdmin, productController.getDraftProducts);
+// router.get('/all',        requireAdmin, productController.getAllProductsAdmin);
+// router.get('/',           requireAdmin, productController.getAllActiveProducts);
+// router.delete('/bulk-hard-delete', requireAdmin, productController.bulkHardDelete);
+// router.patch('/restore/:slug',     requireAdmin, productController.restoreProduct);
+// router.delete('/hard/:slug',       requireAdmin, productController.hardDeleteProduct);
+// router.post('/:slug/variants',     requireAdmin, uploadProductImages, productController.addVariant);
+// router.delete('/:slug/variants',   requireAdmin, productController.deleteVariant);
+// router.get('/variant/:barcode',    requireAdmin, productController.getVariantByBarcode);
+// router.put('/:slug',               requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
+// router.delete('/:slug',            requireAdmin, productController.deleteProduct);
+// router.get('/:slug',               requireAdmin, productController.getProductBySlug);
+
+// module.exports = router;
+
+// karan changes routes for preview ?? >> for images show with exel link
 // const express = require('express');
 // const router = express.Router();
 // const { body, validationResult } = require('express-validator');

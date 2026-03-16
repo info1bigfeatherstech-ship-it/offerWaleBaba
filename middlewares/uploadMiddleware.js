@@ -61,139 +61,235 @@
 // const uploadCSVFile = upload.single('csvFile');
 
 
+// in this code have both functionality with link plus zip uploader
 const multer = require('multer');
 const path   = require('path');
 const fs     = require('fs');
 
-// Ensure uploads dir exists
+// ensure uploads dir exists
 const UPLOAD_DIR = 'uploads/';
-if (!fs.existsSync(UPLOAD_DIR)) {
-  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// ===============================
-// IMAGE UPLOAD (for products) — UNCHANGED
-// ===============================
-const imageStorage = multer.memoryStorage();
+// ─── helpers ──────────────────────────────────────────────────
+const safeName = (original) => original.replace(/[^a-zA-Z0-9._-]/g, '_');
 
-const imageFileFilter = (req, file, cb) => {
-  const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
-  if (allowedMimes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only jpeg, jpg, png, webp images are allowed'), false);
-  }
-};
-
-const imageUpload = multer({
-  storage   : imageStorage,
-  fileFilter: imageFileFilter,
-  limits    : { fileSize: 10 * 1024 * 1024 },
+const diskStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+  filename   : (_req, file,  cb) => cb(null, `${Date.now()}-${safeName(file.originalname)}`),
 });
 
+const wrapMulter = (multerMiddleware) => (req, res, next) => {
+  multerMiddleware(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ success: false, message: err.message || 'File too large.' });
+    }
+    return res.status(400).json({ success: false, message: err.message });
+  });
+};
+
+// ─── 1. Product images (memory, existing — UNCHANGED) ─────────
+const imageUpload = multer({
+  storage   : multer.memoryStorage(),
+  fileFilter: (_req, file, cb) => {
+    const ok = ['image/jpeg','image/png','image/webp','image/jpg'].includes(file.mimetype);
+    ok ? cb(null, true) : cb(new Error('Only jpeg, jpg, png, webp images are allowed'));
+  },
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 const uploadProductImages = imageUpload.any();
 const uploadSingleImage   = imageUpload.single('image');
 
-// ===============================
-// SHARED DISK STORAGE (CSV + ZIP both use disk)
-// ===============================
-const diskStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename   : (req, file, cb) => {
-    // sanitise original name so no spaces / special chars in path
-    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-    cb(null, `${Date.now()}-${safe}`);
-  },
-});
+// ─── 2. CSV/Excel only — for /preview-csv ─────────────────────
+const csvFilter = (_req, file, cb) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  const ok  = ['.csv','.xls','.xlsx'].includes(ext);
+  ok ? cb(null, true) : cb(new Error('Only .csv / .xls / .xlsx files are allowed'));
+};
 
-// ===============================
-// CSV / EXCEL UPLOAD — field name: "csvFile"
-// Max 10MB — spreadsheets never need more
-// ===============================
-const csvFileFilter = (req, file, cb) => {
-  const allowedMimes = [
-    'text/csv',
-    'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/octet-stream', // some browsers send xlsx as this
-  ];
-  const ext      = path.extname(file.originalname).toLowerCase();
-  const validExt = ['.csv', '.xls', '.xlsx'].includes(ext);
+const uploadCSVFile = wrapMulter(
+  multer({ storage: diskStorage, fileFilter: csvFilter, limits: { fileSize: 10 * 1024 * 1024 } })
+    .single('csvFile')
+);
 
-  if (allowedMimes.includes(file.mimetype) || validExt) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only CSV or Excel files are allowed'), false);
+// ─── 3. Bulk import — csvFile + optional zipFile ──────────────
+//   Mode A: client sends csvFile + imageMode=url
+//   Mode B: client sends csvFile + zipFile + imageMode=zip
+//   Both go to the same POST /admin/products/import-csv route.
+const bulkFilter = (_req, file, cb) => {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (file.fieldname === 'csvFile') {
+    return ['.csv','.xls','.xlsx'].includes(ext)
+      ? cb(null, true)
+      : cb(new Error('csvFile must be .csv / .xls / .xlsx'));
   }
-};
-
-// Wrap in a middleware function so multer errors return clean JSON
-// instead of Express default HTML error page
-const _csvUpload = multer({
-  storage   : diskStorage,
-  fileFilter: csvFileFilter,
-  limits    : { fileSize: 10 * 1024 * 1024 },
-}).single('csvFile');
-
-const uploadCSVFile = (req, res, next) => {
-  _csvUpload(req, res, (err) => {
-    if (!err) return next();
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({
-        success: false,
-        message: 'CSV/Excel file too large. Maximum size is 10MB.',
-      });
-    }
-    return res.status(400).json({ success: false, message: err.message });
-  });
-};
-
-// ===============================
-// ZIP UPLOAD — field name: "zipFile"
-// Max 500MB — 100 products × 5 images × ~1MB each
-// ===============================
-const zipFileFilter = (req, file, cb) => {
-  const allowedMimes = [
-    'application/zip',
-    'application/x-zip-compressed',
-    'application/octet-stream',
-    'multipart/x-zip',
-  ];
-  const ext      = path.extname(file.originalname).toLowerCase();
-  const validExt = ['.zip'].includes(ext);
-
-  if (allowedMimes.includes(file.mimetype) || validExt) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only ZIP files are allowed'), false);
+  if (file.fieldname === 'zipFile') {
+    return ext === '.zip'
+      ? cb(null, true)
+      : cb(new Error('zipFile must be a .zip archive'));
   }
+  cb(null, false); // ignore other fields silently
 };
 
-const _zipUpload = multer({
-  storage   : diskStorage,
-  fileFilter: zipFileFilter,
-  limits    : { fileSize: 500 * 1024 * 1024 }, // 500 MB
-}).single('zipFile');
-
-const uploadZIPFile = (req, res, next) => {
-  _zipUpload(req, res, (err) => {
-    if (!err) return next();
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({
-        success : false,
-        message : 'ZIP file too large. Maximum size is 500MB. Split into smaller batches.',
-      });
-    }
-    return res.status(400).json({ success: false, message: err.message });
-  });
-};
+const uploadBulkFiles = wrapMulter(
+  multer({
+    storage   : diskStorage,
+    fileFilter: bulkFilter,
+    limits    : { fileSize: 500 * 1024 * 1024 }, // 500 MB covers largest ZIP
+  }).fields([
+    { name: 'csvFile', maxCount: 1 },
+    { name: 'zipFile', maxCount: 1 },
+  ])
+);
 
 module.exports = {
-  uploadProductImages,
-  uploadSingleImage,
-  uploadCSVFile,   // Step 1 — CSV/Excel preview
-  uploadZIPFile,   // Step 2 — ZIP image import
+  uploadProductImages, // unchanged
+  uploadSingleImage,   // unchanged
+  uploadCSVFile,       // /preview-csv
+  uploadBulkFiles,     // /import-csv  (Mode A + Mode B)
 };
+// in this code have both functionality with link plus zip uploader
+
+
+
+
+// in this down side code have functioanlity upload image in zip format 
+// const multer = require('multer');
+// const path   = require('path');
+// const fs     = require('fs');
+
+// // Ensure uploads dir exists
+// const UPLOAD_DIR = 'uploads/';
+// if (!fs.existsSync(UPLOAD_DIR)) {
+//   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+// }
+
+// // ===============================
+// // IMAGE UPLOAD (for products) — UNCHANGED
+// // ===============================
+// const imageStorage = multer.memoryStorage();
+
+// const imageFileFilter = (req, file, cb) => {
+//   const allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg'];
+//   if (allowedMimes.includes(file.mimetype)) {
+  //     cb(null, true);
+//   } else {
+//     cb(new Error('Only jpeg, jpg, png, webp images are allowed'), false);
+//   }
+// };
+
+// const imageUpload = multer({
+//   storage   : imageStorage,
+//   fileFilter: imageFileFilter,
+//   limits    : { fileSize: 10 * 1024 * 1024 },
+// });
+
+// const uploadProductImages = imageUpload.any();
+// const uploadSingleImage   = imageUpload.single('image');
+
+// // ===============================
+// // SHARED DISK STORAGE (CSV + ZIP both use disk)
+// // ===============================
+// const diskStorage = multer.diskStorage({
+//   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+//   filename   : (req, file, cb) => {
+//     // sanitise original name so no spaces / special chars in path
+//     const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+//     cb(null, `${Date.now()}-${safe}`);
+//   },
+// });
+
+// // ===============================
+// // CSV / EXCEL UPLOAD — field name: "csvFile"
+// // Max 10MB — spreadsheets never need more
+// // ===============================
+// const csvFileFilter = (req, file, cb) => {
+//   const allowedMimes = [
+//     'text/csv',
+//     'application/vnd.ms-excel',
+//     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+//     'application/octet-stream', // some browsers send xlsx as this
+//   ];
+//   const ext      = path.extname(file.originalname).toLowerCase();
+//   const validExt = ['.csv', '.xls', '.xlsx'].includes(ext);
+
+//   if (allowedMimes.includes(file.mimetype) || validExt) {
+//     cb(null, true);
+//   } else {
+//     cb(new Error('Only CSV or Excel files are allowed'), false);
+//   }
+// };
+
+// // Wrap in a middleware function so multer errors return clean JSON
+// // instead of Express default HTML error page
+// const _csvUpload = multer({
+//   storage   : diskStorage,
+//   fileFilter: csvFileFilter,
+//   limits    : { fileSize: 10 * 1024 * 1024 },
+// }).single('csvFile');
+
+// const uploadCSVFile = (req, res, next) => {
+//   _csvUpload(req, res, (err) => {
+  //     if (!err) return next();
+  //     if (err.code === 'LIMIT_FILE_SIZE') {
+    //       return res.status(413).json({
+//         success: false,
+//         message: 'CSV/Excel file too large. Maximum size is 10MB.',
+//       });
+//     }
+//     return res.status(400).json({ success: false, message: err.message });
+//   });
+// };
+
+// // ===============================
+// // ZIP UPLOAD — field name: "zipFile"
+// // Max 500MB — 100 products × 5 images × ~1MB each
+// // ===============================
+// const zipFileFilter = (req, file, cb) => {
+//   const allowedMimes = [
+//     'application/zip',
+//     'application/x-zip-compressed',
+//     'application/octet-stream',
+//     'multipart/x-zip',
+//   ];
+//   const ext      = path.extname(file.originalname).toLowerCase();
+//   const validExt = ['.zip'].includes(ext);
+
+//   if (allowedMimes.includes(file.mimetype) || validExt) {
+//     cb(null, true);
+//   } else {
+  //     cb(new Error('Only ZIP files are allowed'), false);
+//   }
+// };
+
+// const _zipUpload = multer({
+//   storage   : diskStorage,
+//   fileFilter: zipFileFilter,
+//   limits    : { fileSize: 500 * 1024 * 1024 }, // 500 MB
+// }).single('zipFile');
+
+// const uploadZIPFile = (req, res, next) => {
+  //   _zipUpload(req, res, (err) => {
+    //     if (!err) return next();
+//     if (err.code === 'LIMIT_FILE_SIZE') {
+  //       return res.status(413).json({
+//         success : false,
+//         message : 'ZIP file too large. Maximum size is 500MB. Split into smaller batches.',
+//       });
+//     }
+//     return res.status(400).json({ success: false, message: err.message });
+//   });
+// };
+
+// module.exports = {
+//   uploadProductImages,
+//   uploadSingleImage,
+//   uploadCSVFile,   // Step 1 — CSV/Excel preview
+//   uploadZIPFile,   // Step 2 — ZIP image import
+// };
+// in this  code have functioanlity upload image in zip format 
+
+// karan changes upload images in exel using link >>>>>>>>>>>>>>>>>>
 //  uploadMiddleWare.js  file here 
 
 // const multer = require('multer');
@@ -270,6 +366,5 @@ module.exports = {
 //   uploadSingleImage,
 //   uploadCSVFile
 // };
-
-
+// >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> using link in exel
 
