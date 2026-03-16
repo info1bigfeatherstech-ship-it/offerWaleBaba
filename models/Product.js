@@ -1,4 +1,3 @@
-
 const mongoose = require('mongoose');
 
 //
@@ -46,12 +45,29 @@ const variantSchema = new mongoose.Schema(
         'A variant can have at most 5 images'
       ]
     },
+    wholesale: {
+      type: Boolean,
+      default: false
+    },
     price: {
       base: { type: Number, required: true, min: 0 },
       sale: { type: Number, default: null },
-      costPrice: { type: Number, default: null, select: false },
-      saleStartDate: { type: Date, default: null },
-      saleEndDate: { type: Date, default: null }
+      wholesaleBase: {
+        type: Number,
+        min: 0,
+        required: function() { return this.wholesale; }
+      },
+      wholesaleSale: {
+        type: Number,
+        default: null,
+        required: false
+      }
+    },
+    minimumOrderQuantity: {
+      type: Number,
+      min: 1,
+      default: function() { return this.wholesale ? 1 : 1; },
+      required: function() { return this.wholesale; }
     },
 
     inventory: {

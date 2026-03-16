@@ -13,7 +13,9 @@ const path = require('path');
 const axios = require('axios');
 const AdmZip = require("adm-zip");
 const { Parser } = require("json2csv");   // ✅ ADD THIS
-// Create new product
+
+
+
 // Create new product
 const createProduct = async (req, res) => {
   try {
@@ -128,12 +130,18 @@ const createProduct = async (req, res) => {
         });
       }
 
-      // 🔥 AUTO GENERATE SKU
+      //  AUTO GENERATE SKU
       const skuVal = await generateSku();
 
+      // Wholesale flag
+      const wholesale = !!v.wholesale;
+
+      // Price object
       const priceObj = {
         base: Number(v.price?.base) || 0,
-        sale: v.price?.sale != null ? Number(v.price.sale) : null
+        sale: v.price?.sale != null ? Number(v.price.sale) : null,
+        wholesaleBase: wholesale ? Number(v.price?.wholesaleBase) : undefined,
+        wholesaleSale: wholesale ? (v.price?.wholesaleSale != null ? Number(v.price.wholesaleSale) : null) : undefined
       };
 
       if (priceObj.sale != null && priceObj.sale >= priceObj.base) {
@@ -141,6 +149,25 @@ const createProduct = async (req, res) => {
           success: false,
           message: `Sale price must be less than base price for variant ${i}`
         });
+      }
+
+      if (wholesale && priceObj.wholesaleSale != null && priceObj.wholesaleSale >= priceObj.wholesaleBase) {
+        return res.status(400).json({
+          success: false,
+          message: `Wholesale sale price must be less than wholesale base price for variant ${i}`
+        });
+      }
+
+      // MOQ logic
+      let moq = 1;
+      if (wholesale) {
+        if (!v.minimumOrderQuantity || v.minimumOrderQuantity < 1) {
+          return res.status(400).json({
+            success: false,
+            message: `Minimum order quantity is required and must be at least 1 for wholesale variant ${i}`
+          });
+        }
+        moq = Number(v.minimumOrderQuantity);
       }
 
       const inventoryObj = {
@@ -183,10 +210,12 @@ const createProduct = async (req, res) => {
       variants.push({
         sku: skuVal, // ✅ FROM UTILS
         barcode: barcodeNumber,
+        wholesale,
         attributes: Array.isArray(v.attributes)
           ? v.attributes.map(a => ({ key: a.key, value: a.value }))
           : [],
         price: priceObj,
+        minimumOrderQuantity: moq,
         inventory: inventoryObj,
         images: variantImages,
         isActive: v.isActive !== false
@@ -235,10 +264,8 @@ const createProduct = async (req, res) => {
       description: description || "",
       category: existingCategory._id,
       brand: brand || "Generic",
-      variants,
-      priceRange: { min: minPrice, max: maxPrice },
-      totalStock,
-      isFeatured: isFeatured || false,
+      status,
+      isFeatured,
       soldInfo: parsedSoldInfo || { enabled: false, count: 0 },
       fomo: parsedFomo || { enabled: false, type: "viewing_now", viewingNow: 0 },
       shipping: parsedShipping || {
@@ -246,7 +273,16 @@ const createProduct = async (req, res) => {
         dimensions: { length: 0, width: 0, height: 0 }
       },
       attributes: parsedAttributes || [],
-      status: status || "draft"
+      variants,
+      price: {
+        base: Number(req.body.price?.base) || 0,
+        sale: req.body.price?.sale != null ? Number(req.body.price.sale) : null,
+        wholesaleBase: Number(req.body.price?.wholesaleBase) || 0,
+        wholesaleSale: req.body.price?.wholesaleSale != null ? Number(req.body.price.wholesaleSale) : null
+      },
+      minimumOrderQuantity: Number(req.body.minimumOrderQuantity) || 1,
+      isVisibleToRetail: req.body.isVisibleToRetail || false,
+      isVisibleToWholesale: req.body.isVisibleToWholesale || false
     });
 
     await product.save();
@@ -318,18 +354,33 @@ const bulkCreateProducts = async (req, res) => {
 
         if (Array.isArray(variantsInput) && variantsInput.length > 0) {
           variants = variantsInput.map((v, index) => {
+            const wholesale = !!v.wholesale;
             const basePrice = Number(v.price?.base || 0);
-            const salePrice =
-              v.price?.sale != null ? Number(v.price.sale) : null;
+            const salePrice = v.price?.sale != null ? Number(v.price.sale) : null;
+            const wholesaleBase = wholesale ? Number(v.price?.wholesaleBase) : undefined;
+            const wholesaleSale = wholesale ? (v.price?.wholesaleSale != null ? Number(v.price.wholesaleSale) : null) : undefined;
 
             if (salePrice && salePrice >= basePrice) {
               throw new Error("Invalid sale price");
+            }
+            if (wholesale && wholesaleSale != null && wholesaleSale >= wholesaleBase) {
+              throw new Error("Invalid wholesale sale price");
+            }
+
+            let moq = 1;
+            if (wholesale) {
+              if (!v.minimumOrderQuantity || v.minimumOrderQuantity < 1) {
+                throw new Error("Minimum order quantity required for wholesale variant");
+              }
+              moq = Number(v.minimumOrderQuantity);
             }
 
             return {
               sku: v.sku
                 ? String(v.sku).toUpperCase()
                 : `${slug}-VAR${index + 1}`.toUpperCase(),
+              barcode: v.barcode || '',
+              wholesale,
               attributes: Array.isArray(v.attributes)
                 ? v.attributes.map(a => ({
                     key: a.key,
@@ -338,8 +389,11 @@ const bulkCreateProducts = async (req, res) => {
                 : [],
               price: {
                 base: basePrice,
-                sale: salePrice
+                sale: salePrice,
+                wholesaleBase,
+                wholesaleSale
               },
+              minimumOrderQuantity: moq,
               inventory: {
                 quantity: Number(v.inventory?.quantity ?? 0),
                 trackInventory: v.inventory?.trackInventory ?? true,
@@ -467,296 +521,7 @@ const bulkCreateProducts = async (req, res) => {
 
 
 
-//Bulk create from CSV (for testing)
 
-// const importProductsFromCSV = async (req, res) => {
-//   try {
-//     if (!req.file) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "CSV file is required",
-//       });
-//     }
-
-//     const rows = [];
-//     const failed = [];
-//     const productMap = {};
-
-//  fs.createReadStream(req.file.path)
-//   .pipe(
-//     csv({
-//       mapHeaders: ({ header }) => header.trim(),
-//     })
-//   )
-//       .on("data", (row) => rows.push(row))
-//       .on("end", async () => {
-//         try {
-//           for (let row of rows) {
-//             try {
-//               // ===============================
-//               // TRIM ALL VALUES
-//               // ===============================
-//               Object.keys(row).forEach((key) => {
-//                 if (typeof row[key] === "string") {
-//                   row[key] = row[key].trim();
-//                 }
-//               });
-
-//               // ===============================
-//               // REQUIRED FIELD VALIDATION
-//               // ===============================
-//               if (!row.name || !row.category || !row.basePrice) {
-//                 throw new Error("Missing required fields");
-//               }
-
-//               const productName = row.name;
-//               const baseSlug = slugify(productName, {
-//                 lower: true,
-//                 strict: true,
-//               });
-
-//               // ===============================
-//               // CREATE PRODUCT IF NOT EXISTS
-//               // ===============================
-//               if (!productMap[productName]) {
-//                 const slug = await generateSlug(productName);
-
-//                 // CATEGORY CHECK
-//                 const categorySlug = slugify(row.category, {
-//                   lower: true,
-//                   strict: true,
-//                 });
-
-//                 let category = await Category.findOne({
-//                   slug: categorySlug,
-//                 });
-
-//                 if (!category) {
-//                   category = await Category.create({
-//                     name: row.category,
-//                     slug: categorySlug,
-//                     status: "active",
-//                     level: 0,
-//                   });
-//                 }
-
-//                 productMap[productName] = {
-//                   name: productName,
-//                   slug,
-//                   title: row.title || productName,
-//                   description: row.description || "",
-//                   category: category._id,
-//                   brand: row.brand || "Generic",
-//                   status: row.status?.toLowerCase() || "draft",
-//                   isFeatured: row.isfeatured === "true",
-
-//                   variants: [],
-
-//                   soldInfo: {
-//                     enabled: row.soldEnabled === "true",
-//                     count: Number(row.soldCount) || 0,
-//                   },
-
-//                   fomo: {
-//                     enabled: row.fomoEnabled === "true",
-//                     type: row.fomoType || "viewing_now",
-//                     viewingNow: Number(row.viewingNow) || 0,
-//                     productLeft: Number(row.productLeft) || 0,
-//                     customMessage: row.customMessage || "",
-//                   },
-//                 };
-//               }
-
-//               // ===============================
-//               // VARIANT ATTRIBUTES
-//               // ===============================
-//               let variantAttributes = [];
-
-//               if (row.variantAttributes) {
-//                 variantAttributes = row.variantAttributes
-//                   .split("|")
-//                   .map((pair) => {
-//                     const [key, value] = pair.split(":");
-//                     return {
-//                       key: key?.trim(),
-//                       value: value?.trim(),
-//                     };
-//                   });
-//               }
-
-//               // ===============================
-//               // PRODUCT ATTRIBUTES (optional)
-//               // ===============================
-//               let productAttributes = [];
-
-//               if (row.productAttributes) {
-//                 productAttributes = row.productAttributes
-//                   .split("|")
-//                   .map((pair) => {
-//                     const [key, value] = pair.split(":");
-//                     return {
-//                       key: key?.trim(),
-//                       value: value?.trim(),
-//                     };
-//                   });
-//               }
-
-//               // ===============================
-//               // IMAGE UPLOAD FROM URL (max 5)
-//               // ===============================
-//               const axios = require("axios");
-
-// let imagesArr = [];
-
-// if (row.images) {
-//   const imageUrls = row.images
-//     .split(",")
-//     .map((u) => u.trim())
-//     .slice(0, 5);
-
-//   for (let url of imageUrls) {
-//     if (!url) continue;
-
-//     try {
-
-//       // 🔥 CASE 1: Already Base64
-//       if (url.startsWith("data:image")) {
-
-//         const uploadResult = await cloudinary.uploader.upload(url, {
-//           resource_type: "image"
-//         });
-
-//         imagesArr.push({
-//           url: uploadResult.secure_url,
-//           publicId: uploadResult.public_id,
-//           altText: productName,
-//           order: imagesArr.length
-//         });
-
-//       } 
-      
-//       // 🔥 CASE 2: Normal URL
-//       else if (url.startsWith("http")) {
-
-//         const response = await axios({
-//           method: "GET",
-//           url: url,
-//           responseType: "arraybuffer",
-//           timeout: 15000,
-//           headers: {
-//             "User-Agent": "Mozilla/5.0"
-//           }
-//         });
-
-//         const base64 = Buffer.from(response.data).toString("base64");
-//         const mimeType = response.headers["content-type"];
-//         const dataURI = `data:${mimeType};base64,${base64}`;
-
-//         const uploadResult = await cloudinary.uploader.upload(dataURI, {
-//           resource_type: "image"
-//         });
-
-//         imagesArr.push({
-//           url: uploadResult.secure_url,
-//           publicId: uploadResult.public_id,
-//           altText: productName,
-//           order: imagesArr.length
-//         });
-//       }
-
-//     } catch (err) {
-//   console.log("Image upload failed:", url);
-//   console.log("ERROR:", err.message);
-// }
-    
-//   }
-// }
-
-//               // ===============================
-//               // BUILD VARIANT OBJECT
-//               // ===============================
-//               const variant = {
-//                 sku:
-//                   "SKU-" +
-//                   Math.floor(100000 + Math.random() * 900000),
-//                 barcode: row.barcode || "",
-//                 attributes: variantAttributes,
-//                 weight: Number(row.weight) || 0,
-//                 dimensions: {
-//                   length: Number(row.length) || 0,
-//                   width: Number(row.width) || 0,
-//                   height: Number(row.height) || 0,
-//                 },
-//                 price: {
-//                   base: Number(row.basePrice),
-//                   sale: row.salePrice
-//                     ? Number(row.salePrice)
-//                     : null,
-//                 },
-//                 inventory: {
-//                   quantity: Number(row.quantity) || 0,
-//                   trackInventory: true,
-//                   lowStockThreshold: 5,
-//                 },
-//                 images: imagesArr,
-//                 isActive: true,
-//               };
-
-//               productMap[productName].variants.push(variant);
-
-//               // attach product attributes once
-//               if (
-//                 productAttributes.length &&
-//                 !productMap[productName].productAttributes
-//               ) {
-//                 productMap[productName].productAttributes =
-//                   productAttributes;
-//               }
-
-//             } catch (err) {
-//               failed.push({
-//                 product: row.name || "Unknown",
-//                 error: err.message,
-//               });
-//             }
-//           }
-
-//           // ===============================
-//           // INSERT INTO DATABASE
-//           // ===============================
-//           const finalProducts = Object.values(productMap);
-
-//           let inserted = [];
-
-//           if (finalProducts.length > 0) {
-//             inserted = await Product.insertMany(finalProducts);
-//           }
-
-//           fs.unlinkSync(req.file.path);
-
-//           return res.status(200).json({
-//             success: true,
-//             totalRows: rows.length,
-//             insertedProducts: inserted.length,
-//             failedCount: failed.length,
-//             failed,
-//           });
-//         } catch (err) {
-//           return res.status(500).json({
-//             success: false,
-//             message: "Processing failed",
-//             error: err.message,
-//           });
-//         }
-//       });
-//   } catch (error) {
-//     return res.status(500).json({
-//       success: false,
-//       message: "CSV import failed",
-//       error: error.message,
-//     });
-//   }
-// };
 const importProductsFromCSV = async (req, res) => {
   try {
     if (!req.file) {
@@ -800,7 +565,7 @@ const importProductsFromCSV = async (req, res) => {
               const productName = row.name;
 
               // ===============================
-              // 🔥 PRICE SANITIZATION (NEW FIX)
+              //  PRICE SANITIZATION (NEW FIX)
               // ===============================
               const cleanBasePrice = parseFloat(
                 row.basePrice?.replace(/[^0-9.]/g, "")
@@ -960,34 +725,47 @@ const importProductsFromCSV = async (req, res) => {
               }
 
               // ===============================
-              // BUILD VARIANT OBJECT
-              // ===============================
-              const variant = {
-                sku:
-                  "SKU-" +
-                  Math.floor(100000 + Math.random() * 900000),
-                barcode: row.barcode || "",
-                attributes: variantAttributes,
-                weight: Number(row.weight) || 0,
-                dimensions: {
-                  length: Number(row.length) || 0,
-                  width: Number(row.width) || 0,
-                  height: Number(row.height) || 0,
-                },
-                price: {
-                  base: cleanBasePrice,   // ✅ FIXED
-                  sale: cleanSalePrice,   // ✅ FIXED
-                },
-                inventory: {
-                  quantity: Number(row.quantity) || 0,
-                  trackInventory: true,
-                  lowStockThreshold: 5,
-                },
-                images: imagesArr,
-                isActive: true,
-              };
+               // BUILD VARIANT OBJECT
+               // ===============================
+               const wholesale = row.wholesale === "true";
+               const wholesaleBase = wholesale ? Number(row.wholesaleBase) : undefined;
+               const wholesaleSale = wholesale ? (row.wholesaleSale ? Number(row.wholesaleSale) : null) : undefined;
+               let moq = 1;
+               if (wholesale) {
+                 moq = row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0 ? Number(row.minimumOrderQuantity) : 1;
+               }
+               const variant = {
+                 sku:
+                   "SKU-" +
+                   Math.floor(100000 + Math.random() * 900000),
+                 barcode: row.barcode || "",
+                 wholesale,
+                 attributes: variantAttributes,
+                 weight: Number(row.weight) || 0,
+                 dimensions: {
+                   length: Number(row.length) || 0,
+                   width: Number(row.width) || 0,
+                   height: Number(row.height) || 0,
+                 },
+                 price: {
+                   base: cleanBasePrice,
+                   sale: cleanSalePrice
+                     ? Number(cleanSalePrice)
+                     : null,
+                   wholesaleBase,
+                   wholesaleSale
+                 },
+                 minimumOrderQuantity: moq,
+                 inventory: {
+                   quantity: Number(row.quantity) || 0,
+                   trackInventory: true,
+                   lowStockThreshold: 5,
+                 },
+                 images: imagesArr,
+                 isActive: true,
+               };
 
-              productMap[productName].variants.push(variant);
+               productMap[productName].variants.push(variant);
 
               if (
                 productAttributes.length &&
@@ -1037,6 +815,8 @@ const importProductsFromCSV = async (req, res) => {
   }
 };
 
+
+// Bulk upload products with images via CSV and ZIP
 const bulkUploadNewProductsWithImages = async (req, res) => {
   try {
 
@@ -1213,6 +993,8 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
           price: {
             base: basePrice,
             sale: salePrice
+              ? Number(cleanSalePrice)
+              : null,
           },
           inventory: {
             quantity: Number(row.quantity || 0)
@@ -1487,7 +1269,6 @@ const updateProduct = async (req, res) => {
       );
 
       // 🔁 Recalculate totals
-
       const effectivePrices = updatedProduct.variants.map(v =>
         v.price.sale != null ? v.price.sale : v.price.base
       );
@@ -2511,13 +2292,13 @@ const deleteVariant = async (req, res) => {
       min: Math.min(...effectivePrices),
       max: Math.max(...effectivePrices)
     };
-
+        
     // 🔁 RECALCULATE STOCK
     product.totalStock = product.variants.reduce(
       (sum, v) => sum + (v.inventory.quantity || 0),
       0
     );
-
+         
     await product.save();
 
     return res.status(200).json({
@@ -2602,6 +2383,37 @@ const getVariantByBarcode = async (req, res) => {
     });
   }
 };
+
+// Get product details with user-specific pricing
+const getProductDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const product = await Product.findById(id).populate('category');
+    if (!product) return res.status(404).json({ message: 'Product not found' });
+
+    let price;
+    if (req.userType === 'wholesaler') {
+      price = {
+        base: product.price.wholesaleBase,
+        sale: product.price.wholesaleSale || product.price.wholesaleBase,
+        minimumOrderQuantity: product.minimumOrderQuantity
+      };
+    } else {
+      price = {
+        base: product.price.base,
+        sale: product.price.sale || product.price.base
+      };
+    }
+
+    res.status(200).json({
+      product,
+      price
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching product details', error });
+  }
+};
+
 module.exports = {
   createProduct,
   updateProduct,
@@ -2622,5 +2434,6 @@ module.exports = {
    addVariant,
    deleteVariant,
    getVariantByBarcode,
-   bulkUploadNewProductsWithImages
+   bulkUploadNewProductsWithImages,
+   getProductDetails
 };

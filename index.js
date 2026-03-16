@@ -1,5 +1,3 @@
-
-
 /**
  * E-Commerce Platform - Main Application Entry Point
  * Production-grade server with graceful shutdown & monitoring
@@ -33,6 +31,9 @@ const categoriesRoutes = require('./routes/categories');
 const productsRoutes = require('./routes/products');
 const wishlistRoutes = require('./routes/wishlist');
 const cartRoutes = require('./routes/Cart');
+const addressRoutes = require('./routes/addressRoutes');
+const orderRoutes = require('./routes/orderRoutes');
+const wholesalerRoutes = require('./routes/wholesalerRoutes');
 
 // ============================================================================
 // CONFIGURATION
@@ -193,6 +194,9 @@ app.use('/api/categories', categoriesRoutes);
 app.use('/api/products', productsRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/cart', cartRoutes);
+app.use('/api/addresses', addressRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/wholesalers', wholesalerRoutes);
 
 
 // ============================================================================

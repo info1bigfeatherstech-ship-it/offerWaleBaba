@@ -51,4 +51,29 @@ const generateSku = async () => {
   return candidateSku;
 };
 
-module.exports = { generateSlug, generateSku };
+/**
+ * Validate product prices and MOQ
+ */
+const validateProductPrices = (price) => {
+    if (!price.base || price.base <= 0) {
+        throw new Error('Base price is required and must be greater than 0');
+    }
+
+    if (price.sale != null && price.sale >= price.base) {
+        throw new Error('Sale price must be less than base price');
+    }
+
+    if (!price.wholesaleBase || price.wholesaleBase <= 0) {
+        throw new Error('Wholesale base price is required and must be greater than 0');
+    }
+
+    if (price.wholesaleSale != null && price.wholesaleSale >= price.wholesaleBase) {
+        throw new Error('Wholesale sale price must be less than wholesale base price');
+    }
+
+    if (!price.minimumOrderQuantity || price.minimumOrderQuantity < 1) {
+        throw new Error('Minimum order quantity is required and must be at least 1');
+    }
+};
+
+module.exports = { generateSlug, generateSku, validateProductPrices };

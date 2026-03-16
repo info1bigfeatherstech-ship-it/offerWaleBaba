@@ -21,7 +21,9 @@ const orderSchema = new mongoose.Schema(
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     items: { type: [orderItemSchema], required: true },
     totalAmount: { type: Number, required: true },
-    status: { type: String, enum: ['pending', 'paid', 'processing', 'completed', 'cancelled', 'failed'], default: 'pending' },
+    address: { type: mongoose.Schema.Types.ObjectId, ref: 'Address', required: true },
+    orderStatus: { type: String, enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'], default: 'pending' },
+    paymentStatus: { type: String, enum: ['pending', 'paid', 'failed'], default: 'pending' },
     paymentInfo: { type: Object, default: null }
   },
   { timestamps: true }

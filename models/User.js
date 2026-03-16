@@ -1,4 +1,3 @@
-
 // const mongoose = require("mongoose");
 // const bcrypt = require("bcrypt");
 
@@ -111,6 +110,12 @@
 //       type: String,
 //       enum: ["active", "inactive"],
 //       default: "active"
+//     },
+
+//     userType: {
+//       type: String,
+//       enum: ["user", "wholesaler", "admin"],
+//       default: "user"
 //     }
 //   },
 //   { timestamps: true }
@@ -267,6 +272,12 @@ const userSchema = new mongoose.Schema(
       type: String,
       enum: ["active", "inactive"],
       default: "active"
+    },
+
+    userType: {
+      type: String,
+      enum: ["user", "wholesaler", "admin"],
+      default: "user"
     }
   },
   { timestamps: true }
