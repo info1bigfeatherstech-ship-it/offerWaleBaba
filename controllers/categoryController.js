@@ -123,42 +123,6 @@ const getCategoryById = async (req, res) => {
 };
 
 
-
-// Create category (admin)
-// const createCategory = async (req, res) => {
-//   try {
-//     const { name, description, parent, order, status } = req.body;
-//     if (!name) return res.status(400).json({ success: false, message: 'Category name is required' });
-
-//     const category = new Category({ name, description: description || '', parent: parent || null, order: order || 0, status: status || 'active' });
-
-//     // calculate level
-//     if (parent) {
-//       const p = await Category.findById(parent);
-//       category.level = p ? (p.level || 0) + 1 : 0;
-//     } else {
-//       category.level = 0;
-//     }
-
-//     // handle image upload
-//     if (req.file && req.file.buffer) {
-//       try {
-//         const { url, publicId } = await uploadToCloudinary(req.file.buffer, 'categories');
-//         category.image = { url, publicId };
-//       } catch (err) {
-//         console.error('Category image upload failed:', err.message);
-//       }
-//     }
-
-//     await category.save();
-//     return res.status(201).json({ success: true, message: 'Category created', category });
-//   } catch (error) {
-//     console.error('Create category error:', error);
-//     return res.status(500).json({ success: false, message: 'Error creating category', error: error.message });
-//   }
-// };
-
-
 const createCategory = async (req, res) => {
   try {
     const {
@@ -171,13 +135,14 @@ const createCategory = async (req, res) => {
     } = req.body;
 
     // 1️⃣ Validate name
-    if (!name) {
+    if (!name) { 
       return res.status(400).json({
         success: false,
         message: 'Category name is required'
       });
     }
 
+   
     // 2️⃣ If parent provided, verify it exists and is active
     if (parent) {
       const parentExists = await Category.findById(parent);
@@ -188,6 +153,17 @@ const createCategory = async (req, res) => {
           message: 'Invalid or inactive parent category'
         });
       }
+    }
+// user cannot create a category with same name under same parent camel case insensitive
+    const existingCategory = await Category.findOne({
+      name: { $regex: new RegExp(`^${name}$`, 'i') },
+      parent: parent || null
+     });
+    if (existingCategory) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category with the same name already exists under the same parent'
+  });
     }
 
     // 3️⃣ Create category object
@@ -241,7 +217,6 @@ const createCategory = async (req, res) => {
     });
   }
 };
-
 
 
 // Update category (admin)
@@ -358,7 +333,6 @@ const deleteCategory = async (req, res) => {
     });
   }
 };
-
 
 
 module.exports = { getAllCategories, getCategoryById, createCategory, updateCategory, deleteCategory };

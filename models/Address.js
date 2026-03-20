@@ -1,0 +1,111 @@
+const mongoose = require('mongoose');
+
+const addressSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true,
+    index: true
+  },
+
+  fullName: {
+    type: String,
+    required: true,
+    trim: true
+  },
+
+  phone: {
+    type: String,
+    required: true,
+  },
+
+  // 🏠 House / Flat / Building
+  houseNumber: {
+    type: String,
+    required: true,
+    trim: true
+  },
+
+  // 🛣 Street / Area / Locality
+  area: {
+    type: String,
+    required: true,
+    trim: true
+  },
+
+  // 🧭 Landmark (VERY useful)
+  landmark: {
+    type: String,
+    trim: true
+  },
+
+  // Keep your existing fields (important for flexibility)
+  addressLine1: {
+    type: String,
+    required: true,
+    trim: true
+  },
+
+  addressLine2: {
+    type: String,
+    trim: true
+  },
+
+  city: {
+    type: String,
+    required: true,
+    trim: true
+  },
+
+  state: {
+    type: String,
+    required: true,
+    trim: true
+  },
+
+  postalCode: {
+    type: String,
+    required: true,
+    match: [/^\d{6}$/, 'Invalid pincode']
+  },
+
+  country: {
+    type: String,
+    default: 'India'
+  },
+
+  // 🏠 Address type
+  addressType: {
+    type: String,
+    enum: ['home', 'work', 'other'],
+    default: 'home'
+  },
+
+  // 🎁 Gift case support
+  isGift: {
+    type: Boolean,
+    default: false
+  },
+
+  // 🚚 Delivery instructions
+  deliveryInstructions: {
+    type: String,
+    trim: true
+  },
+
+  // 📍 Future (DO NOT USE NOW, but keep)
+  location: {
+    lat: { type: Number },
+    lng: { type: Number }
+  },
+
+  isDefault: {
+    type: Boolean,
+    default: false
+  }
+
+}, { timestamps: true });
+
+addressSchema.index({ userId: 1, isDefault: 1 });
+
+module.exports = mongoose.model('Address', addressSchema);
