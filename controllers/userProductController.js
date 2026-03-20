@@ -124,6 +124,13 @@ const searchProducts = async (req, res) => {
       .limit(limit)
       .populate('category');
 
+
+      
+      // ===================================================
+      // ===================================================
+      // Karan's sir query on it to optimize it for caching
+      // ===================================================
+      // ===================================================
     res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
     return res.json({ success: true, total, page, limit, products });
   } catch (err) {

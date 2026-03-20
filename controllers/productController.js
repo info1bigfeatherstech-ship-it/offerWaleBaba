@@ -34,10 +34,10 @@ const createProduct = async (req, res) => {
       variants: variantsRaw
     } = req.body;
 
-    if (!name || !title || !category) {
+    if (!name || !title || !category || !description) {
       return res.status(400).json({
         success: false,
-        message: "Name, title and category are required"
+        message: "Name, title, category and description are required"
       });
     }
 

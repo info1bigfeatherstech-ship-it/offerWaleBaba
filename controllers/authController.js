@@ -205,24 +205,24 @@ const verifyRegistrationOTP = async (req, res) => {
       });
     }
 
-    // ✅ Activate user
+    //  Activate user
     user.isEmailVerified = true;
     user.status = "active";
     user.emailVerificationOTP = undefined;
     user.emailVerificationOTPExpires = undefined;
 
-    // 🔐 Generate tokens
+    //  Generate tokens
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
     const hashedRefreshToken = hashToken(refreshToken);
 
-    // 🧹 Remove expired tokens
+    //  Remove expired tokens
     user.refreshTokens = user.refreshTokens.filter(
       (t) => t.expiresAt > new Date()
     );
 
-    // ➕ Store hashed refresh token
+    //  Store hashed refresh token
     user.refreshTokens.push({
       token: hashedRefreshToken,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
@@ -230,7 +230,7 @@ const verifyRegistrationOTP = async (req, res) => {
 
     await user.save();
 
-    // 🍪 Send refresh token in cookie
+    //  Send refresh token in cookie
     res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
     return res.status(200).json({
@@ -275,7 +275,7 @@ const login = async (req, res) => {
       });
     }
 
-    // ✅ Check verification + active status
+    //  Check verification + active status
     if (!user.isEmailVerified) {
       return res.status(403).json({
         success: false,
@@ -298,13 +298,13 @@ const login = async (req, res) => {
       });
     }
 
-    // 🔐 Generate tokens
+    //  Generate tokens
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
     const hashedRefreshToken = hashToken(refreshToken);
 
-    // 🧹 Remove expired tokens
+    //  Remove expired tokens
     // user.refreshTokens = user.refreshTokens.filter(
     //   (t) => t.expiresAt > new Date()
     // );
@@ -315,7 +315,7 @@ const login = async (req, res) => {
   (t) => t.token && t.expiresAt && t.expiresAt > new Date()
 );
 
-    // ➕ Store hashed refresh token
+    //  Store hashed refresh token
     user.refreshTokens.push({
       token: hashedRefreshToken,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
@@ -323,7 +323,7 @@ const login = async (req, res) => {
 
     await user.save();
 
-    // 🍪 Set refresh token cookie
+    //  Set refresh token cookie
     res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
     return res.status(200).json({
@@ -426,7 +426,7 @@ const refreshAccessToken = async (req, res) => {
       });
     }
 
-    // 🔐 Verify JWT
+    //  Verify JWT
     let decoded;
     try {
       decoded = jwt.verify(
@@ -449,7 +449,7 @@ const refreshAccessToken = async (req, res) => {
 
     const hashedToken = hashToken(refreshToken);
 
-    // 👇 Find user first
+    //  Find user first
     const user = await User.findById(decoded.id).select("+refreshTokens.token");
 
     if (!user) {
@@ -459,12 +459,12 @@ const refreshAccessToken = async (req, res) => {
       });
     }
 
-    // 🧹 Remove expired tokens
+    //  Remove expired tokens
     user.refreshTokens = user.refreshTokens.filter(
       (t) => t.expiresAt > new Date()
     );
 
-    // 🔎 Check if hashed token exists in array
+    //  Check if hashed token exists in array
     const tokenIndex = user.refreshTokens.findIndex(
       (t) => t.token === hashedToken
     );
@@ -476,15 +476,15 @@ const refreshAccessToken = async (req, res) => {
       });
     }
 
-    // 🔁 ROTATE TOKEN
+    //  ROTATE TOKEN
     const newAccessToken = generateAccessToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
     const newHashedToken = hashToken(newRefreshToken);
 
-    // ❌ Remove old refresh token
+    //  Remove old refresh token
     user.refreshTokens.splice(tokenIndex, 1);
 
-    // ➕ Add new refresh token
+    //  Add new refresh token
     user.refreshTokens.push({
       token: newHashedToken,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
@@ -492,7 +492,7 @@ const refreshAccessToken = async (req, res) => {
 
     await user.save();
 
-    // 🍪 Send new refresh token in cookie
+    //  Send new refresh token in cookie
     res.cookie("refreshToken", newRefreshToken, getRefreshCookieOptions());
 
     return res.status(200).json({
@@ -658,7 +658,7 @@ const googleAuth = async (req, res) => {
       });
     }
 
-    // 🔍 Verify with Google
+    //  Verify with Google
     const ticket = await googleClient.verifyIdToken({
       idToken,
       audience: process.env.GOOGLE_CLIENT_ID
@@ -699,12 +699,12 @@ const googleAuth = async (req, res) => {
 
     const hashedRefreshToken = hashToken(refreshToken);
 
-    // 🧹 Remove expired tokens
+    //  Remove expired tokens
     user.refreshTokens = user.refreshTokens.filter(
       (t) => t.expiresAt > new Date()
     );
 
-    // ➕ Push new refresh token
+    //  Push new refresh token
     user.refreshTokens.push({
       token: hashedRefreshToken,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
@@ -712,7 +712,7 @@ const googleAuth = async (req, res) => {
 
     await user.save();
 
-    // 🍪 Send refresh token in cookie
+    //  Send refresh token in cookie
     res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
     return res.status(200).json({
@@ -834,18 +834,18 @@ const verifyPhoneOTP = async (req, res) => {
     user.phoneVerificationOTP = undefined;
     user.phoneVerificationOTPExpires = undefined;
 
-    // 🔐 Generate tokens
+    //  Generate tokens
     const accessToken = generateAccessToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
     const hashedRefreshToken = hashToken(refreshToken);
 
-    // 🧹 Remove expired tokens
+    //  Remove expired tokens
     user.refreshTokens = user.refreshTokens.filter(
       (t) => t.expiresAt > new Date()
     );
 
-    // ➕ Store hashed refresh token
+    //  Store hashed refresh token
     user.refreshTokens.push({
       token: hashedRefreshToken,
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
@@ -853,7 +853,7 @@ const verifyPhoneOTP = async (req, res) => {
 
     await user.save();
 
-    // 🍪 Send refresh token in cookie
+    //  Send refresh token in cookie
     res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
     res.json({
@@ -864,7 +864,6 @@ const verifyPhoneOTP = async (req, res) => {
   } catch (error) {
 
     console.error("Phone OTP verification error:", error);
-
     res.status(500).json({
       message: "OTP verification failed"
     });

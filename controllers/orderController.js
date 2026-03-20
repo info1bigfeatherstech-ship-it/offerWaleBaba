@@ -4,6 +4,7 @@ const Address = require('../models/Address');
 // Create a new order
 exports.createOrder = async (req, res) => {
     try {
+        // may add the delivery charger here in future after learning
         const { items, totalAmount, addressId } = req.body;
         const address = await Address.findById(addressId);
         if (!address) return res.status(404).json({ message: 'Address not found' });
@@ -53,5 +54,5 @@ exports.updateOrderStatus = async (req, res) => {
         res.status(200).json({ message: 'Order status updated successfully', order });
     } catch (error) {
         res.status(500).json({ message: 'Error updating order status', error });
-    }
+    }    
 };
