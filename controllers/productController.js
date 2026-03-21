@@ -2041,7 +2041,6 @@ const getAllProductsAdmin = async (req, res) => {
 // Add variant to existing product
 const addVariant = async (req, res) => {
   try {
-
     const { slug } = req.params;
 
     const product = await Product.findOne({ slug });
@@ -2054,13 +2053,37 @@ const addVariant = async (req, res) => {
     }
 
     // =========================
-    // Parse body safely
+    // Parse body safely - SAME as updateProduct
     // =========================
-    let variant = req.body;
+    let variant = { ...req.body };
 
-    if (typeof variant === "string") {
-      variant = JSON.parse(variant);
+    // Helper function to parse JSON strings (same as updateProduct)
+    const parseIfString = (value, fallback) => {
+      if (typeof value === "string") {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return fallback;
+        }
+      }
+      return value;
+    };
+
+    // Parse all potential JSON fields (same as updateProduct)
+    if (variant.price) {
+      variant.price = parseIfString(variant.price, {});
     }
+
+    if (variant.attributes) {
+      variant.attributes = parseIfString(variant.attributes, []);
+    }
+
+    if (variant.inventory) {
+      variant.inventory = parseIfString(variant.inventory, {});
+    }
+
+    // Log parsed data for debugging
+    console.log("Parsed variant data:", JSON.stringify(variant, null, 2));
 
     // =========================
     // 🔒 BARCODE VALIDATION
@@ -2094,7 +2117,7 @@ const addVariant = async (req, res) => {
     }
 
     // =========================
-    // 🔒 PRICE VALIDATION
+    // 🔒 PRICE VALIDATION - Now works because price is parsed
     // =========================
     if (!variant.price?.base) {
       return res.status(400).json({
@@ -2104,16 +2127,21 @@ const addVariant = async (req, res) => {
     }
 
     const basePrice = Number(variant.price.base);
-
-    const salePrice =
-      variant.price.sale != null
-        ? Number(variant.price.sale)
-        : null;
-
-    if (salePrice != null && salePrice >= basePrice) {
+    if (isNaN(basePrice) || basePrice <= 0) {
       return res.status(400).json({
         success: false,
-        message: "Sale price must be less than base price"
+        message: "Base price must be a valid number greater than 0"
+      });
+    }
+
+    const salePrice = variant.price.sale != null
+      ? Number(variant.price.sale)
+      : null;
+
+    if (salePrice !== null && (isNaN(salePrice) || salePrice >= basePrice)) {
+      return res.status(400).json({
+        success: false,
+        message: "Sale price must be a valid number less than base price"
       });
     }
 
@@ -2128,9 +2156,7 @@ const addVariant = async (req, res) => {
     let uploadedImages = [];
 
     if (req.files && req.files.length > 0) {
-
       for (let i = 0; i < req.files.length; i++) {
-
         const file = req.files[i];
 
         if (!file.buffer) continue;
@@ -2146,44 +2172,74 @@ const addVariant = async (req, res) => {
           altText: product.name,
           order: i
         });
-
       }
-
     }
 
     // =========================
     // BUILD NEW VARIANT
     // =========================
-    const newVariant = {
-      sku: skuVal,
-      barcode: barcodeNumber,
+    // const newVariant = {
+    //   sku: skuVal,
+    //   barcode: barcodeNumber,
 
-      attributes: Array.isArray(variant.attributes)
-        ? variant.attributes.map(a => ({
-            key: a.key,
-            value: a.value
-          }))
-        : [],
+    //   attributes: Array.isArray(variant.attributes)
+    //     ? variant.attributes
+    //         .filter(a => a.key && a.value)
+    //         .map(a => ({
+    //           key: a.key,
+    //           value: a.value
+    //         }))
+    //     : [],
 
-      price: {
-        base: basePrice,
-        sale: salePrice
-      },
+    //   price: {
+    //     base: basePrice,
+    //     sale: salePrice
+    //   },
 
-      inventory: {
-        quantity: Number(variant.inventory?.quantity || 0),
-        lowStockThreshold: Number(
-          variant.inventory?.lowStockThreshold || 5
-        ),
-        trackInventory:
-          variant.inventory?.trackInventory ?? true
-      },
+    //   inventory: {
+    //     quantity: Number(variant.inventory?.quantity || 0),
+    //     lowStockThreshold: Number(variant.inventory?.lowStockThreshold || 5),
+    //     trackInventory: variant.inventory?.trackInventory !== false
+    //   },
 
-      images: uploadedImages,
+    //   images: uploadedImages,
 
-      isActive: variant.isActive !== false
-    };
+    //   isActive: variant.isActive !== false
+    // };
+const newVariant = {
+  sku: skuVal,
+  barcode: barcodeNumber,
 
+  wholesale: variant.wholesale === "true" || variant.wholesale === true,
+
+  attributes: Array.isArray(variant.attributes)
+    ? variant.attributes
+        .filter(a => a.key && a.value)
+        .map(a => ({
+          key: a.key,
+          value: a.value
+        }))
+    : [],
+
+  price: {
+    base: basePrice,
+    sale: salePrice,
+    wholesaleBase: variant.price.wholesaleBase
+      ? Number(variant.price.wholesaleBase)
+      : null,
+    wholesaleSale: null
+  },
+
+  inventory: {
+    quantity: Number(variant.inventory?.quantity || 0),
+    lowStockThreshold: Number(variant.inventory?.lowStockThreshold || 5),
+    trackInventory: variant.inventory?.trackInventory !== false
+  },
+
+  images: uploadedImages,
+
+  isActive: variant.isActive !== false
+};
     product.variants.push(newVariant);
 
     // =========================
@@ -2212,7 +2268,6 @@ const addVariant = async (req, res) => {
     });
 
   } catch (error) {
-
     console.error("Add variant error:", error);
 
     return res.status(500).json({
@@ -2220,7 +2275,6 @@ const addVariant = async (req, res) => {
       message: "Error adding variant",
       error: error.message
     });
-
   }
 };
 
@@ -2414,6 +2468,228 @@ const getProductDetails = async (req, res) => {
   }
 };
 
+
+
+//will have to test it 
+const updateVariant = async (req, res) => {
+  try {
+    const { slug, variantId } = req.params;
+
+    const product = await Product.findOne({ slug });
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found"
+      });
+    }
+
+    const variant = product.variants.id(variantId);
+
+    if (!variant) {
+      return res.status(404).json({
+        success: false,
+        message: "Variant not found"
+      });
+    }
+
+    // =========================
+    // 🔧 HELPERS
+    // =========================
+    const parseBoolean = (val) => {
+      if (typeof val === "boolean") return val;
+      if (typeof val === "string") return val.toLowerCase() === "true";
+      return false;
+    };
+
+    const parseNumber = (val) => {
+      const num = Number(val);
+      return isNaN(num) ? null : num;
+    };
+
+    // =========================
+    // 📦 UPDATE BASIC FIELDS
+    // =========================
+    if (req.body.barcode) {
+      const barcodeNumber = Number(req.body.barcode);
+
+      const exists = await Product.exists({
+        "variants.barcode": barcodeNumber,
+        "variants._id": { $ne: variantId }
+      });
+
+      if (exists) {
+        return res.status(400).json({
+          success: false,
+          message: "Barcode already exists"
+        });
+      }
+
+      variant.barcode = barcodeNumber;
+    }
+
+    // =========================
+    // 💰 PRICE UPDATE
+    // =========================
+    const base = parseNumber(req.body["price[base]"]);
+    const sale = parseNumber(req.body["price[sale]"]);
+    const wholesaleBase = parseNumber(req.body["price[wholesaleBase]"]);
+    const wholesaleSale = parseNumber(req.body["price[wholesaleSale]"]);
+
+    if (base !== null) {
+      if (base <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Base price must be greater than 0"
+        });
+      }
+      variant.price.base = base;
+    }
+
+    if (sale !== null) {
+      if (sale >= variant.price.base) {
+        return res.status(400).json({
+          success: false,
+          message: "Sale price must be less than base price"
+        });
+      }
+      variant.price.sale = sale;
+    }
+
+    if (wholesaleBase !== null) {
+      variant.price.wholesaleBase = wholesaleBase;
+    }
+
+    if (wholesaleSale !== null) {
+      variant.price.wholesaleSale = wholesaleSale;
+    }
+
+    // =========================
+    // 📦 INVENTORY UPDATE
+    // =========================
+    if (req.body.quantity !== undefined) {
+      variant.inventory.quantity = parseNumber(req.body.quantity) || 0;
+    }
+
+    if (req.body.lowStockThreshold !== undefined) {
+      variant.inventory.lowStockThreshold =
+        parseNumber(req.body.lowStockThreshold) || 5;
+    }
+
+    if (req.body.trackInventory !== undefined) {
+      variant.inventory.trackInventory = parseBoolean(
+        req.body.trackInventory
+      );
+    }
+
+    // =========================
+    // 🏷️ WHOLESALE FLAG
+    // =========================
+    if (req.body.wholesale !== undefined) {
+      variant.wholesale = parseBoolean(req.body.wholesale);
+    }
+
+    // =========================
+    // 📦 MOQ
+    // =========================
+    if (req.body.minimumOrderQuantity !== undefined) {
+      variant.minimumOrderQuantity =
+        parseNumber(req.body.minimumOrderQuantity) || 1;
+    }
+
+    // =========================
+    // 🎯 ACTIVE FLAG
+    // =========================
+    if (req.body.isActive !== undefined) {
+      variant.isActive = parseBoolean(req.body.isActive);
+    }
+
+    // =========================
+    // 🧩 ATTRIBUTES
+    // =========================
+    if (req.body.attributes) {
+      try {
+        const parsed = JSON.parse(req.body.attributes);
+
+        variant.attributes = parsed.map((a) => ({
+          key: a.key,
+          value: a.value
+        }));
+      } catch (e) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid attributes format"
+        });
+      }
+    }
+
+    // =========================
+    // 📸 IMAGE HANDLING
+    // =========================
+    if (req.files && req.files.length > 0) {
+      // delete old images (optional)
+      for (let img of variant.images) {
+        if (img.publicId) {
+          await cloudinary.uploader.destroy(img.publicId);
+        }
+      }
+
+      let uploadedImages = [];
+
+      for (let i = 0; i < req.files.length; i++) {
+        const file = req.files[i];
+
+        const upload = await uploadToCloudinary(
+          file.buffer,
+          "products"
+        );
+
+        uploadedImages.push({
+          url: upload.url,
+          publicId: upload.publicId,
+          altText: product.name,
+          order: i
+        });
+      }
+
+      variant.images = uploadedImages;
+    }
+
+    // =========================
+    // 🔁 RECALCULATE PRODUCT
+    // =========================
+    const effectivePrices = product.variants.map(v =>
+      v.price.sale != null ? v.price.sale : v.price.base
+    );
+
+    product.priceRange = {
+      min: Math.min(...effectivePrices),
+      max: Math.max(...effectivePrices)
+    };
+
+    product.totalStock = product.variants.reduce(
+      (sum, v) => sum + (v.inventory.quantity || 0),
+      0
+    );
+
+    await product.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Variant updated successfully",
+      variant
+    });
+
+  } catch (error) {
+    console.error("Update variant error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Error updating variant",
+      error: error.message
+    });
+  }
+};
 module.exports = {
   createProduct,
   updateProduct,

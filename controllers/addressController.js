@@ -143,8 +143,6 @@ const addAddress = async (req, res) => {
 };
 
 
-
-
 // Get all addresses for a user (PRO VERSION)
 const getAddresses = async (req, res) => {
   try {

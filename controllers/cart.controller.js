@@ -149,45 +149,92 @@ const updateCartItem = async (req, res) => {
   }
 };
 
-
 const mergeCart = async (req, res) => {
   const userId = req.userId;
   const { items } = req.body;
 
-  if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
-  if (!Array.isArray(items)) return res.status(400).json({ success: false, message: 'Invalid items' });
+  if (!userId)
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+
+  if (!Array.isArray(items))
+    return res.status(400).json({ success: false, message: "Invalid items" });
 
   try {
     let cart = await Cart.findOne({ userId });
     if (!cart) cart = new Cart({ userId, items: [] });
 
-    for (const incoming of items) {
+    // ✅ normalize duplicates
+    const mergedMap = {};
+
+    for (const item of items) {
+      const key = `${item.productId}_${item.variantId}`;
+
+      if (!mergedMap[key]) {
+        mergedMap[key] = { ...item };
+      } else {
+        mergedMap[key].quantity += Number(item.quantity);
+      }
+    }
+
+    const normalizedItems = Object.values(mergedMap);
+
+    // ✅ fetch all products in one query
+    const productIds = normalizedItems.map(i => i.productId);
+
+    const products = await Product.find({
+      _id: { $in: productIds },
+      status: "active"
+    }).select("variants");
+
+    const productMap = new Map(
+      products.map(p => [String(p._id), p])
+    );
+
+    for (const incoming of normalizedItems) {
       const { productId, variantId, quantity } = incoming;
 
-      const product = await Product.findById(productId).select('variants status');
-      if (!product || product.status !== 'active') continue;
+      const product = productMap.get(String(productId));
+      if (!product) continue;
 
-      const variant = product.variants.find(v => String(v._id) === String(variantId));
+      const variant = product.variants.find(
+        v => String(v._id) === String(variantId)
+      );
+
       if (!variant || !variant.isActive) continue;
 
-      const existing = cart.items.find(it =>
-        String(it.productId) === String(productId) &&
-        String(it.variantId) === String(variantId)
+      let qty = Number(quantity);
+      if (qty <= 0) continue;
+
+      if (qty > variant.inventory.quantity) {
+        qty = variant.inventory.quantity;
+      }
+
+      const finalPrice =
+        variant.price.sale != null
+          ? variant.price.sale
+          : variant.price.base;
+
+      const existing = cart.items.find(
+        it =>
+          String(it.productId) === String(productId) &&
+          String(it.variantId) === String(variantId)
       );
 
       if (existing) {
-        existing.quantity += Number(quantity);
+        existing.quantity += qty;
+
+        if (existing.quantity > variant.inventory.quantity) {
+          existing.quantity = variant.inventory.quantity;
+        }
       } else {
         cart.items.push({
           productId,
           variantId,
-          quantity: Number(quantity),
+          quantity: qty,
           priceSnapshot: {
-            base: variant.price?.base ?? 0,
-            sale: variant.price?.sale ?? null,
-            costPrice: variant.price?.costPrice ?? null,
-            saleStartDate: variant.price?.saleStartDate ?? null,
-            saleEndDate: variant.price?.saleEndDate ?? null
+            base: variant.price.base,
+            sale: variant.price.sale,
+            finalPrice
           },
           variantAttributesSnapshot: (variant.attributes || []).map(a => ({
             key: a.key,
@@ -203,8 +250,8 @@ const mergeCart = async (req, res) => {
     return res.json({ success: true, cart });
 
   } catch (err) {
-    console.error('mergeCart:', err);
-    return res.status(500).json({ success: false, message: 'Merge failed' });
+    console.error("mergeCart:", err);
+    return res.status(500).json({ success: false, message: "Merge failed" });
   }
 };
 
@@ -232,7 +279,7 @@ const removeCartItem = async (req, res) => {
 //Bulk remove from cart
 const bulkRemove = async (req, res) => {
   const userId = req.userId;
-  const { items } = req.body; 
+  const { items } = req.body;     
   // items = [{productId, variantId}]
 
   const cart = await Cart.findOne({ userId });
@@ -338,7 +385,8 @@ const getCart = async (req, res) => {
 
   try {
     const cart = await Cart.findOne({ userId })
-      .populate('items.productId', 'name slug images status');
+      // .populate('items.productId', 'name slug images status');
+      .populate({ path: 'items.productId'});
 
     if (!cart) {
       return res.json({ success: true, cart: { items: [], totalAmount: 0 } });
