@@ -200,11 +200,91 @@ const getRelatedProducts = async (req, res) => {
   }
 };
 
+// const getProductDetails = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const product = await Product.findById(id).populate('category');
+//     console.log(product);
+//         console.log("before price", product.variants[0].price);
+//     if (!product) return res.status(404).json({ message: 'Product not found' });
+
+
+//     let price;
+//     if (req.userType === 'wholesaler') {
+//       price = {
+//         base: product.price.wholesaleBase,
+//         sale: product.price.wholesaleSale || product.price.wholesaleBase,
+//         minimumOrderQuantity: product.minimumOrderQuantity
+//       };
+//     } else {
+//       price = {
+//         base: product.price.base,
+//         sale: product.price.sale || product.price.base
+//       };
+//     }
+
+//     res.status(200).json({
+//       product,
+//       price
+//     });
+//   } catch (error) {
+//     console.log(error.message)
+//     res.status(500).json({ message: 'Error fetching product details', error });
+//   }
+// };
+
+const getProductDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const product = await Product.findById(id).populate('category');
+
+    if (!product) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const variantsWithPrice = product.variants.map((variant) => {
+      let price;
+
+      if (req.userType === 'wholesaler') {
+        price = {
+          base: variant.price.wholesaleBase,
+          sale: variant.price.wholesaleSale || variant.price.wholesaleBase,
+          minimumOrderQuantity: variant.minimumOrderQuantity
+        };
+      } else {
+        price = {
+          base: variant.price.base,
+          sale: variant.price.sale || variant.price.base
+        };
+      }
+
+      return {
+        ...variant.toObject(),
+        computedPrice: price
+      };
+    });
+
+    res.status(200).json({
+      product: {
+        ...product.toObject(),
+        variants: variantsWithPrice
+      }
+    });
+
+  } catch (error) {
+    console.log(error.message);
+    res.status(500).json({ message: 'Error fetching product details', error });
+  }
+};
+
 module.exports = {
   getProducts,
   getProductBySlug,
   searchProducts,
   getProductsByCategory,
   getFeaturedProducts,
-  getRelatedProducts
+  getRelatedProducts,
+  getProductDetails
 };
+

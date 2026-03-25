@@ -154,6 +154,7 @@ const createCategory = async (req, res) => {
         });
       }
     }
+    
 // user cannot create a category with same name under same parent camel case insensitive
     const existingCategory = await Category.findOne({
       name: { $regex: new RegExp(`^${name}$`, 'i') },

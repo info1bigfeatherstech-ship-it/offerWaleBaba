@@ -2439,34 +2439,34 @@ const getVariantByBarcode = async (req, res) => {
 };
 
 // Get product details with user-specific pricing
-const getProductDetails = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const product = await Product.findById(id).populate('category');
-    if (!product) return res.status(404).json({ message: 'Product not found' });
+// const getProductDetails = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const product = await Product.findById(id).populate('category');
+//     if (!product) return res.status(404).json({ message: 'Product not found' });
 
-    let price;
-    if (req.userType === 'wholesaler') {
-      price = {
-        base: product.price.wholesaleBase,
-        sale: product.price.wholesaleSale || product.price.wholesaleBase,
-        minimumOrderQuantity: product.minimumOrderQuantity
-      };
-    } else {
-      price = {
-        base: product.price.base,
-        sale: product.price.sale || product.price.base
-      };
-    }
+//     let price;
+//     if (req.userType === 'wholesaler') {
+//       price = {
+//         base: product.price.wholesaleBase,
+//         sale: product.price.wholesaleSale || product.price.wholesaleBase,
+//         minimumOrderQuantity: product.minimumOrderQuantity
+//       };
+//     } else {
+//       price = {
+//         base: product.price.base,
+//         sale: product.price.sale || product.price.base
+//       };
+//     }
 
-    res.status(200).json({
-      product,
-      price
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Error fetching product details', error });
-  }
-};
+//     res.status(200).json({
+//       product,
+//       price
+//     });
+//   } catch (error) {
+//     res.status(500).json({ message: 'Error fetching product details', error });
+//   }
+// };
 
 
 
@@ -2710,6 +2710,5 @@ module.exports = {
    addVariant,
    deleteVariant,
    getVariantByBarcode,
-   bulkUploadNewProductsWithImages,
-   getProductDetails
+   bulkUploadNewProductsWithImages
 };

@@ -34,7 +34,7 @@ const cartRoutes = require('./routes/Cart');
 const addressRoutes = require('./routes/addressRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const wholesalerRoutes = require('./routes/wholesalerRoutes');
-
+const assistantRoutes=require("./routes/assistant.routes")
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -197,7 +197,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/wholesalers', wholesalerRoutes);
-
+app.use("/api/assistant", assistantRoutes)
 
 // ============================================================================
 // ERROR HANDLING

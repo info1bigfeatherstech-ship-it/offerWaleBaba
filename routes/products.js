@@ -3,7 +3,7 @@ const router = express.Router();
 const userProductController = require('../controllers/userProductController');
 // const userTypeMiddleware = require('../middlewares/userTypeMiddleware');
 const {verifyToken} = require('../middlewares/auth');
-const { getProductDetails } = require('../controllers/productController');
+const { getProductDetails } = require('../controllers/userProductController');
 // Apply userTypeMiddleware to product routes
 // router.use(userTypeMiddleware);
 
@@ -19,13 +19,18 @@ router.get('/featured', userProductController.getFeaturedProducts);
 // Products by category (category slug)
 router.get('/category/:slug', userProductController.getProductsByCategory);
 
+
 // Related products (by product slug) - define before single product route
 router.get('/:slug/related', userProductController.getRelatedProducts);
+
+
+// Add route for getting product details with user-specific pricing
+router.get('/detailed/:id',   getProductDetails);
+  
+
 
 // Single product by slug
 router.get('/:slug', userProductController.getProductBySlug);
 
-// Add route for getting product details with user-specific pricing
-router.get('/:id', verifyToken, getProductDetails);
 
 module.exports = router;
