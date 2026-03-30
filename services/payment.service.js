@@ -73,3 +73,11 @@ exports.processRefund = async (req, res) => {
         res.status(500).json({ message: 'Error processing refund', error });
     }
 };
+
+
+
+// // /* NODE SDK: https://github.com/razorpay/razorpay-node */
+// const {validateWebhookSignature} = require('razorpay/dist/utils/razorpay-utils')
+
+// validateWebhookSignature(JSON.stringify(webhookBody), webhookSignature, webhookSecret)
+// #webhook_body should be raw webhook request body

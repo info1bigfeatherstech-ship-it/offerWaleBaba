@@ -13,7 +13,7 @@ const path = require('path');
 const axios = require('axios');
 const AdmZip = require("adm-zip");
 const { Parser } = require("json2csv");   // ✅ ADD THIS
-
+const {generateSEOData}=require("../utils/seoUtils");
 
 
 // Create new product
@@ -285,6 +285,22 @@ const createProduct = async (req, res) => {
       isVisibleToWholesale: req.body.isVisibleToWholesale || false
     });
 
+// =============================
+// ✅ AUTO-GENERATE SEO DATA
+// =============================
+// Get category name for SEO
+const categoryForSEO = existingCategory ? { name: existingCategory.name } : null;
+
+const seoData = generateSEOData({
+    name: product.name,
+    description: product.description,
+    category: categoryForSEO,
+    variants: product.variants
+});
+
+// Add SEO to product
+product.seo = seoData;
+
     await product.save();
 
     return res.status(201).json({
@@ -488,6 +504,27 @@ const bulkCreateProducts = async (req, res) => {
           isFeatured: item.isFeatured ?? false,
           status: item.status || "draft"
         });
+         
+// =============================
+// ✅ AUTO-GENERATE SEO DATA
+// =============================
+// Get category for SEO (you need to fetch category first)
+let categoryForSEO = null;
+if (item.category) {
+    const catDoc = await Category.findById(item.category).lean();
+    categoryForSEO = catDoc ? { name: catDoc.name } : null;
+}
+
+const seoData = generateSEOData({
+    name: product.name,
+    description: product.description,
+    category: categoryForSEO,
+    variants: product.variants
+});
+
+product.seo = seoData;
+
+
 
         await product.save();
         createdProducts.push(product);
@@ -518,8 +555,6 @@ const bulkCreateProducts = async (req, res) => {
     });
   }
 };
-
-
 
 
 const importProductsFromCSV = async (req, res) => {
@@ -565,7 +600,7 @@ const importProductsFromCSV = async (req, res) => {
               const productName = row.name;
 
               // ===============================
-              //  PRICE SANITIZATION (NEW FIX)
+              //  PRICE SANITIZATION
               // ===============================
               const cleanBasePrice = parseFloat(
                 row.basePrice?.replace(/[^0-9.]/g, "")
@@ -603,6 +638,10 @@ const importProductsFromCSV = async (req, res) => {
                   });
                 }
 
+                // =====================================================
+                // ✅ POSITION 1: CREATE THE PRODUCT OBJECT WITH SEO FIELD
+                // =====================================================
+                // We'll add seo: null here, will fill it after variants
                 productMap[productName] = {
                   name: productName,
                   slug,
@@ -613,6 +652,7 @@ const importProductsFromCSV = async (req, res) => {
                   status: row.status?.toLowerCase() || "draft",
                   isFeatured: row.isfeatured === "true",
                   variants: [],
+                  seo: null,  // 👈 ADD THIS - SEO will be filled later
                   soldInfo: {
                     enabled: row.soldEnabled === "true",
                     count: Number(row.soldCount) || 0,
@@ -662,7 +702,7 @@ const importProductsFromCSV = async (req, res) => {
               }
 
               // ===============================
-              // IMAGE UPLOAD FROM URL (UNCHANGED)
+              // IMAGE UPLOAD FROM URL
               // ===============================
               let imagesArr = [];
 
@@ -725,47 +765,43 @@ const importProductsFromCSV = async (req, res) => {
               }
 
               // ===============================
-               // BUILD VARIANT OBJECT
-               // ===============================
-               const wholesale = row.wholesale === "true";
-               const wholesaleBase = wholesale ? Number(row.wholesaleBase) : undefined;
-               const wholesaleSale = wholesale ? (row.wholesaleSale ? Number(row.wholesaleSale) : null) : undefined;
-               let moq = 1;
-               if (wholesale) {
-                 moq = row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0 ? Number(row.minimumOrderQuantity) : 1;
-               }
-               const variant = {
-                 sku:
-                   "SKU-" +
-                   Math.floor(100000 + Math.random() * 900000),
-                 barcode: row.barcode || "",
-                 wholesale,
-                 attributes: variantAttributes,
-                 weight: Number(row.weight) || 0,
-                 dimensions: {
-                   length: Number(row.length) || 0,
-                   width: Number(row.width) || 0,
-                   height: Number(row.height) || 0,
-                 },
-                 price: {
-                   base: cleanBasePrice,
-                   sale: cleanSalePrice
-                     ? Number(cleanSalePrice)
-                     : null,
-                   wholesaleBase,
-                   wholesaleSale
-                 },
-                 minimumOrderQuantity: moq,
-                 inventory: {
-                   quantity: Number(row.quantity) || 0,
-                   trackInventory: true,
-                   lowStockThreshold: 5,
-                 },
-                 images: imagesArr,
-                 isActive: true,
-               };
+              // BUILD VARIANT OBJECT
+              // ===============================
+              const wholesale = row.wholesale === "true";
+              const wholesaleBase = wholesale ? Number(row.wholesaleBase) : undefined;
+              const wholesaleSale = wholesale ? (row.wholesaleSale ? Number(row.wholesaleSale) : null) : undefined;
+              let moq = 1;
+              if (wholesale) {
+                moq = row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0 ? Number(row.minimumOrderQuantity) : 1;
+              }
+              const variant = {
+                sku: "SKU-" + Math.floor(100000 + Math.random() * 900000),
+                barcode: row.barcode || "",
+                wholesale,
+                attributes: variantAttributes,
+                weight: Number(row.weight) || 0,
+                dimensions: {
+                  length: Number(row.length) || 0,
+                  width: Number(row.width) || 0,
+                  height: Number(row.height) || 0,
+                },
+                price: {
+                  base: cleanBasePrice,
+                  sale: cleanSalePrice ? Number(cleanSalePrice) : null,
+                  wholesaleBase,
+                  wholesaleSale
+                },
+                minimumOrderQuantity: moq,
+                inventory: {
+                  quantity: Number(row.quantity) || 0,
+                  trackInventory: true,
+                  lowStockThreshold: 5,
+                },
+                images: imagesArr,
+                isActive: true,
+              };
 
-               productMap[productName].variants.push(variant);
+              productMap[productName].variants.push(variant);
 
               if (
                 productAttributes.length &&
@@ -782,7 +818,49 @@ const importProductsFromCSV = async (req, res) => {
             }
           }
 
+          // =====================================================
+          // ✅ POSITION 2: AFTER ALL ROWS PROCESSED, BEFORE insertMany
+          // =====================================================
+          // This is where we add SEO to all products
           const finalProducts = Object.values(productMap);
+          
+          // 👇 ADD THIS BLOCK - Generate SEO for each product
+          for (const productData of finalProducts) {
+            try {
+              // Fetch category to get category name for SEO
+              let categoryForSEO = null;
+              if (productData.category) {
+                const catDoc = await Category.findById(productData.category).lean();
+                categoryForSEO = catDoc ? { name: catDoc.name } : null;
+              }
+              
+              // Generate SEO data
+              const seoData = generateSEOData({
+                name: productData.name,
+                description: productData.description,
+                category: categoryForSEO,
+                variants: productData.variants
+              });
+              
+              // Assign SEO to product
+              productData.seo = seoData;
+              
+            } catch (seoErr) {
+              console.error(`SEO generation failed for ${productData.name}:`, seoErr.message);
+              // Set default SEO if generation fails
+              productData.seo = {
+                meta_title: `${productData.name} | Buy Online | YourStore`,
+                meta_description: 'Shop now for best prices with free shipping and COD',
+                meta_keywords: 'buy online, best price',
+                og_title: productData.name,
+                og_description: productData.description?.substring(0, 200) || productData.name,
+                og_image: null,
+                canonical_url: null
+              };
+            }
+          }
+          
+          // Now insert all products with SEO data
           let inserted = [];
 
           if (finalProducts.length > 0) {
@@ -815,8 +893,307 @@ const importProductsFromCSV = async (req, res) => {
   }
 };
 
+// const importProductsFromCSV = async (req, res) => {
+//   try {
+//     if (!req.file) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "CSV file is required",
+//       });
+//     }
+
+//     const rows = [];
+//     const failed = [];
+//     const productMap = {};
+
+//     fs.createReadStream(req.file.path)
+//       .pipe(
+//         csv({
+//           mapHeaders: ({ header }) => header.trim(),
+//         })
+//       )
+//       .on("data", (row) => rows.push(row))
+//       .on("end", async () => {
+//         try {
+//           for (let row of rows) {
+//             try {
+//               // ===============================
+//               // TRIM ALL VALUES
+//               // ===============================
+//               Object.keys(row).forEach((key) => {
+//                 if (typeof row[key] === "string") {
+//                   row[key] = row[key].trim();
+//                 }
+//               });
+
+//               // ===============================
+//               // REQUIRED FIELD VALIDATION
+//               // ===============================
+//               if (!row.name || !row.category || !row.basePrice) {
+//                 throw new Error("Missing required fields");
+//               }
+
+//               const productName = row.name;
+
+//               // ===============================
+//               //  PRICE SANITIZATION (NEW FIX)
+//               // ===============================
+//               const cleanBasePrice = parseFloat(
+//                 row.basePrice?.replace(/[^0-9.]/g, "")
+//               );
+
+//               const cleanSalePrice = row.salePrice
+//                 ? parseFloat(row.salePrice.replace(/[^0-9.]/g, ""))
+//                 : null;
+
+//               if (isNaN(cleanBasePrice)) {
+//                 throw new Error("Invalid basePrice format");
+//               }
+
+//               // ===============================
+//               // CREATE PRODUCT IF NOT EXISTS
+//               // ===============================
+//               if (!productMap[productName]) {
+//                 const slug = await generateSlug(productName);
+
+//                 const categorySlug = slugify(row.category, {
+//                   lower: true,
+//                   strict: true,
+//                 });
+
+//                 let category = await Category.findOne({
+//                   slug: categorySlug,
+//                 });
+
+//                 if (!category) {
+//                   category = await Category.create({
+//                     name: row.category,
+//                     slug: categorySlug,
+//                     status: "active",
+//                     level: 0,
+//                   });
+//                 }
+                      
+
+
+
+                
+//                 productMap[productName] = {
+//                   name: productName,
+//                   slug,
+//                   title: row.title || productName,
+//                   description: row.description || "",
+//                   category: category._id,
+//                   brand: row.brand || "Generic",
+//                   status: row.status?.toLowerCase() || "draft",
+//                   isFeatured: row.isfeatured === "true",
+//                   variants: [],
+//                   soldInfo: {
+//                     enabled: row.soldEnabled === "true",
+//                     count: Number(row.soldCount) || 0,
+//                   },
+//                   fomo: {
+//                     enabled: row.fomoEnabled === "true",
+//                     type: row.fomoType || "viewing_now",
+//                     viewingNow: Number(row.viewingNow) || 0,
+//                     productLeft: Number(row.productLeft) || 0,
+//                     customMessage: row.customMessage || "",
+//                   },
+//                 };
+//               }
+
+//               // ===============================
+//               // VARIANT ATTRIBUTES
+//               // ===============================
+//               let variantAttributes = [];
+
+//               if (row.variantAttributes) {
+//                 variantAttributes = row.variantAttributes
+//                   .split("|")
+//                   .map((pair) => {
+//                     const [key, value] = pair.split(":");
+//                     return {
+//                       key: key?.trim(),
+//                       value: value?.trim(),
+//                     };
+//                   });
+//               }
+
+//               // ===============================
+//               // PRODUCT ATTRIBUTES
+//               // ===============================
+//               let productAttributes = [];
+
+//               if (row.productAttributes) {
+//                 productAttributes = row.productAttributes
+//                   .split("|")
+//                   .map((pair) => {
+//                     const [key, value] = pair.split(":");
+//                     return {
+//                       key: key?.trim(),
+//                       value: value?.trim(),
+//                     };
+//                   });
+//               }
+
+//               // ===============================
+//               // IMAGE UPLOAD FROM URL (UNCHANGED)
+//               // ===============================
+//               let imagesArr = [];
+
+//               if (row.images) {
+//                 const imageUrls = row.images
+//                   .split(",")
+//                   .map((u) => u.trim())
+//                   .slice(0, 5);
+
+//                 for (let url of imageUrls) {
+//                   if (!url) continue;
+
+//                   try {
+//                     if (url.startsWith("data:image")) {
+//                       const uploadResult =
+//                         await cloudinary.uploader.upload(url, {
+//                           resource_type: "image",
+//                         });
+
+//                       imagesArr.push({
+//                         url: uploadResult.secure_url,
+//                         publicId: uploadResult.public_id,
+//                         altText: productName,
+//                         order: imagesArr.length,
+//                       });
+//                     } else if (url.startsWith("http")) {
+//                       const response = await axios({
+//                         method: "GET",
+//                         url: url,
+//                         responseType: "arraybuffer",
+//                         timeout: 15000,
+//                         headers: {
+//                           "User-Agent": "Mozilla/5.0",
+//                         },
+//                       });
+
+//                       const base64 = Buffer.from(response.data).toString(
+//                         "base64"
+//                       );
+//                       const mimeType = response.headers["content-type"];
+//                       const dataURI = `data:${mimeType};base64,${base64}`;
+
+//                       const uploadResult =
+//                         await cloudinary.uploader.upload(dataURI, {
+//                           resource_type: "image",
+//                         });
+
+//                       imagesArr.push({
+//                         url: uploadResult.secure_url,
+//                         publicId: uploadResult.public_id,
+//                         altText: productName,
+//                         order: imagesArr.length,
+//                       });
+//                     }
+//                   } catch (err) {
+//                     console.log("Image upload failed:", url);
+//                     console.log("ERROR:", err.message);
+//                   }
+//                 }
+//               }
+
+//               // ===============================
+//                // BUILD VARIANT OBJECT
+//                // ===============================
+//                const wholesale = row.wholesale === "true";
+//                const wholesaleBase = wholesale ? Number(row.wholesaleBase) : undefined;
+//                const wholesaleSale = wholesale ? (row.wholesaleSale ? Number(row.wholesaleSale) : null) : undefined;
+//                let moq = 1;
+//                if (wholesale) {
+//                  moq = row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0 ? Number(row.minimumOrderQuantity) : 1;
+//                }
+//                const variant = {
+//                  sku:
+//                    "SKU-" +
+//                    Math.floor(100000 + Math.random() * 900000),
+//                  barcode: row.barcode || "",
+//                  wholesale,
+//                  attributes: variantAttributes,
+//                  weight: Number(row.weight) || 0,
+//                  dimensions: {
+//                    length: Number(row.length) || 0,
+//                    width: Number(row.width) || 0,
+//                    height: Number(row.height) || 0,
+//                  },
+//                  price: {
+//                    base: cleanBasePrice,
+//                    sale: cleanSalePrice
+//                      ? Number(cleanSalePrice)
+//                      : null,
+//                    wholesaleBase,
+//                    wholesaleSale
+//                  },
+//                  minimumOrderQuantity: moq,
+//                  inventory: {
+//                    quantity: Number(row.quantity) || 0,
+//                    trackInventory: true,
+//                    lowStockThreshold: 5,
+//                  },
+//                  images: imagesArr,
+//                  isActive: true,
+//                };
+
+//                productMap[productName].variants.push(variant);
+
+//               if (
+//                 productAttributes.length &&
+//                 !productMap[productName].productAttributes
+//               ) {
+//                 productMap[productName].productAttributes =
+//                   productAttributes;
+//               }
+//             } catch (err) {
+//               failed.push({
+//                 product: row.name || "Unknown",
+//                 error: err.message,
+//               });
+//             }
+//           }
+
+//           const finalProducts = Object.values(productMap);
+//           let inserted = [];
+
+//           if (finalProducts.length > 0) {
+//             inserted = await Product.insertMany(finalProducts);
+//           }
+
+//           fs.unlinkSync(req.file.path);
+
+//           return res.status(200).json({
+//             success: true,
+//             totalRows: rows.length,
+//             insertedProducts: inserted.length,
+//             failedCount: failed.length,
+//             failed,
+//           });
+//         } catch (err) {
+//           return res.status(500).json({
+//             success: false,
+//             message: "Processing failed",
+//             error: err.message,
+//           });
+//         }
+//       });
+//   } catch (error) {
+//     return res.status(500).json({
+//       success: false,
+//       message: "CSV import failed",
+//       error: error.message,
+//     });
+//   }
+// };
+
 
 // Bulk upload products with images via CSV and ZIP
+
+
 const bulkUploadNewProductsWithImages = async (req, res) => {
   try {
 
@@ -1007,14 +1384,27 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
         // =============================
 
         if (product) {
-
+          // For existing product, just add variant (no SEO update needed for variants)
           product.variants.push(newVariant);
-
           await product.save();
 
         } else {
-
+          // =====================================================
+          // ✅ POSITION 1: NEW PRODUCT - Generate SEO before saving
+          // =====================================================
+          
           const slug = await generateSlug(row.name);
+          
+          // Prepare category for SEO
+          const categoryForSEO = categoryDoc ? { name: categoryDoc.name } : null;
+          
+          // Generate SEO data for the new product
+          const seoData = generateSEOData({
+            name: row.name,
+            description: row.description || '',
+            category: categoryForSEO,
+            variants: [newVariant]
+          });
 
           product = new Product({
             name: row.name,
@@ -1026,7 +1416,8 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
             status: row.status || "draft",
             isFeatured: row.isfeatured === "true",
             attributes: productAttributes,
-            variants: [newVariant]
+            variants: [newVariant],
+            seo: seoData  // 👈 ADD SEO HERE
           });
 
           await product.save();
@@ -1045,6 +1436,34 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
           error: err.message
         });
 
+      }
+    }
+
+    // =====================================================
+    // ✅ POSITION 2: AFTER ALL PRODUCTS PROCESSED
+    //    (Optional: Update existing products that might need SEO)
+    // =====================================================
+    // If you want to add SEO to products that were updated (variant added)
+    // but didn't have SEO, you can add a loop here
+    
+    // For any existing products that were updated and don't have SEO,
+    // you can update them (optional)
+    for (const successItem of success) {
+      try {
+        const product = await Product.findOne({ name: successItem.name });
+        if (product && (!product.seo || !product.seo.meta_title)) {
+          const categoryDoc = await Category.findById(product.category).lean();
+          const seoData = generateSEOData({
+            name: product.name,
+            description: product.description,
+            category: categoryDoc ? { name: categoryDoc.name } : null,
+            variants: product.variants
+          });
+          product.seo = seoData;
+          await product.save();
+        }
+      } catch (err) {
+        console.error(`Failed to update SEO for ${successItem.name}:`, err.message);
       }
     }
 
@@ -1092,6 +1511,284 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
     });
   }
 };
+
+// const bulkUploadNewProductsWithImages = async (req, res) => {
+//   try {
+
+//     if (!req.files?.csvFile || !req.files?.imagesZip) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "CSV file and images ZIP are required"
+//       });
+//     }
+
+//     const csvPath = req.files.csvFile[0].path;
+//     const zipPath = req.files.imagesZip[0].path;
+
+//     const extractPath = path.join(__dirname, "../uploads/extracted");
+
+//     // =============================
+//     // CLEAN OLD EXTRACTED FOLDER
+//     // =============================
+
+//     if (fs.existsSync(extractPath)) {
+//       fs.rmSync(extractPath, { recursive: true, force: true });
+//     }
+
+//     fs.mkdirSync(extractPath, { recursive: true });
+
+//     // =============================
+//     // Extract ZIP
+//     // =============================
+
+//     const zip = new AdmZip(zipPath);
+//     zip.extractAllTo(extractPath, true);
+
+//     const extractedFolders = fs.readdirSync(extractPath);
+
+//     const rootFolder =
+//       extractedFolders.length === 1
+//         ? path.join(extractPath, extractedFolders[0])
+//         : extractPath;
+
+//     // =============================
+//     // Parse CSV
+//     // =============================
+
+//     const rows = [];
+
+//     await new Promise((resolve, reject) => {
+//       fs.createReadStream(csvPath)
+//         .pipe(csv())
+//         .on("data", (data) => rows.push(data))
+//         .on("end", resolve)
+//         .on("error", reject);
+//     });
+
+//     // =============================
+//     // Attribute Parsers
+//     // =============================
+
+//     const parseAttributes = (attrString) => {
+
+//       if (!attrString) return [];
+
+//       return attrString.split("|").map(item => {
+
+//         const [key, value] = item.split(":");
+
+//         return {
+//           key: key?.trim(),
+//           value: value?.trim()
+//         };
+
+//       }).filter(attr => attr.key && attr.value);
+
+//     };
+
+//     const success = [];
+//     const failed = [];
+
+//     for (const row of rows) {
+
+//       try {
+
+//         const barcode = Number(row.barcode);
+
+//         if (isNaN(barcode)) {
+//           throw new Error("Invalid barcode");
+//         }
+
+//         // =============================
+//         // CATEGORY LOOKUP
+//         // =============================
+
+//         const categoryDoc = await Category.findOne({
+//           name: row.category
+//         });
+
+//         if (!categoryDoc) {
+//           throw new Error(`Category not found: ${row.category}`);
+//         }
+
+//         let product = await Product.findOne({ name: row.name });
+
+//         // =============================
+//         // IMAGE FOLDER
+//         // =============================
+
+//         const imageFolder = path.join(rootFolder, String(barcode));
+
+//         if (!fs.existsSync(imageFolder)) {
+//           throw new Error(`Image folder not found for barcode ${barcode}`);
+//         }
+
+//         const files = fs.readdirSync(imageFolder);
+
+//         if (!files.length) {
+//           throw new Error(`No images found for barcode ${barcode}`);
+//         }
+
+//         // =============================
+//         // PARALLEL CLOUDINARY UPLOAD
+//         // =============================
+
+//         const uploadPromises = files.map(async (file, index) => {
+
+//           const filePath = path.join(imageFolder, file);
+
+//           const buffer = fs.readFileSync(filePath);
+
+//           const upload = await uploadToCloudinary(
+//             buffer,
+//             "products",
+//             `${row.name}-${barcode}-${index}`
+//           );
+
+//           return {
+//             url: upload.url,
+//             publicId: upload.publicId,
+//             altText: row.name,
+//             order: index
+//           };
+
+//         });
+
+//         const variantImages = await Promise.all(uploadPromises);
+
+//         // =============================
+//         // PRICE VALIDATION
+//         // =============================
+
+//         const basePrice = Number(row.basePrice);
+
+//         if (isNaN(basePrice)) {
+//           throw new Error(`Invalid base price for barcode ${barcode}`);
+//         }
+
+//         const salePrice = row.salePrice ? Number(row.salePrice) : null;
+
+//         // =============================
+//         // ATTRIBUTES
+//         // =============================
+
+//         const variantAttributes = parseAttributes(row.variantAttributes);
+//         const productAttributes = parseAttributes(row.productAttributes);
+
+//         // =============================
+//         // VARIANT
+//         // =============================
+
+//         const sku = await generateSku();
+
+//         const newVariant = {
+//           sku,
+//           barcode,
+//           attributes: variantAttributes,
+//           price: {
+//             base: basePrice,
+//             sale: salePrice
+//               ? Number(cleanSalePrice)
+//               : null,
+//           },
+//           inventory: {
+//             quantity: Number(row.quantity || 0)
+//           },
+//           images: variantImages
+//         };
+
+//         // =============================
+//         // PRODUCT CREATE / UPDATE
+//         // =============================
+
+//         if (product) {
+
+//           product.variants.push(newVariant);
+
+//           await product.save();
+
+//         } else {
+
+//           const slug = await generateSlug(row.name);
+
+//           product = new Product({
+//             name: row.name,
+//             title: row.title || row.name,
+//             slug,
+//             description: row.description || "",
+//             category: categoryDoc._id,
+//             brand: row.brand || null,
+//             status: row.status || "draft",
+//             isFeatured: row.isfeatured === "true",
+//             attributes: productAttributes,
+//             variants: [newVariant]
+//           });
+
+//           await product.save();
+//         }
+
+//         success.push({
+//           name: row.name,
+//           barcode
+//         });
+
+//       } catch (err) {
+
+//         failed.push({
+//           name: row.name || "Unknown",
+//           barcode: row.barcode || null,
+//           error: err.message
+//         });
+
+//       }
+//     }
+
+//     // =============================
+//     // ERROR CSV GENERATION
+//     // =============================
+
+//     let errorCsvPath = null;
+
+//     if (failed.length > 0) {
+
+//       const parser = new Parser({
+//         fields: ["name", "barcode", "error"]
+//       });
+
+//       const csvData = parser.parse(failed);
+
+//       const fileName = `failed-products-${Date.now()}.csv`;
+
+//       errorCsvPath = path.join(__dirname, "../uploads", fileName);
+
+//       fs.writeFileSync(errorCsvPath, csvData);
+//     }
+
+//     return res.status(200).json({
+//       success: true,
+//       message: "Bulk upload completed",
+//       totalRows: rows.length,
+//       successfulUploads: success.length,
+//       failedUploads: failed.length,
+//       errorReport: errorCsvPath
+//         ? `/uploads/${path.basename(errorCsvPath)}`
+//         : null,
+//       errors: failed
+//     });
+
+//   } catch (error) {
+
+//     console.error("Bulk upload error:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: "Bulk upload failed",
+//       error: error.message
+//     });
+//   }
+// };
+
+
 
 const updateProduct = async (req, res) => {
   try {
@@ -1354,7 +2051,7 @@ const updateProduct = async (req, res) => {
 
     }
 
-    if (updates.attributes) {
+    if (updates.attributes) {      
 
       const parsed = parseIfString(updates.attributes, []);
 
@@ -1363,6 +2060,30 @@ const updateProduct = async (req, res) => {
         : [];
 
     }
+
+      // =====================================================
+    // ✅ ADD THIS BLOCK: Regenerate SEO if name or description changed
+    // =====================================================
+    if (updates.name || updates.description) {
+      // Fetch category for SEO
+      const categoryDoc = await Category.findById(existingProduct.category).lean();
+      
+      // Prepare product data for SEO generation
+      const productDataForSEO = {
+        name: updates.name || existingProduct.name,
+        description: updates.description || existingProduct.description,
+        category: categoryDoc ? { name: categoryDoc.name } : null,
+        variants: existingProduct.variants  // Use existing variants
+      };
+      
+      // Generate fresh SEO data
+      const seoData = generateSEOData(productDataForSEO);
+      
+      // Add to updates
+      updates.seo = seoData;
+    }
+
+
 
     const updatedProduct = await Product.findByIdAndUpdate(
       existingProduct._id,
@@ -1727,7 +2448,24 @@ const getProductBySlug = async (req, res) => {
         message: "Product not found"
       });
     }
-
+             // =============================
+        // ✅ FALLBACK: If no SEO data, generate on the fly
+        // =============================
+        if (!product.seo || !product.seo.meta_title) {
+            const seoData = generateSEOData({
+                name: product.name,
+                description: product.description,
+                category: product.category,
+                variants: product.variants
+            });
+            product.seo = seoData;
+            
+            // Optionally update in database for next time
+            await Product.updateOne(
+                { _id: product._id },
+                { $set: { seo: seoData } }
+            );
+        }
     return res.status(200).json({
       success: true,
       product

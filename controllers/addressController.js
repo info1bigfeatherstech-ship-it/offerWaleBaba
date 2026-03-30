@@ -201,7 +201,7 @@ const updateAddress = async (req, res) => {
     let updates = { ...req.body };
 
     // =========================
-    // 🔒 FIND ADDRESS (OWNERSHIP CHECK)
+    //  FIND ADDRESS (OWNERSHIP CHECK)
     // =========================
     const address = await Address.findOne({ _id: id, userId });
 
@@ -213,13 +213,13 @@ const updateAddress = async (req, res) => {
     }
 
     // =========================
-    // 🧹 SANITIZATION FUNCTION
+    //  SANITIZATION FUNCTION
     // =========================
     const clean = (val) =>
       typeof val === "string" ? val.trim() : val;
 
     // =========================
-    // 🔒 VALIDATION (PARTIAL)
+    //  VALIDATION (PARTIAL)
     // =========================
     if (updates.phone) {
       updates.phone = clean(updates.phone);

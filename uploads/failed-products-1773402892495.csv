@@ -1,3 +1,0 @@
-"name","barcode","error"
-"iPhone 15","25474","Product validation failed: variants.0.price.base: Cast to Number failed for value ""NaN"" (type number) at path ""price.base"""
-"Nike Shoes","46833","Product validation failed: variants.0.price.base: Cast to Number failed for value ""NaN"" (type number) at path ""price.base"""
