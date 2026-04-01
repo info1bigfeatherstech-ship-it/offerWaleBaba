@@ -580,28 +580,43 @@ const changePassword = async (req, res) => {
   }
 };
 
-// Forgot password - generate OTP and email
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    if (!email) return res.status(400).json({ success: false, message: 'Email is required' });
+    
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
 
     const user = await User.findOne({ email });
-    if (!user) return res.status(404).json({ success: false, message: 'User with this email not found' });
+    
+    // For security, don't reveal if user exists or not
+    if (!user) {
+      return res.status(200).json({
+        success: true,
+        message: 'If your email is registered, you will receive an OTP'
+      });
+    }
 
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
-
+    
+    // Set OTP expiry (10 minutes from now)
+    const otpExpires = new Date(Date.now() + 5 * 60 * 1000);
+    
+    // Save OTP to user (without validation to avoid password issues)
     user.passwordResetOTP = otp;
-    user.passwordResetOTPExpires = expires;
-    await user.save();
+    user.passwordResetOTPExpires = otpExpires;
+    await user.save({ validateBeforeSave: false });
 
     const mailOptions = {
       from: process.env.EMAIL_USER || 'info1.bigfeatherstech@gmail.com',
-      to: email,
+      to: email,  
       subject: 'Password Reset OTP',
-      html: `<p>Your password reset OTP is <strong>${otp}</strong>. It expires in 15 minutes.</p>`
+      html: `<p>Your password reset OTP is <strong>${otp}</strong>. It expires in 5 minutes.</p>`
     };
 
     transporter.sendMail(mailOptions, (error, info) => {

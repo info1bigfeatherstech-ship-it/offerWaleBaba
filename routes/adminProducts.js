@@ -63,6 +63,8 @@ router.get('/variant/:barcode',    requireAdmin, productController.getVariantByB
 router.put('/:slug',               requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
 router.delete('/:slug',            requireAdmin, productController.deleteProduct);
 router.get('/:slug',               requireAdmin, productController.getProductBySlug);
+// Route for bulk upload with images (CSV + ZIP)
+// router.post("/bulk-new-products", requireAdmin, uploadBulkNewProductFiles, productController.bulkUploadNewProductsWithImages);
 
 module.exports = router;
 // this code have both functionality upload zip plus exel link 

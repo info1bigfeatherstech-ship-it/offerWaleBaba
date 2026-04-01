@@ -1023,12 +1023,288 @@ const getAllProductsAdmin = async (req, res) => {
   } catch (error) { return res.status(500).json({ success: false, message: "Error fetching products", error: error.message }); }
 };
 
-const getAdminProducts = async (req, res) => {
+
+// Bulk upload products with images via CSV and ZIP
+const bulkUploadNewProductsWithImages = async (req, res) => {
   try {
-    const products = await Product.find();
-    return res.status(200).json({ success: true, products });
-  } catch (error) { return res.status(500).json({ success: false, message: "Error fetching admin products", error: error.message }); }
+
+    if (!req.files?.csvFile || !req.files?.imagesZip) {
+      return res.status(400).json({
+        success: false,
+        message: "CSV file and images ZIP are required"
+      });
+    }
+
+    const csvPath = req.files.csvFile[0].path;
+    const zipPath = req.files.imagesZip[0].path;
+
+    const extractPath = path.join(__dirname, "../uploads/extracted");
+
+    // =============================
+    // CLEAN OLD EXTRACTED FOLDER
+    // =============================
+
+    if (fs.existsSync(extractPath)) {
+      fs.rmSync(extractPath, { recursive: true, force: true });
+    }
+
+    fs.mkdirSync(extractPath, { recursive: true });
+
+    // =============================
+    // Extract ZIP
+    // =============================
+
+    const zip = new AdmZip(zipPath);
+    zip.extractAllTo(extractPath, true);
+
+    const extractedFolders = fs.readdirSync(extractPath);
+
+    const rootFolder =
+      extractedFolders.length === 1
+        ? path.join(extractPath, extractedFolders[0])
+        : extractPath;
+
+    // =============================
+    // Parse CSV
+    // =============================
+
+    const rows = [];
+
+    await new Promise((resolve, reject) => {
+      fs.createReadStream(csvPath)
+        .pipe(csv())
+        .on("data", (data) => rows.push(data))
+        .on("end", resolve)
+        .on("error", reject);
+    });
+
+    // =============================
+    // Attribute Parsers
+    // =============================
+
+    const parseAttributes = (attrString) => {
+
+      if (!attrString) return [];
+
+      return attrString.split("|").map(item => {
+
+        const [key, value] = item.split(":");
+
+        return {
+          key: key?.trim(),
+          value: value?.trim()
+        };
+
+      }).filter(attr => attr.key && attr.value);
+
+    };
+
+    const success = [];
+    const failed = [];
+
+    for (const row of rows) {
+
+      try {
+
+        const barcode = Number(row.barcode);
+
+        if (isNaN(barcode)) {
+          throw new Error("Invalid barcode");
+        }
+
+        // =============================
+        // CATEGORY LOOKUP
+        // =============================
+
+        const categoryDoc = await Category.findOne({
+          name: row.category
+        });
+
+        if (!categoryDoc) {
+          throw new Error(`Category not found: ${row.category}`);
+        }
+
+        let product = await Product.findOne({ name: row.name });
+
+        // =============================
+        // IMAGE FOLDER
+        // =============================
+
+        const imageFolder = path.join(rootFolder, String(barcode));
+
+        if (!fs.existsSync(imageFolder)) {
+          throw new Error(`Image folder not found for barcode ${barcode}`);
+        }
+
+        const files = fs.readdirSync(imageFolder);
+
+        if (!files.length) {
+          throw new Error(`No images found for barcode ${barcode}`);
+        }
+
+        // =============================
+        // PARALLEL CLOUDINARY UPLOAD
+        // =============================
+
+        const uploadPromises = files.map(async (file, index) => {
+
+          const filePath = path.join(imageFolder, file);
+
+          const buffer = fs.readFileSync(filePath);
+
+          const upload = await uploadToCloudinary(
+            buffer,
+            "products",
+            `${row.name}-${barcode}-${index}`
+          );
+
+          return {
+            url: upload.url,
+            publicId: upload.publicId,
+            altText: row.name,
+            order: index
+          };
+
+        });
+
+        const variantImages = await Promise.all(uploadPromises);
+
+        // =============================
+        // PRICE VALIDATION
+        // =============================
+
+        const basePrice = Number(row.basePrice);
+
+        if (isNaN(basePrice)) {
+          throw new Error(`Invalid base price for barcode ${barcode}`);
+        }
+
+        const salePrice = row.salePrice ? Number(row.salePrice) : null;
+
+        // =============================
+        // ATTRIBUTES
+        // =============================
+
+        const variantAttributes = parseAttributes(row.variantAttributes);
+        const productAttributes = parseAttributes(row.productAttributes);
+
+        // =============================
+        // VARIANT
+        // =============================
+
+        const sku = await generateSku();
+
+        const newVariant = {
+          sku,
+          barcode,
+          attributes: variantAttributes,
+          price: {
+            base: basePrice,
+            sale: salePrice
+          },
+          inventory: {
+            quantity: Number(row.quantity || 0)
+          },
+          images: variantImages
+        };
+
+        // =============================
+        // PRODUCT CREATE / UPDATE
+        // =============================
+
+        if (product) {
+
+          product.variants.push(newVariant);
+
+          await product.save();
+
+        } else {
+
+          const slug = await generateSlug(row.name);
+
+          product = new Product({
+            name: row.name,
+            title: row.title || row.name,
+            slug,
+            description: row.description || "",
+            category: categoryDoc._id,
+            brand: row.brand || null,
+            status: row.status || "draft",
+            isFeatured: row.isfeatured === "true",
+            attributes: productAttributes,
+            variants: [newVariant]
+          });
+
+          await product.save();
+        }
+
+        success.push({
+          name: row.name,
+          barcode
+        });
+
+      } catch (err) {
+
+        failed.push({
+          name: row.name || "Unknown",
+          barcode: row.barcode || null,
+          error: err.message
+        });
+
+      }
+    }
+
+    // =============================
+    // ERROR CSV GENERATION
+    // =============================
+
+    let errorCsvPath = null;
+
+    if (failed.length > 0) {
+
+      const parser = new Parser({
+        fields: ["name", "barcode", "error"]
+      });
+
+      const csvData = parser.parse(failed);
+
+      const fileName = `failed-products-${Date.now()}.csv`;
+
+      errorCsvPath = path.join(__dirname, "../uploads", fileName);
+
+      fs.writeFileSync(errorCsvPath, csvData);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Bulk upload completed",
+      totalRows: rows.length,
+      successfulUploads: success.length,
+      failedUploads: failed.length,
+      errorReport: errorCsvPath
+        ? `/uploads/${path.basename(errorCsvPath)}`
+        : null,
+      errors: failed
+    });
+
+  } catch (error) {
+
+    console.error("Bulk upload error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Bulk upload failed",
+      error: error.message
+    });
+  }
 };
+
+// const getAdminProducts = async (req, res) => {
+//   try {
+//     const products = await Product.find();
+//     return res.status(200).json({ success: true, products });
+//   } catch (error) { return res.status(500).json({ success: false, message: "Error fetching admin products", error: error.message }); }
+// };
 
 const addVariant = async (req, res) => {
   try {
@@ -1101,10 +1377,12 @@ module.exports = {
   hardDeleteProduct, bulkHardDelete, restoreProduct, bulkRestore,
   getLowStockProducts, getAllActiveProducts, getArchivedProducts,
   getDraftProducts, getProductBySlug, bulkCreateProducts,
-  getAllProductsAdmin, getAdminProducts,
   addVariant, deleteVariant, getVariantByBarcode,
   previewCSV,
   importProductsFromCSV,
+  getAllProductsAdmin, 
+  bulkUploadNewProductsWithImages
+  // getAdminProducts,
 };
 
 // karan changes images upload in zip format >>>>>>>>>>>>>>>>>>>>>>
