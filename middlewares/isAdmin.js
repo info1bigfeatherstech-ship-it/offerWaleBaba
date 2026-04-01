@@ -9,7 +9,7 @@ const requireAdmin = async (req, res, next) => {
       // verifyToken sets req.userId
       const user = await User.findById(req.userId);
       if (!user) return res.status(403).json({ success: false, message: 'User not found' });
-      if (user.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin access required' });
+      if (user.userType !== 'admin') return res.status(403).json({ success: false, message: 'Admin access required' });
       req.user = user;
       next();
     });

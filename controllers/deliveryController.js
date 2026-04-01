@@ -1,144 +1,164 @@
 // controllers/deliveryController.js
+const ShiprocketService = require('../utils/shiprocket');
+const DeliveryZone = require('../models/DeliveryZone');
+const Cart = require('../models/cart');
+const Product = require('../models/Product');
 
-// Mock serviceable pincodes (you can expand this list)
-const SERVICEABLE_PINCODES = [
-  '560001', '560002', '560003', // Bangalore
-  '400001', '400002', '400003', // Mumbai
-  '110001', '110002', '110003', // Delhi
-  '500001', '500002', '500003', // Hyderabad
-  '600001', '600002', '600003'  // Chennai
-];
-
-// Mock delivery charges based on pincode
-const getDeliveryCharge = (pincode) => {
-  // Free delivery for certain pincodes
-  const freeDeliveryPincodes = ['560001', '400001', '110001'];
-  
-  if (freeDeliveryPincodes.includes(pincode)) {
-    return 0;
-  }
-  
-  // Distance-based calculation (mock)
-  if (pincode.startsWith('56')) return 40; // Bangalore region
-  if (pincode.startsWith('40')) return 50; // Mumbai region
-  if (pincode.startsWith('11')) return 45; // Delhi region
-  return 60; // Default charge
+// Calculate total weight of cart items
+const calculateCartWeight = async (cartItems) => {
+    let totalWeight = 0;
+    for (const item of cartItems) {
+        const product = await Product.findById(item.productId);
+        totalWeight += item.quantity * (product?.shipping?.weight || 0.5);
+    }
+    return totalWeight;
 };
 
-// Check delivery availability
-const checkDeliveryAvailability = async (req, res) => {
-  try {
-    const { pincode, cartItems, userType } = req.body;
+// ========== PRODUCTION VERSION ==========
+exports.checkDeliveryAvailability = async (req, res) => {
+    try {
+        const { pincode, cartId } = req.body;
+        
+        if (!pincode || !/^\d{6}$/.test(pincode)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Valid 6-digit pincode is required'
+            });
+        }
 
-    // Validate pincode
-    if (!pincode) {
-      return res.status(400).json({
-        success: false,
-        message: "Pincode is required"
-      });
+        // Get cart weight if cartId provided
+        let totalWeight = 1; // Default weight
+        if (cartId) {
+            const cart = await Cart.findById(cartId);
+            if (cart && cart.items.length) {
+                totalWeight = await calculateCartWeight(cart.items);
+            }
+        }
+
+        const result = await ShiprocketService.checkDeliveryAvailability(pincode, totalWeight);
+        
+        return res.status(200).json({
+            success: true,
+            isDeliverable: result.isDeliverable,
+            deliveryCharges: result.deliveryCharges,
+            estimatedDays: result.estimatedDays,
+            courierName: result.courierName,
+            message: result.message,
+            pincode: pincode
+        });
+        
+    } catch (error) {
+        console.error('Delivery check error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Error checking delivery availability',
+            error: error.message
+        });
     }
-
-    const pincodeRegex = /^[0-9]{6}$/;
-    if (!pincodeRegex.test(pincode)) {
-      return res.status(400).json({
-        success: false,
-        message: "Please enter a valid 6-digit pincode"
-      });
-    }
-
-    // Check if pincode is serviceable
-    const isServiceable = SERVICEABLE_PINCODES.includes(pincode);
-
-    if (!isServiceable) {
-      return res.status(200).json({
-        success: true,
-        isDeliverable: false,
-        message: "Delivery not available at this pincode yet",
-        deliveryCharges: 0,
-        estimatedDays: null
-      });
-    }
-
-    // Calculate delivery charges
-    const deliveryCharges = getDeliveryCharge(pincode);
-
-    // Calculate estimated days (mock logic)
-    let estimatedDays = "3-5";
-    if (deliveryCharges === 0) {
-      estimatedDays = "2-3"; // Free delivery = faster? (mock)
-    }
-
-    // Optional: Check if any product has restrictions
-    let productRestrictions = [];
-    if (cartItems && cartItems.length > 0) {
-      // You can add product-specific delivery checks here
-      // For example: fragile items, heavy items, etc.
-    }
-
-    return res.status(200).json({
-      success: true,
-      isDeliverable: true,
-      deliveryCharges: deliveryCharges,
-      estimatedDays: estimatedDays,
-      message: "Delivery available",
-      pincode: pincode,
-      productRestrictions: productRestrictions
-    });
-
-  } catch (error) {
-    console.error("Delivery check error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Error checking delivery availability",
-      error: error.message
-    });
-  }
 };
 
-// Get delivery charges for a pincode (simple version)
-const getDeliveryCharges = async (req, res) => {
-  try {
-    const { pincode } = req.params;
+exports.getDeliveryCharges = async (req, res) => {
+    try {
+        const { pincode } = req.params;
+        const { weight = 1 } = req.query;
+        
+        if (!pincode || !/^\d{6}$/.test(pincode)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Valid 6-digit pincode is required'
+            });
+        }
 
-    if (!pincode) {
-      return res.status(400).json({
-        success: false,
-        message: "Pincode is required"
-      });
+        const result = await ShiprocketService.getDeliveryCharges(pincode, parseFloat(weight));
+        
+        return res.status(200).json({
+            success: true,
+            isServiceable: result.isDeliverable,
+            deliveryCharges: result.deliveryCharges,
+            estimatedDays: result.estimatedDays,
+            courierName: result.courierName
+        });
+        
+    } catch (error) {
+        console.error('Get delivery charges error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Error fetching delivery charges',
+            error: error.message
+        });
     }
-
-    const isServiceable = SERVICEABLE_PINCODES.includes(pincode);
-    
-    if (!isServiceable) {
-      return res.status(200).json({
-        success: true,
-        isServiceable: false,
-        deliveryCharges: null,
-        message: "Delivery not available"
-      });
-    }
-
-    const deliveryCharges = getDeliveryCharge(pincode);
-
-    return res.status(200).json({
-      success: true,
-      isServiceable: true,
-      deliveryCharges: deliveryCharges,
-      estimatedDays: "3-5",
-      message: "Delivery available"
-    });
-
-  } catch (error) {
-    console.error("Get delivery charges error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Error fetching delivery charges",
-      error: error.message
-    });
-  }
 };
 
-module.exports = {
-  checkDeliveryAvailability,
-  getDeliveryCharges
+// ========== ADMIN FUNCTIONS ==========
+exports.addDeliveryZone = async (req, res) => {
+    try {
+        const { name, pincodes, baseCharge, perKgCharge, freeDeliveryAbove, estimatedDays } = req.body;
+
+        const deliveryZone = new DeliveryZone({
+            name,
+            pincodes,
+            baseCharge,
+            perKgCharge,
+            freeDeliveryAbove,
+            estimatedDays
+        });
+
+        await deliveryZone.save();
+
+        return res.status(201).json({
+            success: true,
+            message: 'Delivery zone added successfully',
+            deliveryZone
+        });
+    } catch (error) {
+        console.error('Add delivery zone error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Error adding delivery zone',
+            error: error.message
+        });
+    }
+};
+
+exports.getDeliveryZones = async (req, res) => {
+    try {
+        const zones = await DeliveryZone.find({ isActive: true });
+        return res.json({
+            success: true,
+            zones
+        });
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: 'Error fetching delivery zones',
+            error: error.message
+        });
+    }
+};
+
+exports.updateDeliveryZone = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const updates = req.body;
+
+        const zone = await DeliveryZone.findByIdAndUpdate(id, updates, { new: true });
+        if (!zone) {
+            return res.status(404).json({
+                success: false,
+                message: 'Delivery zone not found'
+            });
+        }
+
+        return res.json({
+            success: true,
+            message: 'Delivery zone updated',
+            deliveryZone: zone
+        });
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: 'Error updating delivery zone',
+            error: error.message
+        });
+    }
 };

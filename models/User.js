@@ -104,13 +104,6 @@ const userSchema = new mongoose.Schema(
       select: false
     },
 
-    // ===== ROLE & STATUS =====
-    role: {
-      type: String,
-      enum: ["user", "admin"],
-      default: "user"
-    },
-
     status: {
       type: String,
       enum: ["active", "inactive"],
@@ -142,6 +135,8 @@ userSchema.methods.comparePassword = async function (enteredPassword) {
 };
 
 module.exports = mongoose.model("User", userSchema);
+
+
 
 // const mongoose = require("mongoose");
 // const bcrypt = require("bcrypt");

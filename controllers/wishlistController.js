@@ -3,10 +3,12 @@ const Product = require('../models/Product');
 const Cart = require('../models/cart');
 
 
-// GET /wishlist?wishlistId=... OR ?userId=...
+// controllers/wishlistController.js
+// GET WISHLIST
 const getWishlist = async (req, res) => {
   try {
     const userId = req.userId;
+    const userType = req.userType || 'user'; // Get user type from middleware
 
     const wishlist = await Wishlist.findOne({ userId })
       .populate({
@@ -21,11 +23,71 @@ const getWishlist = async (req, res) => {
       });
     }
 
-    wishlist.products = wishlist.products.filter(p => p.productId);
+    // Filter out deleted products and add user-specific pricing
+    const validProducts = wishlist.products.filter(p => p.productId);
+    
+    // Add user-specific pricing to each product
+    const productsWithPricing = validProducts.map(item => {
+      const product = item.productId;
+      
+      // Find the variant (if variantId exists, use that variant)
+      let variant = null;
+      if (item.variantId) {
+        variant = product.variants.find(v => String(v._id) === String(item.variantId));
+      }
+      
+      // If no variant found, use first active variant
+      if (!variant) {
+        variant = (product.variants || []).find(v => v.isActive);
+      }
+      
+      // Calculate user-specific price
+      let price = {};
+      if (userType === 'wholesaler') {
+        price = {
+          base: variant?.price?.wholesaleBase || variant?.price?.base || 0,
+          sale: variant?.price?.wholesaleSale || variant?.price?.wholesaleBase || variant?.price?.base || 0,
+          minimumOrderQuantity: variant?.minimumOrderQuantity || 1
+        };
+      } else {
+        price = {
+          base: variant?.price?.base || 0,
+          sale: variant?.price?.sale || variant?.price?.base || 0,
+          minimumOrderQuantity: 1
+        };
+      }
+      
+      return {
+        _id: item._id,
+        productId: product._id,
+        variantId: item.variantId,
+        addedAt: item.addedAt,
+        product: {
+          _id: product._id,
+          name: product.name,
+          slug: product.slug,
+          images: product.images,
+          price: price,
+          variant: variant ? {
+            _id: variant._id,
+            sku: variant.sku,
+            attributes: variant.attributes,
+            inventory: variant.inventory
+          } : null
+        }
+      };
+    });
 
     return res.json({
       success: true,
-      wishlist
+      wishlist: {
+        _id: wishlist._id,
+        userId: wishlist.userId,
+        products: productsWithPricing,
+        createdAt: wishlist.createdAt,
+        updatedAt: wishlist.updatedAt
+      },
+      userType: userType
     });
 
   } catch (err) {
@@ -43,19 +105,62 @@ const addToWishlist = async (req, res) => {
     const userId = req.userId;
     const { productSlug, variantId } = req.body;
 
-    if (!productSlug)
-      return res.status(400).json({ success: false, message: 'productSlug required' });
+    if (!productSlug) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'productSlug required' 
+      });
+    }
 
-    const product = await Product.findOne({ slug: productSlug.toLowerCase(), status: 'active' }).select('variants');
+    const product = await Product.findOne({ 
+      slug: productSlug.toLowerCase(), 
+      status: 'active' 
+    }).select('variants');
 
-    if (!product)
-      return res.status(404).json({ success: false, message: 'Product not found' });
+    if (!product) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Product not found' 
+      });
+    }
 
-    // Determine variantId to store: provided or first active variant
+    // ✅ Check if variant exists
     let chosenVariantId = variantId;
-    if (!chosenVariantId) {
-      const firstActive = (product.variants || []).find(v => v.isActive);
-      chosenVariantId = firstActive ? firstActive._id : null;
+    if (chosenVariantId) {
+      const variantExists = product.variants.some(v => 
+        String(v._id) === String(chosenVariantId) && v.isActive
+      );
+      if (!variantExists) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Variant not found or inactive' 
+        });
+      }
+    } else {
+      const firstActive = product.variants.find(v => v.isActive);
+      if (!firstActive) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'No active variant available' 
+        });
+      }
+      chosenVariantId = firstActive._id;
+    }
+
+    // ✅ Check if already in wishlist to avoid duplicate
+    const existingWishlist = await Wishlist.findOne({ userId });
+    if (existingWishlist) {
+      const alreadyExists = existingWishlist.products.some(p => 
+        String(p.productId) === String(product._id) &&
+        (!chosenVariantId || String(p.variantId) === String(chosenVariantId))
+      );
+      
+      if (alreadyExists) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Product already in wishlist' 
+        });
+      }
     }
 
     await Wishlist.updateOne(
@@ -68,92 +173,143 @@ const addToWishlist = async (req, res) => {
       { upsert: true }
     );
 
-    const wishlist = await Wishlist.findOne({ userId }).populate('products.productId', 'name slug images variants');
+    const wishlist = await Wishlist.findOne({ userId })
+      .populate('products.productId', 'name slug images variants');
 
-    return res.json({ success: true, wishlist });
+    return res.json({ 
+      success: true, 
+      message: 'Added to wishlist', 
+      wishlist 
+    });
 
   } catch (err) {
     console.error('addToWishlist:', err);
-    return res.status(500).json({ success: false, message: 'Server error' });
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Server error' 
+    });
   }
 };
 
 
 // DELETE /wishlist/remove/:productSlug?wishlistId=...&userId=...
+// DELETE /wishlist/remove/:productSlug
 const removeFromWishlist = async (req, res) => {
   try {
     const { productSlug } = req.params;
     const userId = req.userId;
+    const userType = req.userType || 'user';
 
-    if (!productSlug)
-      return res.status(400).json({ success: false, message: 'productSlug required' });
+    if (!productSlug) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'productSlug required' 
+      });
+    }
 
     const product = await Product.findOne({
       slug: productSlug.toLowerCase(),
       status: 'active'
     });
 
-    if (!product)
-      return res.status(404).json({ success: false, message: 'Product not found' });
+    if (!product) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Product not found' 
+      });
+    }
 
     await Wishlist.updateOne(
       { userId },
-      {
-        $pull: {
-          products: { productId: product._id }
-        }
+      { $pull: { products: { productId: product._id } } }
+    );
+
+    // ✅ Fetch updated wishlist with pricing (same as getWishlist)
+    const updatedWishlist = await Wishlist.findOne({ userId })
+      .populate({
+        path: 'products.productId',
+        select: 'name slug images variants'
+      });
+
+    if (!updatedWishlist) {
+      return res.json({ success: true, wishlist: { products: [] } });
+    }
+
+    // Add user-specific pricing to response
+    const validProducts = updatedWishlist.products.filter(p => p.productId);
+    const productsWithPricing = validProducts.map(item => {
+      const product = item.productId;
+      let variant = null;
+      
+      if (item.variantId) {
+        variant = product.variants.find(v => String(v._id) === String(item.variantId));
       }
-    );
+      if (!variant) {
+        variant = (product.variants || []).find(v => v.isActive);
+      }
+      
+      let price = {};
+      if (userType === 'wholesaler') {
+        price = {
+          base: variant?.price?.wholesaleBase || variant?.price?.base || 0,
+          sale: variant?.price?.wholesaleSale || variant?.price?.wholesaleBase || variant?.price?.base || 0,
+          minimumOrderQuantity: variant?.minimumOrderQuantity || 1
+        };
+      } else {
+        price = {
+          base: variant?.price?.base || 0,
+          sale: variant?.price?.sale || variant?.price?.base || 0,
+          minimumOrderQuantity: 1
+        };
+      }
+      
+      return {
+        _id: item._id,
+        productId: product._id,
+        variantId: item.variantId,
+        addedAt: item.addedAt,
+        product: {
+          _id: product._id,
+          name: product.name,
+          slug: product.slug,
+          images: product.images,
+          price: price,
+          variant: variant ? {
+            _id: variant._id,
+            sku: variant.sku,
+            attributes: variant.attributes,
+            inventory: variant.inventory
+          } : null
+        }
+      };
+    });
 
-    const wishlist = await Wishlist.findOne({ userId }).populate(
-      'products.productId',
-      'name slug price images'
-    );
-
-    return res.json({ success: true, wishlist });
+    return res.json({
+      success: true,
+      wishlist: {
+        _id: updatedWishlist._id,
+        userId: updatedWishlist.userId,
+        products: productsWithPricing,
+        createdAt: updatedWishlist.createdAt,
+        updatedAt: updatedWishlist.updatedAt
+      },
+      userType: userType
+    });
 
   } catch (err) {
     console.error('removeFromWishlist:', err);
-    return res.status(500).json({ success: false, message: 'Server error' });
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Server error' 
+    });
   }
 };
 
 // POST /wishlist/move-to-cart/:productSlug?wishlistId=...&userId=...
 // For now: remove item from wishlist and return product data (cart not implemented)
-// const moveToCart = async (req, res) => {
-//   try {
-//     const { productSlug } = req.params;
-//     const userId = req.userId;
-
-//     if (!productSlug)
-//       return res.status(400).json({ success: false, message: 'productSlug required' });
-
-//     const product = await Product.findOne({
-//       slug: productSlug.toLowerCase(),
-//       status: 'active'
-//     }).select('_id');
-
-//     if (!product)
-//       return res.status(404).json({ success: false, message: 'Product not found' });
-
-//     await Wishlist.updateOne(
-//       { userId },
-//       { $pull: { products: { productId: product._id } } }
-//     );
-
-//     return res.json({
-//       success: true,
-//       message: 'Moved to cart (placeholder)',
-//       productId: product._id
-//     });
-
-//   } catch (err) {
-//     console.error('moveToCart:', err);
-//     return res.status(500).json({ success: false, message: 'Server error' });
-//   }
-// };
 const moveToCart = async (req, res) => {
   const userId = req.userId;
+  const userType = req.userType || 'user'; // Get user type
   const { productIds = [], moveAll = false } = req.body;
 
   if (!userId)
@@ -165,7 +321,6 @@ const moveToCart = async (req, res) => {
     if (!wishlist || !wishlist.products.length)
       return res.status(400).json({ success: false, message: 'Wishlist empty' });
 
-    // Decide which products to move
     let itemsToMove = [];
 
     if (moveAll) {
@@ -187,8 +342,29 @@ const moveToCart = async (req, res) => {
 
       if (!product || product.status !== 'active') continue;
 
-      const variant = product.variants.find(v => v.isActive);
+      // Find the specific variant or first active variant
+      let variant = null;
+      if (item.variantId) {
+        variant = product.variants.find(v => String(v._id) === String(item.variantId));
+      }
+      if (!variant) {
+        variant = product.variants.find(v => v.isActive);
+      }
       if (!variant) continue;
+
+      // ✅ Calculate price based on user type
+      let basePrice, salePrice;
+      if (userType === 'wholesaler') {
+        basePrice = variant.price?.wholesaleBase || variant.price?.base;
+        salePrice = variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base;
+        
+        // Check MOQ for wholesaler
+        const moq = variant.minimumOrderQuantity || 1;
+        // Note: You might want to handle MOQ validation here or in cart
+      } else {
+        basePrice = variant.price?.base || 0;
+        salePrice = variant.price?.sale || basePrice;
+      }
 
       const existing = cart.items.find(it =>
         String(it.productId) === String(product._id) &&
@@ -203,8 +379,8 @@ const moveToCart = async (req, res) => {
           variantId: variant._id,
           quantity: 1,
           priceSnapshot: {
-            base: variant.price?.base ?? 0,
-            sale: variant.price?.sale ?? null,
+            base: basePrice,
+            sale: salePrice,
             costPrice: variant.price?.costPrice ?? null,
             saleStartDate: variant.price?.saleStartDate ?? null,
             saleEndDate: variant.price?.saleEndDate ?? null
@@ -234,7 +410,8 @@ const moveToCart = async (req, res) => {
     return res.json({
       success: true,
       message: 'Wishlist items moved to cart',
-      cart
+      cart,
+      userType: userType
     });
 
   } catch (err) {
@@ -242,7 +419,6 @@ const moveToCart = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Server error' });
   }
 };
-
 
 const mergeWishlist = async (req, res) => {
   try {

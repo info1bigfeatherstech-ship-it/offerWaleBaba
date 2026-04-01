@@ -83,7 +83,7 @@ const getAllUsers = async (req, res) => {
 // =============================================
 // 2. GET USER DETAILS BY ID (READ ONLY)
 // =============================================
-const getUserById = async (req, res) => {
+const           getUserById = async (req, res) => {
   try {
     const { userId } = req.params;
 

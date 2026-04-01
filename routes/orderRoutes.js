@@ -1,18 +1,32 @@
-// const express = require('express');
-// const router = express.Router();
-// const { createOrder, getOrder, getUserOrders, updateOrderStatus } = require('../controllers/orderController');
-// const {verifyToken} = require('../middlewares/auth');
+// routes/orderRoutes.js
+const express = require('express');
+const router = express.Router();
+const {verifyToken} = require('../middlewares/auth');
+const {
+    createOrder,
+    verifyPayment,
+    razorpayWebhook,
+    getOrder,
+    getUserOrders,
+    cancelOrder,
+    updateOrderStatus,
+    generateInvoice,
+    trackOrder
+} = require('../controllers/orderController');
 
-// // Create a new order
-// router.post('/', verifyToken, createOrder);
+// Public webhook (no auth)
+router.post('/payment/webhook', razorpayWebhook);
 
-// // Get a specific order by ID
-// router.get('/:id', verifyToken, getOrder);
+// Protected routes
+router.post('/orders', verifyToken, createOrder);
+router.post('/orders/verify-payment', verifyToken, verifyPayment);
+router.get('/orders', verifyToken, getUserOrders);
+router.get('/orders/:orderId', verifyToken, getOrder);
+router.get('/orders/:orderId/track', verifyToken, trackOrder);
+router.get('/orders/:orderId/invoice', verifyToken, generateInvoice);
+router.put('/orders/:orderId/cancel', verifyToken, cancelOrder);
 
-// // Get all orders for a user
-// router.get('/', verifyToken, getUserOrders);
+// Admin only
+router.put('/admin/orders/:orderId/status', verifyToken, updateOrderStatus);
 
-// // Update order status (admin only)
-// router.put('/:id/status', verifyToken, updateOrderStatus);
-
-// module.exports = router;
+module.exports = router;

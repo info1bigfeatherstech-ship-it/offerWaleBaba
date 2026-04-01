@@ -497,7 +497,6 @@ const productSchema = new mongoose.Schema(
     },
 
     attributes: [{ key: String, value: String }],
-
     isFeatured: { type: Boolean, default: false },
 
     status: {

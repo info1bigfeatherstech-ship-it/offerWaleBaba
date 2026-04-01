@@ -1,7 +1,7 @@
 // routes/deliveryRoutes.js
 const express = require('express');
 const router = express.Router();
-const verifyToken = require('../middleware/auth');
+const {verifyToken} = require('../middlewares/auth ');
 const {
   checkDeliveryAvailability,
   getDeliveryCharges

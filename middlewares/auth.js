@@ -1,6 +1,8 @@
+// middleware/auth.js
 const jwt = require('jsonwebtoken');
 const { redisClient } = require('../config/redis.config');
 const tokenStore = require('../config/tokenBlacklist');
+const User = require('../models/User'); // ADD THIS
 
 /**
  * Verify JWT Token Middleware
@@ -37,31 +39,59 @@ const verifyToken = async (req, res, next) => {
       token,
       process.env.JWT_SECRET 
     );
-if (decoded.type !== 'access') {
-  return res.status(401).json({ success: false, message: 'Invalid token type' });
-}
-    // Check blacklist (Redis first, then in-memory fallback)
+    
+    if (decoded.type !== 'access') {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid token type' 
+      });
+    }
+
+    // Check blacklist
     try {
       if (redisClient) {
         const isBlacklisted = await redisClient.get(`bl_${token}`);
         if (isBlacklisted) {
-          return res.status(401).json({ success: false, message: 'Token is blacklisted', code: 'TOKEN_BLACKLISTED' });
+          return res.status(401).json({ 
+            success: false, 
+            message: 'Token is blacklisted', 
+            code: 'TOKEN_BLACKLISTED' 
+          });
         }
       } else if (tokenStore.has(token)) {
-        return res.status(401).json({ success: false, message: 'Token is blacklisted', code: 'TOKEN_BLACKLISTED' });
+        return res.status(401).json({ 
+          success: false, 
+          message: 'Token is blacklisted', 
+          code: 'TOKEN_BLACKLISTED' 
+        });
       }
     } catch (err) {
-      // If Redis errors, fall back to in-memory check only
       if (tokenStore.has(token)) {
-        return res.status(401).json({ success: false, message: 'Token is blacklisted', code: 'TOKEN_BLACKLISTED' });
+        return res.status(401).json({ 
+          success: false, 
+          message: 'Token is blacklisted', 
+          code: 'TOKEN_BLACKLISTED' 
+        });
       }
     }
 
-    // Attach user id to request object
+    // ✅ ADD THIS: Fetch user to get userType
+    const user = await User.findById(decoded.id).select('userType');
+    
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'User not found',
+        code: 'USER_NOT_FOUND'
+      });
+    }
+
+    // Attach both userId and userType to request
     req.userId = decoded.id;
+    req.userType = user.userType;  // ← CRITICAL: This is what order controller needs
+    
     next();
   } catch (error) {
-    // Handle specific JWT errors
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({
         success: false,
@@ -87,5 +117,3 @@ if (decoded.type !== 'access') {
 };
 
 module.exports = { verifyToken };
-
-

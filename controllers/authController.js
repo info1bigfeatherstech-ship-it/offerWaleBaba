@@ -127,7 +127,7 @@ const register = async (req, res) => {
       password,
        name, 
        phone ,
-      role: 'user',
+       userType: 'user',
       status: 'inactive',
       isVerified: false,
       emailVerificationOTP: otp,
@@ -241,7 +241,7 @@ const verifyRegistrationOTP = async (req, res) => {
         id: user._id,
         email: user.email,
         name: user.name,
-        role: user.role
+        userType: user.userType,
       }
     });
 
@@ -334,9 +334,9 @@ const login = async (req, res) => {
         id: user._id,
         email: user.email,
         name: user.name,
-        role: user.role,
+        userType: user.userType,
         status: user.status
-      }
+      }    
     });
 
   } catch (error) {
@@ -523,7 +523,7 @@ const me = async (req, res) => {
         email: user.email,
         name: user.name,
         phone: user.phone,
-        role: user.role,
+        userType: user.userType,
         status: user.status
       } , token: getTokenFromHeader(req)
     });
@@ -637,7 +637,7 @@ const resetPassword = async (req, res) => {
     const user = await User.findOne({ email }).select('+password +passwordResetOTP +passwordResetOTPExpires');
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    console.log('Reset password request for:', email , "passwordResetOTP:", user.passwordResetOTP, "passwordResetOTPExpires:", user.passwordResetOTPExpires);
+  
     if (!user.passwordResetOTP || !user.passwordResetOTPExpires) {
       return res.status(400).json({ success: false, message: 'OTP not found or expired' });
     }
@@ -706,7 +706,7 @@ const googleAuth = async (req, res) => {
         name,
         isEmailVerified: true,
         status: "active",
-        role: "user"
+        userType: "user"
       });
     }
 
@@ -739,7 +739,7 @@ const googleAuth = async (req, res) => {
       user: {
         id: user._id,
         email: user.email,
-        role: user.role
+        userType: user.userType,
       }
     });
 
