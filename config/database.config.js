@@ -23,7 +23,7 @@
       
       const connection = await mongoose.connect(process.env.MONGO_DB_URI, {
         // Replica set configuration
-        readPreference: 'secondaryPreferred',
+        // readPreference: 'secondaryPreferred',
         retryWrites: true,
         w: 'majority',
         

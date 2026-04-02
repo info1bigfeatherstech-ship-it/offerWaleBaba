@@ -8,12 +8,12 @@ const Cart = require('../models/cart');
 const getWishlist = async (req, res) => {
   try {
     const userId = req.userId;
-    const userType = req.userType || 'user'; // Get user type from middleware
+    const userType = req.userType || 'user';
 
     const wishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug images variants'
+        select: 'name slug variants'  // ✅ Added images
       });
 
     if (!wishlist) {
@@ -23,17 +23,15 @@ const getWishlist = async (req, res) => {
       });
     }
 
-    // Filter out deleted products and add user-specific pricing
     const validProducts = wishlist.products.filter(p => p.productId);
     
-    // Add user-specific pricing to each product
     const productsWithPricing = validProducts.map(item => {
       const product = item.productId;
       
-      // Find the variant (if variantId exists, use that variant)
+      // Find the specific variant
       let variant = null;
       if (item.variantId) {
-        variant = product.variants.find(v => String(v._id) === String(item.variantId));
+        variant = product.variants?.find(v => String(v._id) === String(item.variantId));
       }
       
       // If no variant found, use first active variant
@@ -41,18 +39,20 @@ const getWishlist = async (req, res) => {
         variant = (product.variants || []).find(v => v.isActive);
       }
       
-      // Calculate user-specific price
-      let price = {};
+      if (!variant) return null;
+      
+      // ✅ PRICE INSIDE VARIANT - CORRECT STRUCTURE
+      let variantPrice = {};
       if (userType === 'wholesaler') {
-        price = {
-          base: variant?.price?.wholesaleBase || variant?.price?.base || 0,
-          sale: variant?.price?.wholesaleSale || variant?.price?.wholesaleBase || variant?.price?.base || 0,
-          minimumOrderQuantity: variant?.minimumOrderQuantity || 1
+        variantPrice = {
+          base: variant.price?.wholesaleBase || variant.price?.base || 0,
+          sale: variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0,
+          minimumOrderQuantity: variant.minimumOrderQuantity || 1
         };
       } else {
-        price = {
-          base: variant?.price?.base || 0,
-          sale: variant?.price?.sale || variant?.price?.base || 0,
+        variantPrice = {
+          base: variant.price?.base || 0,
+          sale: variant.price?.sale || variant.price?.base || 0,
           minimumOrderQuantity: 1
         };
       }
@@ -66,17 +66,19 @@ const getWishlist = async (req, res) => {
           _id: product._id,
           name: product.name,
           slug: product.slug,
-          images: product.images,
-          price: price,
-          variant: variant ? {
+          variant: {
             _id: variant._id,
             sku: variant.sku,
-            attributes: variant.attributes,
-            inventory: variant.inventory
-          } : null
+            barcode: variant.barcode,
+            attributes: variant.attributes || [],
+            inventory: variant.inventory || {},
+            images: variant.images || [],  // Variant level images
+            price: variantPrice,  // ✅ PRICE YAHAN PE HONA CHAHIYE
+            isActive: variant.isActive
+          }
         }
       };
-    });
+    }).filter(item => item !== null);  // Remove null items
 
     return res.json({
       success: true,
@@ -278,7 +280,8 @@ const removeFromWishlist = async (req, res) => {
             _id: variant._id,
             sku: variant.sku,
             attributes: variant.attributes,
-            inventory: variant.inventory
+            inventory: variant.inventory,
+               images: variant.images || []  // ✅ Add this
           } : null
         }
       };
@@ -420,28 +423,101 @@ const moveToCart = async (req, res) => {
   }
 };
 
+//merge the wishlist (for logged in user) with the one stored in local storage (if any)
 const mergeWishlist = async (req, res) => {
   try {
     const userId = req.userId;
-    const { slugs } = req.body;
+    let { slugs, items } = req.body;
 
-    if (!Array.isArray(slugs) || slugs.length === 0) {
-      return res.status(400).json({ success: false, message: 'Invalid slugs array' });
+    // Handle old format (slugs array)
+    if (slugs && Array.isArray(slugs) && slugs.length > 0) {
+      items = slugs.map(slug => ({ slug, variantId: null }));
     }
 
-    // Find active products matching slugs
+    // Validate items array
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid request. Provide slugs array or items array with { slug, variantId }' 
+      });
+    }
+
+    // Normalize items - Handle both string and object formats
+    const normalizedItems = [];
+    for (const item of items) {
+      if (typeof item === 'string') {
+        normalizedItems.push({ slug: item, variantId: null });
+      } else if (typeof item === 'object' && item.slug) {
+        normalizedItems.push({ 
+          slug: item.slug, 
+          variantId: item.variantId || null 
+        });
+      }
+    }
+
+    if (normalizedItems.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'No valid items to merge' 
+      });
+    }
+
+    // Fetch all products - ✅ FIXED: Include slug in select
+    const slugsList = normalizedItems.map(item => item.slug.toLowerCase());
     const products = await Product.find({
-      slug: { $in: slugs.map(s => s.toLowerCase()) },
+      slug: { $in: slugsList },
       status: 'active'
-    }).select('_id');
+    }).select('slug variants');  // ✅ ADDED 'slug' field
 
-    if (!products.length) {
-      return res.json({ success: true, message: "No products to merge" }); // nothing to merge
+    const productMap = new Map();
+    products.forEach(product => {
+      productMap.set(product.slug, product);  // ✅ Ab slug available hai
+    });
+
+    const productEntries = [];
+
+    for (const item of normalizedItems) {
+      const product = productMap.get(item.slug.toLowerCase());
+      if (!product) continue;
+
+      let chosenVariantId = item.variantId;
+      
+      if (!chosenVariantId) {
+        const firstActive = product.variants.find(v => v.isActive);
+        if (firstActive) {
+          chosenVariantId = firstActive._id;
+        } else {
+          continue;
+        }
+      } else {
+        const variantExists = product.variants.some(v => 
+          String(v._id) === String(chosenVariantId) && v.isActive
+        );
+        if (!variantExists) continue;
+      }
+
+      // Check if already in wishlist
+      const existingWishlist = await Wishlist.findOne({ userId });
+      if (existingWishlist) {
+        const alreadyExists = existingWishlist.products.some(p => 
+          String(p.productId) === String(product._id) &&
+          String(p.variantId) === String(chosenVariantId)
+        );
+        if (alreadyExists) continue;
+      }
+
+      productEntries.push({
+        productId: product._id,
+        variantId: chosenVariantId
+      });
     }
 
-    const productEntries = products.map(p => ({
-      productId: p._id
-    }));
+    if (productEntries.length === 0) {
+      return res.json({ 
+        success: true, 
+        message: "No new products to add to wishlist" 
+      });
+    }
 
     await Wishlist.updateOne(
       { userId },
@@ -453,14 +529,20 @@ const mergeWishlist = async (req, res) => {
       { upsert: true }
     );
 
-    return res.json({ success: true  , message: "Wishlist merged successfully" });
+    return res.json({ 
+      success: true, 
+      message: `${productEntries.length} item(s) added to wishlist`,
+      mergedCount: productEntries.length
+    });
 
   } catch (err) {
     console.error('mergeWishlist:', err);
-    return res.status(500).json({ success: false, message: 'Server error' });
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Server error' 
+    });
   }
 };
-
 
 //Bulk remove from wishlist
 const removeBulkFromWishlist = async (req, res) => {
@@ -494,7 +576,7 @@ const removeBulkFromWishlist = async (req, res) => {
     }
 
     const updatedWishlist = await Wishlist.findOne({ userId })
-      .populate("products.productId", "name slug price images")
+      .populate("products.productId", "name slug images variants")
       .lean();
 
     return res.json({

@@ -138,7 +138,7 @@ const getCart = async (req, res) => {
   }
 };
 
-// ADD TO CART
+// ADD TO CART - FIXED VERSION
 const addToCart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
@@ -177,20 +177,27 @@ const addToCart = async (req, res) => {
       });
     }
 
-    // Resolve variant
+    // ✅ FIXED: Strict variant validation
     let variant = null;
+    
     if (variantId) {
+      // If variantId provided, MUST find exact match
       variant = findVariant(product, variantId);
-    }
-    if (!variant) {
+      if (!variant) {
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid variantId. Variant not found or inactive.' 
+        });
+      }
+    } else {
+      // If no variantId provided, use first active variant
       variant = (product.variants || []).find(v => v.isActive) || null;
-    }
-
-    if (!variant) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Variant not available' 
-      });
+      if (!variant) {
+        return res.status(404).json({ 
+          success: false, 
+          message: 'No active variant available for this product' 
+        });
+      }
     }
 
     // Check MOQ for wholesaler
@@ -287,7 +294,6 @@ const addToCart = async (req, res) => {
     });
   }
 };
-
 // UPDATE CART ITEM
 const updateCartItem = async (req, res) => {
   const userId = req.userId;
@@ -409,6 +415,7 @@ const updateCartItem = async (req, res) => {
 };
 
 // MERGE CART (Guest cart after login)
+// MERGE CART (Guest cart after login) - FIXED
 const mergeCart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
@@ -428,16 +435,29 @@ const mergeCart = async (req, res) => {
     });
   }
 
+  // ✅ If no items to merge, just return current cart
+  if (items.length === 0) {
+    const cart = await Cart.findOne({ userId }).populate('items.productId', 'name slug images');
+    return res.json({ 
+      success: true, 
+      cart: cart || { items: [], totalAmount: 0 },
+      userType: userType 
+    });
+  }
+
   try {
     let cart = await Cart.findOne({ userId });
     if (!cart) cart = new Cart({ userId, items: [] });
+
+    // ✅ Log for debugging
+    console.log('📦 Merge Cart - Current cart items:', cart.items.length);
+    console.log('📦 Merge Cart - Incoming items:', items.length);
 
     // normalize duplicates
     const mergedMap = {};
 
     for (const item of items) {
       const key = `${item.productId}_${item.variantId}`;
-
       if (!mergedMap[key]) {
         mergedMap[key] = { ...item };
       } else {
@@ -449,27 +469,39 @@ const mergeCart = async (req, res) => {
 
     // fetch all products in one query
     const productIds = normalizedItems.map(i => i.productId);
+    console.log('🔍 Looking for products with IDs:', productIds);
 
     const products = await Product.find({
       _id: { $in: productIds },
-      status: "active"
-    }).select("variants");
+      status: 'active'  // ✅ Only active products
+    }).select('variants');
 
-    const productMap = new Map(
-      products.map(p => [String(p._id), p])
-    );
+    console.log('✅ Found products:', products.length);
+
+    const productMap = new Map();
+    products.forEach(product => {
+      productMap.set(String(product._id), product);
+    });
+
+    let itemsAdded = 0;
 
     for (const incoming of normalizedItems) {
       const { productId, variantId, quantity } = incoming;
 
       const product = productMap.get(String(productId));
-      if (!product) continue;
+      if (!product) {
+        console.log(`❌ Product not found or inactive: ${productId}`);
+        continue;
+      }
 
       const variant = product.variants.find(
         v => String(v._id) === String(variantId)
       );
 
-      if (!variant || !variant.isActive) continue;
+      if (!variant || !variant.isActive) {
+        console.log(`❌ Variant not found or inactive: ${variantId}`);
+        continue;
+      }
 
       let qty = Number(quantity);
       if (qty <= 0) continue;
@@ -478,13 +510,14 @@ const mergeCart = async (req, res) => {
       if (userType === 'wholesaler') {
         const moq = variant.minimumOrderQuantity || 1;
         if (qty < moq) {
-          // Skip items that don't meet MOQ or adjust quantity
           qty = moq;
+          console.log(`⚠️ Adjusted quantity to MOQ: ${moq}`);
         }
       }
 
       if (qty > variant.inventory.quantity) {
         qty = variant.inventory.quantity;
+        console.log(`⚠️ Adjusted quantity to available stock: ${qty}`);
       }
 
       // Get user-specific pricing
@@ -501,7 +534,6 @@ const mergeCart = async (req, res) => {
         if (existing.quantity > variant.inventory.quantity) {
           existing.quantity = variant.inventory.quantity;
         }
-        // Update price snapshot
         existing.priceSnapshot = {
           base: price.base,
           sale: price.sale,
@@ -509,6 +541,7 @@ const mergeCart = async (req, res) => {
           saleStartDate: variant.price?.saleStartDate ?? null,
           saleEndDate: variant.price?.saleEndDate ?? null
         };
+        console.log(`✅ Updated existing item, new quantity: ${existing.quantity}`);
       } else {
         cart.items.push({
           productId,
@@ -526,26 +559,32 @@ const mergeCart = async (req, res) => {
             value: a.value
           }))
         });
+        itemsAdded++;
+        console.log(`✅ Added new item, quantity: ${qty}`);
       }
     }
 
     cart.calculateTotal();
     await cart.save();
 
+    console.log(`📦 Merge complete - Added ${itemsAdded} new items, Total items: ${cart.items.length}`);
+
     const populatedCart = await Cart.findOne({ userId })
       .populate('items.productId', 'name slug images');
 
     return res.json({ 
       success: true, 
+      message: `${itemsAdded} item(s) merged from guest cart`,
       cart: populatedCart,
       userType: userType
     });
 
   } catch (err) {
-    console.error("mergeCart:", err);
+    console.error("mergeCart error:", err);
     return res.status(500).json({ 
       success: false, 
-      message: "Merge failed" 
+      message: "Merge failed",
+      error: err.message 
     });
   }
 };

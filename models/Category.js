@@ -55,7 +55,7 @@ const categorySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-//
+
 // ========================
 // AUTO SLUG GENERATION
 // ========================
@@ -66,8 +66,6 @@ categorySchema.pre('validate', function () {
 });
 
 
-
-//
 // ========================
 // INDEXES (Performance)
 // ========================
