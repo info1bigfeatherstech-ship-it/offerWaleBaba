@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const Cart = require('../models/cart');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
-
+const Address = require('../models/Address');
 // Helper: find variant object inside product document
 const findVariant = (product, variantId) => {
   if (!product || !product.variants) return null;
@@ -294,6 +294,8 @@ const addToCart = async (req, res) => {
     });
   }
 };
+
+
 // UPDATE CART ITEM
 const updateCartItem = async (req, res) => {
   const userId = req.userId;
@@ -703,137 +705,174 @@ const clearCart = async (req, res) => {
 };
 
 // CHECKOUT
+// CHECKOUT
 const checkout = async (req, res) => {
-  const userId = req.userId;
-  const userType = req.userType || 'user';
-  const { paymentInfo } = req.body;
+ const orderController = require('./orderController');
+  return orderController.createOrder(req, res)
 
-  if (!userId) {
-    return res.status(401).json({ 
-      success: false, 
-      message: 'Unauthorized' 
-    });
-  }
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  // const userId = req.userId;
+  // const userType = req.userType || 'user';
+  // const { paymentInfo } = req.body;
 
-  try {
-    const cart = await Cart.findOne({ userId }).session(session);
-    if (!cart || !cart.items.length) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Cart empty' 
-      });
-    }
+  // if (!userId) {
+  //   return res.status(401).json({ 
+  //     success: false, 
+  //     message: 'Unauthorized' 
+  //   });
+  // }
 
-    // Re-validate stock and build order items
-    const orderItems = [];
-    let subtotal = 0;
+  // const session = await mongoose.startSession();
+  // session.startTransaction();
 
-    for (const it of cart.items) {
-      const product = await Product.findById(it.productId)
-        .session(session)
-        .select('variants');
-      if (!product) throw new Error('Product not found during checkout');
+  // try {
+  //   const cart = await Cart.findOne({ userId }).session(session);
+  //   if (!cart || !cart.items.length) {
+  //     await session.abortTransaction();
+  //     session.endSession();
+  //     return res.status(400).json({ 
+  //       success: false, 
+  //       message: 'Cart empty' 
+  //     });
+  //   }
 
-      const variant = findVariant(product, it.variantId);
-      if (!variant) throw new Error('Variant not found during checkout');
+  //   // ✅ Get user's default address (REQUIRED)
+  //   const address = await Address.findOne({ userId, isDefault: true }).session(session);
+  //   if (!address) {
+  //     await session.abortTransaction();
+  //     session.endSession();
+  //     return res.status(400).json({ 
+  //       success: false, 
+  //       message: 'Please add a default address before checkout' 
+  //     });
+  //   }
 
-      // Check MOQ for wholesaler
-      if (userType === 'wholesaler') {
-        const moq = variant.minimumOrderQuantity || 1;
-        if (it.quantity < moq) {
-          throw new Error(`Minimum order quantity for ${variant.sku} is ${moq}`);
-        }
-      }
+  //   // Re-validate stock and build order items
+  //   const orderItems = [];
+  //   let subtotal = 0;
 
-      // Stock validation
-      if (variant.inventory?.trackInventory) {
-        if (variant.inventory.quantity < it.quantity) {
-          throw new Error(`Insufficient stock for SKU ${variant.sku}`);
-        }
-      }
+  //   for (const it of cart.items) {
+  //     const product = await Product.findById(it.productId)
+  //       .session(session)
+  //       .select('variants');
+  //     if (!product) throw new Error('Product not found during checkout');
 
-      // Get user-specific pricing
-      const price = getUserSpecificPrice(variant, userType);
+  //     const variant = findVariant(product, it.variantId);
+  //     if (!variant) throw new Error('Variant not found during checkout');
+
+  //     // Check MOQ for wholesaler
+  //     if (userType === 'wholesaler') {
+  //       const moq = variant.minimumOrderQuantity || 1;
+  //       if (it.quantity < moq) {
+  //         throw new Error(`Minimum order quantity for ${variant.sku} is ${moq}`);
+  //       }
+  //     }
+
+  //     // Stock validation
+  //     if (variant.inventory?.trackInventory) {
+  //       if (variant.inventory.quantity < it.quantity) {
+  //         throw new Error(`Insufficient stock for SKU ${variant.sku}`);
+  //       }
+  //     }
+
+  //     // Get user-specific pricing
+  //     const price = getUserSpecificPrice(variant, userType);
       
-      const priceSnapshot = {
-        base: price.base,
-        sale: price.sale
-      };
+  //     const priceSnapshot = {
+  //       base: price.base,
+  //       sale: price.sale
+  //     };
 
-      const saleValid = isSaleValid(priceSnapshot);
-      const unit = saleValid ? priceSnapshot.sale : priceSnapshot.base;
-      const itemTotal = unit * it.quantity;
-      subtotal += itemTotal;
+  //     const saleValid = isSaleValid(priceSnapshot);
+  //     const unit = saleValid ? priceSnapshot.sale : priceSnapshot.base;
+  //     const itemTotal = unit * it.quantity;
+  //     subtotal += itemTotal;
 
-      orderItems.push({ 
-        productId: it.productId, 
-        variantId: it.variantId, 
-        quantity: it.quantity, 
-        priceSnapshot, 
-        variantAttributesSnapshot: it.variantAttributesSnapshot,
-        userType: userType  // Store userType with order item
-      });
+  //     // ✅ FIXED: Add total to priceSnapshot
+  //     orderItems.push({ 
+  //       productId: it.productId, 
+  //       variantId: it.variantId, 
+  //       quantity: it.quantity, 
+  //       priceSnapshot: {
+  //         base: price.base,
+  //         sale: price.sale,
+  //         total: itemTotal  // ✅ ADDED total field
+  //       }, 
+  //       variantAttributesSnapshot: it.variantAttributesSnapshot,
+  //       userType: userType === 'wholesaler' ? 'wholesaler' : 'normal'  // ✅ FIXED: 'normal' not 'user'
+  //     });
 
-      // Deduct stock atomically from the specific variant
-      if (variant.inventory?.trackInventory) {
-        const updateResult = await Product.updateOne(
-          { 
-            _id: product._id, 
-            'variants._id': variant._id, 
-            'variants.inventory.quantity': { $gte: it.quantity } 
-          },
-          { $inc: { 'variants.$.inventory.quantity': -it.quantity } }
-        ).session(session);
+  //     // Deduct stock atomically from the specific variant
+  //     if (variant.inventory?.trackInventory) {
+  //       const updateResult = await Product.updateOne(
+  //         { 
+  //           _id: product._id, 
+  //           'variants._id': variant._id, 
+  //           'variants.inventory.quantity': { $gte: it.quantity } 
+  //         },
+  //         { $inc: { 'variants.$.inventory.quantity': -it.quantity } }
+  //       ).session(session);
 
-        if (updateResult.nModified === 0 && updateResult.modifiedCount === 0) {
-          throw new Error(`Failed to deduct stock for SKU ${variant.sku}`);
-        }
-      }
-    }
+  //       if (updateResult.nModified === 0 && updateResult.modifiedCount === 0) {
+  //         throw new Error(`Failed to deduct stock for SKU ${variant.sku}`);
+  //       }
+  //     }
+  //   }
 
-    // Create order (will be handled by order controller)
-    const order = new Order({ 
-      userId, 
-      items: orderItems, 
-      totalAmount: subtotal, 
-      orderStatus: 'pending', 
-      paymentStatus: 'pending',
-      paymentInfo,
-      userType: userType
-    });
-    await order.save({ session });
+  //   // ✅ Calculate delivery charges and tax
+  //   const deliveryCharges = 0; // Calculate based on address
+  //   const tax = subtotal * 0.18; // 18% GST
+  //   const totalAmount = subtotal + deliveryCharges + tax;
 
-    // Clear cart
-    cart.items = [];
-    cart.totalAmount = 0;
-    await cart.save({ session });
+  //   // ✅ Generate order ID
+  //   const orderId = `ORD-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
-    await session.commitTransaction();
-    session.endSession();
-
-    return res.json({ 
-      success: true, 
-      order: {
-        orderId: order.orderId,
-        totalAmount: order.totalAmount,
-        userType: userType
-      }
-    });
+  //   // ✅ Create order with ALL required fields
+  //   const order = new Order({ 
+  //     orderId: orderId,  // ✅ ADDED
+  //     userId, 
+  //     items: orderItems,
+  //     subtotal: subtotal,  // ✅ ADDED
+  //     deliveryCharges: deliveryCharges,  // ✅ ADDED
+  //     tax: tax,  // ✅ ADDED
+  //     discount: 0,
+  //     totalAmount: totalAmount,  // ✅ UPDATED (not just subtotal)
+  //     address: address._id,  // ✅ ADDED
+  //     addressSnapshot: address.toObject(),  // ✅ ADDED
+  //     userType: userType === 'wholesaler' ? 'wholesaler' : 'normal',  // ✅ FIXED
+  //     orderStatus: 'pending', 
+  //     paymentStatus: 'pending',
+  //     paymentInfo: paymentInfo || { method: 'cod', status: 'initiated' }
+  //   });
     
-  } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
-    console.error('checkout error:', err);
-    return res.status(400).json({ 
-      success: false, 
-      message: err.message || 'Checkout failed' 
-    });
-  }
+  //   await order.save({ session });
+
+  //   // Clear cart
+  //   cart.items = [];
+  //   cart.totalAmount = 0;
+  //   await cart.save({ session });
+
+  //   await session.commitTransaction();
+  //   session.endSession();
+
+  //   return res.json({ 
+  //     success: true, 
+  //     order: {
+  //       orderId: order.orderId,
+  //       totalAmount: order.totalAmount,
+  //       userType: order.userType
+  //     }
+  //   });
+    
+  // } catch (err) {
+  //   await session.abortTransaction();
+  //   session.endSession();
+  //   console.error('checkout error:', err);
+  //   return res.status(400).json({ 
+  //     success: false, 
+  //     message: err.message || 'Checkout failed' 
+  //   });
+  // }
 };
 
 module.exports = { 

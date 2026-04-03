@@ -45,8 +45,9 @@
       mongoConnection = connection;
       console.log('[MongoDB] ✓ Connected successfully');
       console.log(`[MongoDB] Database: ${connection.connection.db.databaseName}`);
-      console.log(`[MongoDB] Read Preference: secondaryPreferred`);
-      
+      // console.log(`[MongoDB] Read Preference: secondaryPreferred`);
+      // console.log(`[MongoDB] Read Preference: ${connection.connection.readPreference.mode}`);
+
       return connection;
     } catch (error) {
       console.error(`[MongoDB] ✗ Connection failed:`, error.message);

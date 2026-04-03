@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const Address = require('../models/Address');
 const Cart = require('../models/cart');
 const Product = require('../models/Product');
+const Coupon = require('../models/Coupon');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
@@ -69,13 +70,15 @@ const getUserSpecificPrice = (variant, userType) => {
     };
 };
 
+
+
 // ========== MAIN ORDER CREATION API ==========
 exports.createOrder = async (req, res) => {
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-        const { addressId, paymentMethod, userType = 'normal' } = req.body;
+        const { addressId, paymentMethod, userType = 'normal', couponCode } = req.body;
         const userId = req.userId;
         const finalUserType = userType === 'wholesaler' ? 'wholesaler' : 'normal';
 
@@ -188,14 +191,62 @@ exports.createOrder = async (req, res) => {
         const deliveryInfo = await ShiprocketService.getDeliveryCharges(address.postalCode, totalWeight || 1);
         const deliveryCharges = deliveryInfo.deliveryCharges;
 
-        // 6. Calculate tax and total
+        // 6. Calculate tax
         const tax = calculateTax(subtotal);
-        const totalAmount = subtotal + deliveryCharges + tax;
 
-        // 7. Generate order ID
+        // ========== COUPON VALIDATION ==========
+        let discount = 0;
+        let appliedCouponCode = null;
+
+        if (couponCode && couponCode.trim() !== '') {
+            const coupon = await Coupon.findOne({ 
+                code: couponCode.toUpperCase(), 
+                isActive: true 
+            }).session(session);
+
+            if (coupon) {
+                // Check if coupon is expired
+                const isExpired = coupon.expiryDate && coupon.expiryDate < new Date();
+                
+                // Check minimum order value
+                const meetsMinOrder = !coupon.minOrderValue || subtotal >= coupon.minOrderValue;
+                
+                // Check user eligibility
+                const isUserEligible = coupon.applicableUsers.includes(finalUserType);
+                
+                // Check usage limit
+                const hasUsageLeft = !coupon.usageLimit || coupon.usedCount < coupon.usageLimit;
+
+                if (!isExpired && meetsMinOrder && isUserEligible && hasUsageLeft) {
+                    // Calculate discount
+                    if (coupon.discountType === 'percentage') {
+                        discount = (subtotal * coupon.discountValue) / 100;
+                        if (coupon.maxDiscountAmount && discount > coupon.maxDiscountAmount) {
+                            discount = coupon.maxDiscountAmount;
+                        }
+                    } else {
+                        discount = coupon.discountValue;
+                    }
+                    
+                    discount = Math.min(discount, subtotal);
+                    appliedCouponCode = coupon.code;
+                    
+                    // ✅ INCREMENT COUPON USAGE COUNT
+                    await Coupon.updateOne(
+                        { _id: coupon._id },
+                        { $inc: { usedCount: 1 } }
+                    ).session(session);
+                }
+            }
+        }
+
+        // 7. Calculate total with discount
+        const totalAmount = subtotal + deliveryCharges + tax - discount;
+
+        // 8. Generate order ID
         const orderId = `ORD-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
-        // 8. Create order
+        // 9. Create order with discount
         const order = new Order({
             orderId: orderId,
             userId: userId,
@@ -203,7 +254,7 @@ exports.createOrder = async (req, res) => {
             subtotal: subtotal,
             deliveryCharges: deliveryCharges,
             tax: tax,
-            discount: 0,
+            discount: discount,
             totalAmount: totalAmount,
             address: addressId,
             addressSnapshot: address.toObject(),
@@ -214,11 +265,12 @@ exports.createOrder = async (req, res) => {
                 method: paymentMethod,
                 status: 'initiated'
             }
+            // ✅ appliedCoupon field - Add this to Order model first
         });
 
         await order.save({ session });
 
-        // 9. Clear cart
+        // 10. Clear cart
         cart.items = [];
         cart.totalAmount = 0;
         await cart.save({ session });
@@ -226,7 +278,7 @@ exports.createOrder = async (req, res) => {
         await session.commitTransaction();
         session.endSession();
 
-        // 10. If online payment, create Razorpay order
+        // 11. If online payment, create Razorpay order
         let razorpayOrder = null;
         if (paymentMethod === 'online') {
             try {
@@ -269,9 +321,11 @@ exports.createOrder = async (req, res) => {
                 subtotal: order.subtotal,
                 deliveryCharges: order.deliveryCharges,
                 tax: order.tax,
+                discount: discount,
                 orderStatus: order.orderStatus,
                 paymentStatus: order.paymentStatus
             },
+            appliedCoupon: appliedCouponCode,
             razorpayOrder: razorpayOrder ? {
                 id: razorpayOrder.id,
                 amount: razorpayOrder.amount,
@@ -430,11 +484,15 @@ exports.razorpayWebhook = async (req, res) => {
 };
 
 // ========== GET ORDER ==========
+// controllers/orderController.js
+
 exports.getOrder = async (req, res) => {
     try {
         const { orderId } = req.params;
+        
+        // ✅ Populate product with variants (to get variant images)
         const order = await Order.findOne({ orderId: orderId })
-            .populate('items.productId', 'name slug images')
+            .populate('items.productId', 'name slug variants')  // ✅ variants included
             .populate('address');
 
         if (!order) {
@@ -451,9 +509,27 @@ exports.getOrder = async (req, res) => {
             });
         }
 
+        // ✅ Transform items to include correct variant images
+        const transformedOrder = order.toObject();
+        transformedOrder.items = transformedOrder.items.map(item => {
+            const product = item.productId;
+            const variant = product?.variants?.find(v => String(v._id) === String(item.variantId));
+            
+            return {
+                ...item,
+                productId: {
+                    _id: product?._id,
+                    name: product?.name,
+                    slug: product?.slug,
+                    // ✅ Images from variant, not product level
+                    images: variant?.images || []
+                }
+            };
+        });
+
         return res.json({
             success: true,
-            order: order
+            order: transformedOrder
         });
 
     } catch (error) {
@@ -465,7 +541,6 @@ exports.getOrder = async (req, res) => {
         });
     }
 };
-
 // ========== GET USER ORDERS ==========
 exports.getUserOrders = async (req, res) => {
     try {

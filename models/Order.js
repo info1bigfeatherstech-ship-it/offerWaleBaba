@@ -112,20 +112,23 @@ const orderSchema = new mongoose.Schema(
       refundAmount: Number,
       refundId: String,
       status: String
+    },
+    appliedCoupon: {
+        code: { type: String },
+        discount: { type: Number, default: 0 }
     }
+    
   },
+    
   { timestamps: true }
 );
 
 // Generate order ID before saving
-orderSchema.pre('save', function(next) {
+// ✅ PRODUCTION GRADE - Mongoose 6+ compatible (NO 'next' parameter)
+orderSchema.pre('save', function() {
   if (!this.orderId) {
-    const date = new Date();
-    const timestamp = date.getTime();
-    const random = Math.floor(Math.random() * 10000);
-    this.orderId = `ORD-${timestamp}-${random}`;
+    this.orderId = `ORD-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
   }
-  next();
 });
 
 orderSchema.index({ userId: 1, createdAt: -1 });

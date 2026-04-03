@@ -107,5 +107,8 @@ const addressSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 addressSchema.index({ userId: 1, isDefault: 1 });
+addressSchema.index({ postalCode: 1 }); // ✅ Add for delivery checks
+addressSchema.index({ city: 1, state: 1 }); // ✅ Add for location-based queries
+addressSchema.index({ createdAt: -1 }); // ✅ Add for sorting
 
 module.exports = mongoose.model('Address', addressSchema);
