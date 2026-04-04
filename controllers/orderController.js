@@ -74,6 +74,8 @@ const getUserSpecificPrice = (variant, userType) => {
 
 // ========== MAIN ORDER CREATION API ==========
 exports.createOrder = async (req, res) => {
+    
+    console.log("Create order request recieved");
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -311,7 +313,7 @@ exports.createOrder = async (req, res) => {
                 });
             }
         }
-
+console.log("Order created", order.orderId);
         return res.status(201).json({
             success: true,
             message: paymentMethod === 'cod' ? 'Order placed successfully' : 'Order created. Complete payment to confirm.',
