@@ -1,99 +1,189 @@
+
+
+
 const express = require('express');
 const { body } = require('express-validator');
-const { register, login, logout, me, updateProfile, changePassword, forgotPassword, resetPassword, verifyRegistrationOTP, refreshAccessToken, googleAuth , requestPhoneOTP , verifyPhoneOTP , loginWithPhone } = require('../controllers/authController');
+const { 
+    register,           // ✅ Modified: name, email, phone, password
+    verifyOTPAndLogin,  // ✅ Modified: verify OTP and login
+    login,              // ✅ Modified: accept email OR phone + password
+    logout, 
+    me, 
+    updateProfile, 
+    changePassword,
+    sendPasswordResetOTP,
+    verifyPasswordResetOTP,
+    resetPasswordWithOTP,
+    refreshAccessToken, 
+    googleAuth 
+} = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/auth');
 
 const router = express.Router();
 
-// POST /api/auth/register
+// =============================================
+// 1️⃣ REGISTER FLOW (One-time: name, email, phone, password)
+// =============================================
+
+// Step 1: Register with all details + send OTP on phone
 router.post(
-  '/register',
-  [
-    body('email')
-      .trim()
-      .notEmpty()
-      .withMessage('Email is required')
-      .isEmail()
-      .withMessage('Invalid email format')
-      .normalizeEmail(),
-    body('password')
-      .notEmpty()
-      .withMessage('Password is required')
-      .isLength({ min: 6 })
-      .withMessage('Password must be at least 6 characters'),
-    body('name')
-      .trim()
-      .notEmpty()
-      .withMessage('Name is required')
-      .isLength({ min: 2 })
-      .withMessage('Name must be at least 2 characters')
-  ],
-  register
+    '/register',
+    [
+        body('name')
+            .trim()
+            .notEmpty()
+            .withMessage('Name is required')
+            .isLength({ min: 2 })
+            .withMessage('Name must be at least 2 characters'),
+        body('email')
+            .trim()
+            .notEmpty()
+            .withMessage('Email is required')
+            .isEmail()
+            .withMessage('Invalid email format')
+            .normalizeEmail(),
+        body('phone')
+            .trim()
+            .notEmpty()
+            .withMessage('Phone number is required')
+            .matches(/^[0-9]{10}$/)
+            .withMessage('Phone number must be 10 digits'),
+        body('password')
+            .notEmpty()
+            .withMessage('Password is required')
+            .isLength({ min: 6 })
+            .withMessage('Password must be at least 6 characters')
+    ],
+    register  // ✅ Creates user with isPhoneVerified=false, sends OTP
 );
 
-// POST /api/auth/login
+// Step 2: Verify OTP and auto-login
 router.post(
-  '/login',
-  [
-    body('email')
-      .trim()
-      .notEmpty()
-      .withMessage('Email is required')
-      .isEmail()
-      .withMessage('Invalid email format')
-      .normalizeEmail(),
-    body('password')
-      .notEmpty()
-      .withMessage('Password is required')
-  ],
-  login
+    '/otp-verify-login',
+    [
+        body('phone')
+            .trim()
+            .notEmpty()
+            .withMessage('Phone number is required'),
+        body('otp')
+            .trim()
+            .notEmpty()
+            .withMessage('OTP is required')
+    ],
+    verifyOTPAndLogin  // ✅ Verifies OTP, marks phone verified, returns tokens
 );
 
-// POST /api/auth/otp-verify-login
+// =============================================
+// 2️⃣ LOGIN FLOW (Email OR Phone + Password)
+// =============================================
+
 router.post(
-  '/otp-verify-login',
-  [
-    body('email').trim().notEmpty().withMessage('Email is required').isEmail().withMessage('Invalid email format').normalizeEmail(),
-    body('otp').trim().notEmpty().withMessage('OTP is required')
-  ],
-  verifyRegistrationOTP
+    '/login',
+    [
+        body('identifier')
+            .trim()
+            .notEmpty()
+            .withMessage('Email or Phone number is required'),
+        body('password')
+            .notEmpty()
+            .withMessage('Password is required')
+    ],
+    login  // ✅ Accepts "email@example.com" OR "9876543210"
 );
 
-// POST /api/auth/refresh - issues new access token using refresh cookie
-router.post('/refresh', refreshAccessToken);
+// =============================================
+// 3️⃣ FORGOT PASSWORD FLOW (Email OR Phone)
+// =============================================
 
-// POST /api/auth/google - Google Sign-In (frontend supplies idToken)
+// Step 1: Request OTP on email or phone
+router.post(
+    '/forgot-password/request-otp',
+    [
+        body('identifier')
+            .trim()
+            .notEmpty()
+            .withMessage('Email or Phone number is required')
+    ],
+    sendPasswordResetOTP
+);
+
+// Step 2: Verify OTP
+router.post(
+    '/forgot-password/verify-otp',
+    [
+        body('identifier')
+            .trim()
+            .notEmpty()
+            .withMessage('Email or Phone number is required'),
+        body('otp')
+            .trim()
+            .notEmpty()
+            .withMessage('OTP is required')
+    ],
+    verifyPasswordResetOTP
+);
+
+// Step 3: Reset password
+router.post(
+    '/forgot-password/reset',
+    [
+        body('identifier')
+            .trim()
+            .notEmpty()
+            .withMessage('Email or Phone number is required'),
+        body('otp')
+            .trim()
+            .notEmpty()
+            .withMessage('OTP is required'),
+        body('newPassword')
+            .notEmpty()
+            .withMessage('New password is required')
+            .isLength({ min: 6 })
+            .withMessage('Password must be at least 6 characters')
+    ],
+    resetPasswordWithOTP
+);  //done
+
+// =============================================
+// 4️⃣ CHANGE PASSWORD (Logged in user)
+// =============================================
+
+router.put(
+    '/change-password',
+    verifyToken,
+    [
+        body('oldPassword')
+            .notEmpty()
+            .withMessage('Old password is required'),
+        body('newPassword')
+            .notEmpty()
+            .withMessage('New password is required')
+            .isLength({ min: 6 })
+            .withMessage('Password must be at least 6 characters')
+    ],
+    changePassword
+);   //done
+
+// =============================================
+// 5️⃣ GOOGLE AUTH
+// =============================================
+
 router.post('/google', [
-  body('idToken').notEmpty().withMessage('idToken is required')
+    body('idToken').notEmpty().withMessage('idToken is required')
 ], googleAuth);
 
+// =============================================
+// 6️⃣ REFRESH TOKEN & LOGOUT
+// =============================================
 
+router.post('/refresh', refreshAccessToken);  //done
+router.post('/logout', verifyToken, logout);   //done
 
-// Additional routes
-// POST /api/auth/logout (protected)
-router.post('/logout', verifyToken, logout);
+// =============================================
+// 7️⃣ USER PROFILE (Protected)
+// =============================================
 
-// GET /api/auth/me (protected)
-router.get('/me', verifyToken, me);
-
-// PUT /api/auth/profile (protected)
-router.put('/profile', verifyToken, updateProfile);
-
-// PUT /api/auth/change-password (protected)
-router.put('/change-password', verifyToken, changePassword);
-
-// POST /api/auth/forgot-password (public)
-router.post('/forgot-password', forgotPassword);
-
-// POST /api/auth/reset-password (public)
-router.post('/reset-password', resetPassword);
-
-
-
-// 📱 Request OTP
-// requestPhoneOTP, verifyPhoneOTP, loginWithPhone
-router.post('/request-phone-otp', requestPhoneOTP);
-router.post('/verify-phone-otp', verifyPhoneOTP);
-router.post('/login-with-phone', loginWithPhone);
+router.get('/me', verifyToken, me);     //done
+router.put('/profile', verifyToken, updateProfile);   //done
 
 module.exports = router;

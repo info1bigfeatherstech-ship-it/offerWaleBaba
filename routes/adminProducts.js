@@ -72,7 +72,7 @@ router.post(
 );
 
 // Bulk create (JSON body)
-router.post('/bulk-create', productController.bulkCreateProducts);
+// router.post('/bulk-create', productController.bulkCreateProducts);
 
 // Import from CSV
 router.post('/import-csv', uploadCSVFile, productController.importProductsFromCSV);

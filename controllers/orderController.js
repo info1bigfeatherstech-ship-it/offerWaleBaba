@@ -73,9 +73,10 @@ const getUserSpecificPrice = (variant, userType) => {
 
 
 // ========== MAIN ORDER CREATION API ==========
+// ========== MAIN ORDER CREATION API ==========
 exports.createOrder = async (req, res) => {
     
-    console.log("Create order request recieved");
+    console.log("Create order request received");
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -110,7 +111,11 @@ exports.createOrder = async (req, res) => {
         let totalWeight = 0;
 
         for (const cartItem of cart.items) {
-            const product = await Product.findById(cartItem.productId).session(session);
+            // ✅ CHANGE 1: Select hsnCode, taxRate, isFragile as well
+            const product = await Product.findById(cartItem.productId)
+                .select('name slug variants shipping hsnCode taxRate isFragile')
+                .session(session);
+                
             if (!product) {
                 await session.abortTransaction();
                 return res.status(404).json({
@@ -157,6 +162,7 @@ exports.createOrder = async (req, res) => {
             subtotal += itemTotal;
             totalWeight += cartItem.quantity * (product.shipping?.weight || 0.5);
 
+            // ✅ CHANGE 2: Add hsnCode, taxRate, isFragile to orderItems
             orderItems.push({
                 productId: product._id,
                 variantId: variant._id,
@@ -167,7 +173,11 @@ exports.createOrder = async (req, res) => {
                     total: itemTotal
                 },
                 variantAttributesSnapshot: cartItem.variantAttributesSnapshot || [],
-                userType: finalUserType
+                userType: finalUserType,
+                // ✅ NEW FIELDS FOR AGGREGATOR
+                hsnCode: product.hsnCode,
+                taxRate: product.taxRate,
+                isFragile: product.isFragile || false
             });
 
             // Deduct stock immediately (for inventory locking)
@@ -252,7 +262,7 @@ exports.createOrder = async (req, res) => {
         const order = new Order({
             orderId: orderId,
             userId: userId,
-            items: orderItems,
+            items: orderItems,  // ✅ Now includes hsnCode, taxRate, isFragile
             subtotal: subtotal,
             deliveryCharges: deliveryCharges,
             tax: tax,
@@ -267,7 +277,6 @@ exports.createOrder = async (req, res) => {
                 method: paymentMethod,
                 status: 'initiated'
             }
-            // ✅ appliedCoupon field - Add this to Order model first
         });
 
         await order.save({ session });
@@ -313,7 +322,9 @@ exports.createOrder = async (req, res) => {
                 });
             }
         }
-console.log("Order created", order.orderId);
+        
+        console.log("Order created", order.orderId);
+        
         return res.status(201).json({
             success: true,
             message: paymentMethod === 'cod' ? 'Order placed successfully' : 'Order created. Complete payment to confirm.',

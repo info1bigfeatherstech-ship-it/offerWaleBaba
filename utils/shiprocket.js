@@ -1,6 +1,7 @@
 // utils/shiprocket.js
 const axios = require('axios');
 const DeliveryZone = require('../models/delieveryZone'); // ✅ Fixed spelling
+const Product = require('../models/Product'); // ✅ Import Product model for dimensions and weight
 
 class ShiprocketService {
     constructor() {
@@ -148,6 +149,16 @@ class ShiprocketService {
         };
     }
 
+    // ✅ NEW METHOD: Calculate total weight with product weights
+    calculateTotalWeight(items) {
+        let totalWeight = 0;
+        for (const item of items) {
+            const itemWeight = item.productId?.shipping?.weight || 0.5;
+            totalWeight += item.quantity * itemWeight;
+        }
+        return totalWeight;
+    }
+
     async createShipment(order) {
         if (!this.isEnabled) {
             console.log('Shipment service disabled, skipping shipment creation');
@@ -164,6 +175,48 @@ class ShiprocketService {
             if (!token) {
                 return { success: false, error: 'No auth token' };
             }
+
+            // ✅ Get product details with dimensions
+            const orderItemsWithDetails = await Promise.all(
+                order.items.map(async (item) => {
+                    // Try to get product with dimensions
+                    let length = 10, breadth = 10, height = 10;
+                    let weight = 0.5;
+                    let hsnCode = item.hsnCode || '0';
+                    let taxRate = item.taxRate || 0;
+                    let isFragile = item.isFragile || false;
+                    
+                    if (item.productId) {
+                        const product = await Product.findById(item.productId).lean();
+                        if (product) {
+                            length = product.shipping?.dimensions?.length || 10;
+                            breadth = product.shipping?.dimensions?.width || 10;
+                            height = product.shipping?.dimensions?.height || 10;
+                            weight = product.shipping?.weight || 0.5;
+                            
+                            // ✅ Use order item's HSN/tax (stored during order creation)
+                            hsnCode = item.hsnCode || product.hsnCode || '0';
+                            taxRate = item.taxRate || product.taxRate || 0;
+                            isFragile = item.isFragile || product.isFragile || false;
+                        }
+                    }
+                    
+                    return {
+                        name: item.productId?.name || 'Product',
+                        sku: item.variantId?.sku || `SKU-${item.productId}`,
+                        units: item.quantity,
+                        selling_price: item.priceSnapshot?.sale || item.priceSnapshot?.base || 0,
+                        discount: 0,
+                        tax: taxRate,
+                        hsn: hsnCode,
+                        is_fragile: isFragile,
+                        length: length,
+                        breadth: breadth,
+                        height: height,
+                        weight: weight
+                    };
+                })
+            );
 
             const shipmentData = {
                 order_id: order.orderId,
@@ -182,20 +235,21 @@ class ShiprocketService {
                 billing_email: order.userEmail || '',
                 billing_phone: order.addressSnapshot?.phone || '',
                 shipping_is_billing: true,
-                order_items: order.items.map(item => ({
-                    name: item.productId?.name || 'Product',
-                    sku: item.sku || `SKU-${item.productId}`,
-                    units: item.quantity,
-                    selling_price: item.priceSnapshot?.sale || item.priceSnapshot?.base || 0,
-                    discount: 0,
-                    tax: 0,
-                    hsn: 0
+                order_items: orderItemsWithDetails.map(item => ({
+                    name: item.name,
+                    sku: item.sku,
+                    units: item.units,
+                    selling_price: item.selling_price,
+                    discount: item.discount,
+                    tax: item.tax,
+                    hsn: item.hsn,
+                    is_fragile: item.is_fragile
                 })),
                 payment_method: order.paymentInfo?.method === 'cod' ? 'COD' : 'Prepaid',
                 sub_total: order.subtotal,
-                length: 10,
-                breadth: 10,
-                height: 10,
+                length: Math.max(...orderItemsWithDetails.map(i => i.length), 10),
+                breadth: Math.max(...orderItemsWithDetails.map(i => i.breadth), 10),
+                height: Math.max(...orderItemsWithDetails.map(i => i.height), 10),
                 weight: this.calculateTotalWeight(order.items)
             };
 
@@ -217,7 +271,8 @@ class ShiprocketService {
         }
     }
 
-    calculateTotalWeight(items) {
+    // Legacy method (keep for compatibility)
+    calculateTotalWeightLegacy(items) {
         return items.reduce((total, item) => total + (item.quantity * 0.5), 0);
     }
 }

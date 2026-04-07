@@ -485,6 +485,20 @@ const productSchema = new mongoose.Schema(
       productLeft: { type: Number, default: 0 },
       customMessage: { type: String, default: '' }
     },
+    hsnCode: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: null
+    },
+    taxRate: {
+      type: Number,
+      min: 0
+    },
+    isFragile: {
+      type: Boolean,
+      default: false
+    },
 
     // Shipping
     shipping: {
@@ -622,6 +636,6 @@ productSchema.index({ isFeatured: 1 });
 productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
 productSchema.index({ createdAt: -1 });
 productSchema.index({ 'variants.barcode': 1 }, { unique: true, sparse: true });
-
+productSchema.index({ hsnCode: 1 });
 
 module.exports = mongoose.model('Product', productSchema);

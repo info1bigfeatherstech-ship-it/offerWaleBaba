@@ -17,6 +17,7 @@ const {generateSEOData}=require("../utils/seoUtils");
 
 
 // Create new product
+// Create new product
 const createProduct = async (req, res) => {
   try {
     const {
@@ -31,7 +32,11 @@ const createProduct = async (req, res) => {
       fomo,
       shipping,
       attributes,
-      variants: variantsRaw
+      variants: variantsRaw,
+      // ✅ NEW FIELDS
+      hsnCode,
+      taxRate,
+      isFragile
     } = req.body;
 
     if (!name || !title || !category || !description) {
@@ -130,7 +135,7 @@ const createProduct = async (req, res) => {
         });
       }
 
-      //  AUTO GENERATE SKU
+      // AUTO GENERATE SKU
       const skuVal = await generateSku();
 
       // Wholesale flag
@@ -208,7 +213,7 @@ const createProduct = async (req, res) => {
       }
 
       variants.push({
-        sku: skuVal, // ✅ FROM UTILS
+        sku: skuVal,
         barcode: barcodeNumber,
         wholesale,
         attributes: Array.isArray(v.attributes)
@@ -221,21 +226,6 @@ const createProduct = async (req, res) => {
         isActive: v.isActive !== false
       });
     }
-
-    // =============================
-    // Price Range & Stock
-    // =============================
-    const effectivePrices = variants.map(v =>
-      v.price.sale != null ? v.price.sale : v.price.base
-    );
-
-    const minPrice = Math.min(...effectivePrices);
-    const maxPrice = Math.max(...effectivePrices);
-
-    const totalStock = variants.reduce(
-      (sum, v) => sum + (v.inventory.quantity || 0),
-      0
-    );
 
     // =============================
     // Parse Optional JSON Fields
@@ -257,6 +247,44 @@ const createProduct = async (req, res) => {
       });
     }
 
+    // =============================
+    // ✅ VALIDATE HSN CODE (Optional)
+    // =============================
+    let finalHsnCode = null;
+    if (hsnCode && hsnCode.trim()) {
+      finalHsnCode = hsnCode.trim().toUpperCase();
+      if (finalHsnCode.length > 20) {
+        return res.status(400).json({
+          success: false,
+          message: "HSN code cannot exceed 20 characters"
+        });
+      }
+    }
+
+    // =============================
+    // ✅ VALIDATE TAX RATE (Optional - no default)
+    // =============================
+    let finalTaxRate = null;
+    if (taxRate !== undefined && taxRate !== null) {
+      const parsedTaxRate = Number(taxRate);
+      if (isNaN(parsedTaxRate) || parsedTaxRate < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Tax rate must be a valid number greater than or equal to 0"
+        });
+      }
+      finalTaxRate = parsedTaxRate;
+    }
+    // ⚠️ No default value - if not provided, stays null
+
+    // =============================
+    // ✅ FRAGILE FLAG (Boolean)
+    // =============================
+    const finalIsFragile = isFragile === true || isFragile === "true";
+
+    // =============================
+    // ✅ CREATE PRODUCT
+    // =============================
     const product = new Product({
       name,
       slug,
@@ -282,24 +310,27 @@ const createProduct = async (req, res) => {
       },
       minimumOrderQuantity: Number(req.body.minimumOrderQuantity) || 1,
       isVisibleToRetail: req.body.isVisibleToRetail || false,
-      isVisibleToWholesale: req.body.isVisibleToWholesale || false
+      isVisibleToWholesale: req.body.isVisibleToWholesale || false,
+      
+      // ✅ NEW FIELDS (NO DEFAULTS)
+      hsnCode: finalHsnCode,
+      taxRate: finalTaxRate,
+      isFragile: finalIsFragile
     });
 
-// =============================
-// ✅ AUTO-GENERATE SEO DATA
-// =============================
-// Get category name for SEO
-const categoryForSEO = existingCategory ? { name: existingCategory.name } : null;
+    // =============================
+    // ✅ AUTO-GENERATE SEO DATA
+    // =============================
+    const categoryForSEO = existingCategory ? { name: existingCategory.name } : null;
 
-const seoData = generateSEOData({
-    name: product.name,
-    description: product.description,
-    category: categoryForSEO,
-    variants: product.variants
-});
+    const seoData = generateSEOData({
+        name: product.name,
+        description: product.description,
+        category: categoryForSEO,
+        variants: product.variants
+    });
 
-// Add SEO to product
-product.seo = seoData;
+    product.seo = seoData;
 
     await product.save();
 
@@ -320,243 +351,566 @@ product.seo = seoData;
   }
 };
 
+
+// const createProduct = async (req, res) => {
+//   try {
+//     const {
+//       name,
+//       title,
+//       description,
+//       category,
+//       brand,
+//       status,
+//       isFeatured,
+//       soldInfo,
+//       fomo,
+//       shipping,
+//       attributes,
+//       variants: variantsRaw
+//     } = req.body;
+
+//     if (!name || !title || !category || !description) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Name, title, category and description are required"
+//       });
+//     }
+
+//     if (!mongoose.Types.ObjectId.isValid(category)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Invalid category ID format"
+//       });
+//     }
+
+//     const existingCategory = await Category.findById(category);
+//     if (!existingCategory) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Selected category does not exist."
+//       });
+//     }
+
+//     let variantsInput = variantsRaw;
+//     if (typeof variantsRaw === "string") {
+//       variantsInput = JSON.parse(variantsRaw);
+//     }
+
+//     if (!Array.isArray(variantsInput) || variantsInput.length === 0) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "At least one variant is required"
+//       });
+//     }
+
+//     const slug = await generateSlug(name);
+//     const variants = [];
+//     const filesByVariant = {};
+
+//     // =============================
+//     // Group variant images
+//     // =============================
+//     if (req.files && req.files.length > 0) {
+//       for (const file of req.files) {
+//         const match = file.fieldname.match(/^variantImages_(\d+)$/);
+//         if (match) {
+//           const index = Number(match[1]);
+//           if (!filesByVariant[index]) filesByVariant[index] = [];
+//           filesByVariant[index].push(file);
+//         }
+//       }
+//     }
+
+//     for (const idxStr of Object.keys(filesByVariant)) {
+//       const idx = Number(idxStr);
+//       if (filesByVariant[idx].length > 5) {
+//         return res.status(400).json({
+//           success: false,
+//           message: `Variant ${idx} can have at most 5 images`
+//         });
+//       }
+//     }
+
+//     // =============================
+//     // PROCESS EACH VARIANT
+//     // =============================
+//     for (let i = 0; i < variantsInput.length; i++) {
+//       const v = variantsInput[i];
+
+//       // 🔒 BARCODE REQUIRED
+//       if (!v.barcode) {
+//         return res.status(400).json({
+//           success: false,
+//           message: `Barcode is required for variant ${i}`
+//         });
+//       }
+
+//       const barcodeNumber = Number(v.barcode);
+//       if (isNaN(barcodeNumber)) {
+//         return res.status(400).json({
+//           success: false,
+//           message: `Barcode must be a valid number for variant ${i}`
+//         });
+//       }
+
+//       // 🔒 CHECK DUPLICATE BARCODE IN DB
+//       const existingBarcode = await Product.findOne({
+//         "variants.barcode": barcodeNumber
+//       });
+
+//       if (existingBarcode) {
+//         return res.status(400).json({
+//           success: false,
+//           message: `Barcode ${barcodeNumber} already exists`
+//         });
+//       }
+
+//       //  AUTO GENERATE SKU
+//       const skuVal = await generateSku();
+
+//       // Wholesale flag
+//       const wholesale = !!v.wholesale;
+
+//       // Price object
+//       const priceObj = {
+//         base: Number(v.price?.base) || 0,
+//         sale: v.price?.sale != null ? Number(v.price.sale) : null,
+//         wholesaleBase: wholesale ? Number(v.price?.wholesaleBase) : undefined,
+//         wholesaleSale: wholesale ? (v.price?.wholesaleSale != null ? Number(v.price.wholesaleSale) : null) : undefined
+//       };
+
+//       if (priceObj.sale != null && priceObj.sale >= priceObj.base) {
+//         return res.status(400).json({
+//           success: false,
+//           message: `Sale price must be less than base price for variant ${i}`
+//         });
+//       }
+
+//       if (wholesale && priceObj.wholesaleSale != null && priceObj.wholesaleSale >= priceObj.wholesaleBase) {
+//         return res.status(400).json({
+//           success: false,
+//           message: `Wholesale sale price must be less than wholesale base price for variant ${i}`
+//         });
+//       }
+
+//       // MOQ logic
+//       let moq = 1;
+//       if (wholesale) {
+//         if (!v.minimumOrderQuantity || v.minimumOrderQuantity < 1) {
+//           return res.status(400).json({
+//             success: false,
+//             message: `Minimum order quantity is required and must be at least 1 for wholesale variant ${i}`
+//           });
+//         }
+//         moq = Number(v.minimumOrderQuantity);
+//       }
+
+//       const inventoryObj = {
+//         quantity: Number(v.inventory?.quantity) || 0,
+//         trackInventory: v.inventory?.trackInventory !== false,
+//         lowStockThreshold: v.inventory?.lowStockThreshold || 5
+//       };
+
+//       const variantImages = [];
+
+//       // =============================
+//       // Upload Variant Images
+//       // =============================
+//       if (filesByVariant[i]) {
+//         for (let imgIndex = 0; imgIndex < filesByVariant[i].length; imgIndex++) {
+//           const file = filesByVariant[i][imgIndex];
+
+//           const optimizedBuffer = await sharp(file.buffer)
+//             .resize({ width: 1500, withoutEnlargement: true })
+//             .webp({ quality: 80 })
+//             .toBuffer();
+
+//           const publicIdName = `${slug}_${skuVal}_img${imgIndex + 1}_${Date.now()}`;
+
+//           const { url, publicId } = await uploadToCloudinary(
+//             optimizedBuffer,
+//             `products/${slug}`,
+//             publicIdName
+//           );
+
+//           variantImages.push({
+//             url,
+//             publicId,
+//             altText: `${name} ${skuVal} image ${imgIndex + 1}`,
+//             order: imgIndex
+//           });
+//         }
+//       }
+
+//       variants.push({
+//         sku: skuVal, // ✅ FROM UTILS
+//         barcode: barcodeNumber,
+//         wholesale,
+//         attributes: Array.isArray(v.attributes)
+//           ? v.attributes.map(a => ({ key: a.key, value: a.value }))
+//           : [],
+//         price: priceObj,
+//         minimumOrderQuantity: moq,
+//         inventory: inventoryObj,
+//         images: variantImages,
+//         isActive: v.isActive !== false
+//       });
+//     }
+
+//     // =============================
+//     // Price Range & Stock
+//     // =============================
+//     const effectivePrices = variants.map(v =>
+//       v.price.sale != null ? v.price.sale : v.price.base
+//     );
+
+//     const minPrice = Math.min(...effectivePrices);
+//     const maxPrice = Math.max(...effectivePrices);
+
+//     const totalStock = variants.reduce(
+//       (sum, v) => sum + (v.inventory.quantity || 0),
+//       0
+//     );
+
+//     // =============================
+//     // Parse Optional JSON Fields
+//     // =============================
+//     let parsedSoldInfo = soldInfo;
+//     let parsedFomo = fomo;
+//     let parsedShipping = shipping;
+//     let parsedAttributes = attributes;
+
+//     try {
+//       if (typeof soldInfo === "string") parsedSoldInfo = JSON.parse(soldInfo);
+//       if (typeof fomo === "string") parsedFomo = JSON.parse(fomo);
+//       if (typeof shipping === "string") parsedShipping = JSON.parse(shipping);
+//       if (typeof attributes === "string") parsedAttributes = JSON.parse(attributes);
+//     } catch {
+//       return res.status(400).json({
+//         success: false,
+//         message: "Invalid JSON format in request body"
+//       });
+//     }
+
+//     const product = new Product({
+//       name,
+//       slug,
+//       title,
+//       description: description || "",
+//       category: existingCategory._id,
+//       brand: brand || "Generic",
+//       status,
+//       isFeatured,
+//       soldInfo: parsedSoldInfo || { enabled: false, count: 0 },
+//       fomo: parsedFomo || { enabled: false, type: "viewing_now", viewingNow: 0 },
+//       shipping: parsedShipping || {
+//         weight: 0,
+//         dimensions: { length: 0, width: 0, height: 0 }
+//       },
+//       attributes: parsedAttributes || [],
+//       variants,
+//       price: {
+//         base: Number(req.body.price?.base) || 0,
+//         sale: req.body.price?.sale != null ? Number(req.body.price.sale) : null,
+//         wholesaleBase: Number(req.body.price?.wholesaleBase) || 0,
+//         wholesaleSale: req.body.price?.wholesaleSale != null ? Number(req.body.price.wholesaleSale) : null
+//       },
+//       minimumOrderQuantity: Number(req.body.minimumOrderQuantity) || 1,
+//       isVisibleToRetail: req.body.isVisibleToRetail || false,
+//       isVisibleToWholesale: req.body.isVisibleToWholesale || false
+//     });
+
+// // =============================
+// // ✅ AUTO-GENERATE SEO DATA
+// // =============================
+// // Get category name for SEO
+// const categoryForSEO = existingCategory ? { name: existingCategory.name } : null;
+
+// const seoData = generateSEOData({
+//     name: product.name,
+//     description: product.description,
+//     category: categoryForSEO,
+//     variants: product.variants
+// });
+
+// // Add SEO to product
+// product.seo = seoData;
+
+//     await product.save();
+
+//     return res.status(201).json({
+//       success: true,
+//       message: "Product created successfully",
+//       product,
+//       categoryDetails: existingCategory.name
+//     });
+
+//   } catch (error) {
+//     console.error("Create product error:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Error creating product",
+//       error: error.message
+//     });
+//   }
+// };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 //Bulk create products (for testing)
-const bulkCreateProducts = async (req, res) => {
-  try {
-    const { products } = req.body;
+// const bulkCreateProducts = async (req, res) => {
+//   try {
+//     const { products } = req.body;
 
-    if (!Array.isArray(products) || products.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "products array is required"
-      });
-    }
+//     if (!Array.isArray(products) || products.length === 0) {
+//       return res.status(400).json({
+//         success: false,
+//         message: "products array is required"
+//       });
+//     }
 
-    const createdProducts = [];
-    const failedProducts = [];
+//     const createdProducts = [];
+//     const failedProducts = [];
 
-    for (let item of products) {
-      try {
-        if (!item.name || !item.title || !item.category) {
-          throw new Error("Missing required fields");
-        }
+//     for (let item of products) {
+//       try {
+//         if (!item.name || !item.title || !item.category) {
+//           throw new Error("Missing required fields");
+//         }
 
-        const slug = await generateSlug(item.name);
+//         const slug = await generateSlug(item.name);
 
-        // =========================
-        // PARSE NESTED OBJECTS (SAFE)
-        // =========================
-        const parseIfString = (value) => {
-          if (typeof value === "string") {
-            try {
-              return JSON.parse(value);
-            } catch {
-              return value;
-            }
-          }
-          return value;
-        };
+//         // =========================
+//         // PARSE NESTED OBJECTS (SAFE)
+//         // =========================
+//         const parseIfString = (value) => {
+//           if (typeof value === "string") {
+//             try {
+//               return JSON.parse(value);
+//             } catch {
+//               return value;
+//             }
+//           }
+//           return value;
+//         };
 
-        const soldInfoInput = parseIfString(item.soldInfo) || {};
-        const fomoInput = parseIfString(item.fomo) || {};
-        const shippingInput = parseIfString(item.shipping) || {};
-        const attributesInput = parseIfString(item.attributes) || [];
-        const variantsInput = parseIfString(item.variants);
+//         const soldInfoInput = parseIfString(item.soldInfo) || {};
+//         const fomoInput = parseIfString(item.fomo) || {};
+//         const shippingInput = parseIfString(item.shipping) || {};
+//         const attributesInput = parseIfString(item.attributes) || [];
+//         const variantsInput = parseIfString(item.variants);
 
-        // =========================
-        // VARIANTS (SUPPORT BOTH TYPES)
-        // =========================
-        let variants = [];
+//         // =========================
+//         // VARIANTS (SUPPORT BOTH TYPES)
+//         // =========================
+//         let variants = [];
 
-        if (Array.isArray(variantsInput) && variantsInput.length > 0) {
-          variants = variantsInput.map((v, index) => {
-            const wholesale = !!v.wholesale;
-            const basePrice = Number(v.price?.base || 0);
-            const salePrice = v.price?.sale != null ? Number(v.price.sale) : null;
-            const wholesaleBase = wholesale ? Number(v.price?.wholesaleBase) : undefined;
-            const wholesaleSale = wholesale ? (v.price?.wholesaleSale != null ? Number(v.price.wholesaleSale) : null) : undefined;
+//         if (Array.isArray(variantsInput) && variantsInput.length > 0) {
+//           variants = variantsInput.map((v, index) => {
+//             const wholesale = !!v.wholesale;
+//             const basePrice = Number(v.price?.base || 0);
+//             const salePrice = v.price?.sale != null ? Number(v.price.sale) : null;
+//             const wholesaleBase = wholesale ? Number(v.price?.wholesaleBase) : undefined;
+//             const wholesaleSale = wholesale ? (v.price?.wholesaleSale != null ? Number(v.price.wholesaleSale) : null) : undefined;
 
-            if (salePrice && salePrice >= basePrice) {
-              throw new Error("Invalid sale price");
-            }
-            if (wholesale && wholesaleSale != null && wholesaleSale >= wholesaleBase) {
-              throw new Error("Invalid wholesale sale price");
-            }
+//             if (salePrice && salePrice >= basePrice) {
+//               throw new Error("Invalid sale price");
+//             }
+//             if (wholesale && wholesaleSale != null && wholesaleSale >= wholesaleBase) {
+//               throw new Error("Invalid wholesale sale price");
+//             }
 
-            let moq = 1;
-            if (wholesale) {
-              if (!v.minimumOrderQuantity || v.minimumOrderQuantity < 1) {
-                throw new Error("Minimum order quantity required for wholesale variant");
-              }
-              moq = Number(v.minimumOrderQuantity);
-            }
+//             let moq = 1;
+//             if (wholesale) {
+//               if (!v.minimumOrderQuantity || v.minimumOrderQuantity < 1) {
+//                 throw new Error("Minimum order quantity required for wholesale variant");
+//               }
+//               moq = Number(v.minimumOrderQuantity);
+//             }
 
-            return {
-              sku: v.sku
-                ? String(v.sku).toUpperCase()
-                : `${slug}-VAR${index + 1}`.toUpperCase(),
-              barcode: v.barcode || '',
-              wholesale,
-              attributes: Array.isArray(v.attributes)
-                ? v.attributes.map(a => ({
-                    key: a.key,
-                    value: a.value
-                  }))
-                : [],
-              price: {
-                base: basePrice,
-                sale: salePrice,
-                wholesaleBase,
-                wholesaleSale
-              },
-              minimumOrderQuantity: moq,
-              inventory: {
-                quantity: Number(v.inventory?.quantity ?? 0),
-                trackInventory: v.inventory?.trackInventory ?? true,
-                lowStockThreshold:
-                  Number(v.inventory?.lowStockThreshold ?? 5)
-              },
-              images: [],
-              isActive: v.isActive ?? true
-            };
-          });
-        } else {
-          // If no variants provided, create single variant
-          const basePrice = Number(item.price?.base || item.price || 0);
+//             return {
+//               sku: v.sku
+//                 ? String(v.sku).toUpperCase()
+//                 : `${slug}-VAR${index + 1}`.toUpperCase(),
+//               barcode: v.barcode || '',
+//               wholesale,
+//               attributes: Array.isArray(v.attributes)
+//                 ? v.attributes.map(a => ({
+//                     key: a.key,
+//                     value: a.value
+//                   }))
+//                 : [],
+//               price: {
+//                 base: basePrice,
+//                 sale: salePrice,
+//                 wholesaleBase,
+//                 wholesaleSale
+//               },
+//               minimumOrderQuantity: moq,
+//               inventory: {
+//                 quantity: Number(v.inventory?.quantity ?? 0),
+//                 trackInventory: v.inventory?.trackInventory ?? true,
+//                 lowStockThreshold:
+//                   Number(v.inventory?.lowStockThreshold ?? 5)
+//               },
+//               images: [],
+//               isActive: v.isActive ?? true
+//             };
+//           });
+//         } else {
+//           // If no variants provided, create single variant
+//           const basePrice = Number(item.price?.base || item.price || 0);
 
-          variants.push({
-            sku: `${slug}-VAR1`.toUpperCase(),
-            attributes: [],
-            price: { base: basePrice, sale: null },
-            inventory: {
-              quantity: Number(item.inventory?.quantity ?? 0),
-              trackInventory: item.inventory?.trackInventory ?? true,
-              lowStockThreshold:
-                Number(item.inventory?.lowStockThreshold ?? 5)
-            },
-            images: [],
-            isActive: true
-          });
-        }
+//           variants.push({
+//             sku: `${slug}-VAR1`.toUpperCase(),
+//             attributes: [],
+//             price: { base: basePrice, sale: null },
+//             inventory: {
+//               quantity: Number(item.inventory?.quantity ?? 0),
+//               trackInventory: item.inventory?.trackInventory ?? true,
+//               lowStockThreshold:
+//                 Number(item.inventory?.lowStockThreshold ?? 5)
+//             },
+//             images: [],
+//             isActive: true
+//           });
+//         }
 
-        // =========================
-        // CALCULATE PRICE RANGE
-        // =========================
-        const effectivePrices = variants.map(v =>
-          v.price.sale != null ? v.price.sale : v.price.base
-        );
+//         // =========================
+//         // CALCULATE PRICE RANGE
+//         // =========================
+//         const effectivePrices = variants.map(v =>
+//           v.price.sale != null ? v.price.sale : v.price.base
+//         );
 
-        const minPrice = Math.min(...effectivePrices);
-        const maxPrice = Math.max(...effectivePrices);
+//         const minPrice = Math.min(...effectivePrices);
+//         const maxPrice = Math.max(...effectivePrices);
 
-        const totalStock = variants.reduce(
-          (sum, v) => sum + (v.inventory.quantity || 0),
-          0
-        );
+//         const totalStock = variants.reduce(
+//           (sum, v) => sum + (v.inventory.quantity || 0),
+//           0
+//         );
 
-        // =========================
-        // CREATE PRODUCT
-        // =========================
-        const product = new Product({
-          name: item.name,
-          slug,
-          title: item.title,
-          description: item.description || "",
-          category: item.category,
-          brand: item.brand || "Generic",
+//         // =========================
+//         // CREATE PRODUCT
+//         // =========================
+//         const product = new Product({
+//           name: item.name,
+//           slug,
+//           title: item.title,
+//           description: item.description || "",
+//           category: item.category,
+//           brand: item.brand || "Generic",
 
-          variants,
-          priceRange: {
-            min: minPrice,
-            max: maxPrice
-          },
-          totalStock,
+//           variants,
+//           priceRange: {
+//             min: minPrice,
+//             max: maxPrice
+//           },
+//           totalStock,
 
-          soldInfo: {
-            enabled: soldInfoInput.enabled ?? false,
-            count: Number(soldInfoInput.count ?? 0)
-          },
+//           soldInfo: {
+//             enabled: soldInfoInput.enabled ?? false,
+//             count: Number(soldInfoInput.count ?? 0)
+//           },
 
-          fomo: {
-            enabled: fomoInput.enabled ?? false,
-            type: fomoInput.type || "viewing_now",
-            viewingNow: Number(fomoInput.viewingNow ?? 0),
-            productLeft: Number(fomoInput.productLeft ?? 0),
-            customMessage: fomoInput.customMessage || ""
-          },
+//           fomo: {
+//             enabled: fomoInput.enabled ?? false,
+//             type: fomoInput.type || "viewing_now",
+//             viewingNow: Number(fomoInput.viewingNow ?? 0),
+//             productLeft: Number(fomoInput.productLeft ?? 0),
+//             customMessage: fomoInput.customMessage || ""
+//           },
 
-          shipping: {
-            weight: Number(shippingInput.weight ?? 0),
-            dimensions: {
-              length: Number(shippingInput.dimensions?.length ?? 0),
-              width: Number(shippingInput.dimensions?.width ?? 0),
-              height: Number(shippingInput.dimensions?.height ?? 0)
-            }
-          },
+//           shipping: {
+//             weight: Number(shippingInput.weight ?? 0),
+//             dimensions: {
+//               length: Number(shippingInput.dimensions?.length ?? 0),
+//               width: Number(shippingInput.dimensions?.width ?? 0),
+//               height: Number(shippingInput.dimensions?.height ?? 0)
+//             }
+//           },
 
-          attributes: Array.isArray(attributesInput)
-            ? attributesInput.map(attr => ({
-                key: attr.key,
-                value: attr.value
-              }))
-            : [],
+//           attributes: Array.isArray(attributesInput)
+//             ? attributesInput.map(attr => ({
+//                 key: attr.key,
+//                 value: attr.value
+//               }))
+//             : [],
 
-          isFeatured: item.isFeatured ?? false,
-          status: item.status || "draft"
-        });
+//           isFeatured: item.isFeatured ?? false,
+//           status: item.status || "draft"
+//         });
          
-// =============================
-// ✅ AUTO-GENERATE SEO DATA
-// =============================
-// Get category for SEO (you need to fetch category first)
-let categoryForSEO = null;
-if (item.category) {
-    const catDoc = await Category.findById(item.category).lean();
-    categoryForSEO = catDoc ? { name: catDoc.name } : null;
-}
+// // =============================
+// // ✅ AUTO-GENERATE SEO DATA
+// // =============================
+// // Get category for SEO (you need to fetch category first)
+// let categoryForSEO = null;
+// if (item.category) {
+//     const catDoc = await Category.findById(item.category).lean();
+//     categoryForSEO = catDoc ? { name: catDoc.name } : null;
+// }
 
-const seoData = generateSEOData({
-    name: product.name,
-    description: product.description,
-    category: categoryForSEO,
-    variants: product.variants
-});
+// const seoData = generateSEOData({
+//     name: product.name,
+//     description: product.description,
+//     category: categoryForSEO,
+//     variants: product.variants
+// });
 
-product.seo = seoData;
-
-
-
-        await product.save();
-        createdProducts.push(product);
-
-      } catch (err) {
-        failedProducts.push({
-          name: item.name || "Unknown",
-          error: err.message
-        });
-      }
-    }
-
-    return res.status(201).json({
-      success: true,
-      message: "Bulk product creation completed",
-      totalRequested: products.length,
-      createdCount: createdProducts.length,
-      failedCount: failedProducts.length,
-      failedProducts
-    });
-
-  } catch (error) {
-    console.error("Bulk create error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Error creating products",
-      error: error.message
-    });
-  }
-};
+// product.seo = seoData;
 
 
+
+//         await product.save();
+//         createdProducts.push(product);
+
+//       } catch (err) {
+//         failedProducts.push({
+//           name: item.name || "Unknown",
+//           error: err.message
+//         });
+//       }
+//     }
+
+//     return res.status(201).json({
+//       success: true,
+//       message: "Bulk product creation completed",
+//       totalRequested: products.length,
+//       createdCount: createdProducts.length,
+//       failedCount: failedProducts.length,
+//       failedProducts
+//     });
+
+//   } catch (error) {
+//     console.error("Bulk create error:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Error creating products",
+//       error: error.message
+//     });
+//   }
+// };
+
+
+
+//Bulk upload from CSV (with image URLs)
 const importProductsFromCSV = async (req, res) => {
   try {
     if (!req.file) {
@@ -638,10 +992,28 @@ const importProductsFromCSV = async (req, res) => {
                   });
                 }
 
-                // =====================================================
-                // ✅ POSITION 1: CREATE THE PRODUCT OBJECT WITH SEO FIELD
-                // =====================================================
-                // We'll add seo: null here, will fill it after variants
+                // ✅ ADD HSN CODE VALIDATION
+                let finalHsnCode = null;
+                if (row.hsnCode && row.hsnCode.trim()) {
+                  finalHsnCode = row.hsnCode.trim().toUpperCase();
+                  if (finalHsnCode.length > 20) {
+                    throw new Error(`HSN code cannot exceed 20 characters for product: ${productName}`);
+                  }
+                }
+
+                // ✅ ADD TAX RATE VALIDATION
+                let finalTaxRate = null;
+                if (row.taxRate !== undefined && row.taxRate !== null && row.taxRate !== "") {
+                  const parsedTaxRate = parseFloat(row.taxRate);
+                  if (isNaN(parsedTaxRate) || parsedTaxRate < 0) {
+                    throw new Error(`Invalid tax rate for product: ${productName}. Must be a number >= 0`);
+                  }
+                  finalTaxRate = parsedTaxRate;
+                }
+
+                // ✅ ADD FRAGILE FLAG
+                const finalIsFragile = row.isFragile === "true" || row.isFragile === "yes" || row.isFragile === "1";
+
                 productMap[productName] = {
                   name: productName,
                   slug,
@@ -652,7 +1024,13 @@ const importProductsFromCSV = async (req, res) => {
                   status: row.status?.toLowerCase() || "draft",
                   isFeatured: row.isfeatured === "true",
                   variants: [],
-                  seo: null,  // 👈 ADD THIS - SEO will be filled later
+                  seo: null,
+                  
+                  // ✅ NEW FIELDS ADDED HERE
+                  hsnCode: finalHsnCode,
+                  taxRate: finalTaxRate,
+                  isFragile: finalIsFragile,
+                  
                   soldInfo: {
                     enabled: row.soldEnabled === "true",
                     count: Number(row.soldCount) || 0,
@@ -819,12 +1197,11 @@ const importProductsFromCSV = async (req, res) => {
           }
 
           // =====================================================
-          // ✅ POSITION 2: AFTER ALL ROWS PROCESSED, BEFORE insertMany
+          // AFTER ALL ROWS PROCESSED, BEFORE insertMany
           // =====================================================
-          // This is where we add SEO to all products
           const finalProducts = Object.values(productMap);
           
-          // 👇 ADD THIS BLOCK - Generate SEO for each product
+          // Generate SEO for each product
           for (const productData of finalProducts) {
             try {
               // Fetch category to get category name for SEO
@@ -936,7 +1313,7 @@ const importProductsFromCSV = async (req, res) => {
 //               const productName = row.name;
 
 //               // ===============================
-//               //  PRICE SANITIZATION (NEW FIX)
+//               //  PRICE SANITIZATION
 //               // ===============================
 //               const cleanBasePrice = parseFloat(
 //                 row.basePrice?.replace(/[^0-9.]/g, "")
@@ -973,11 +1350,11 @@ const importProductsFromCSV = async (req, res) => {
 //                     level: 0,
 //                   });
 //                 }
-                      
 
-
-
-                
+//                 // =====================================================
+//                 // ✅ POSITION 1: CREATE THE PRODUCT OBJECT WITH SEO FIELD
+//                 // =====================================================
+//                 // We'll add seo: null here, will fill it after variants
 //                 productMap[productName] = {
 //                   name: productName,
 //                   slug,
@@ -988,6 +1365,7 @@ const importProductsFromCSV = async (req, res) => {
 //                   status: row.status?.toLowerCase() || "draft",
 //                   isFeatured: row.isfeatured === "true",
 //                   variants: [],
+//                   seo: null,  // 👈 ADD THIS - SEO will be filled later
 //                   soldInfo: {
 //                     enabled: row.soldEnabled === "true",
 //                     count: Number(row.soldCount) || 0,
@@ -1037,7 +1415,7 @@ const importProductsFromCSV = async (req, res) => {
 //               }
 
 //               // ===============================
-//               // IMAGE UPLOAD FROM URL (UNCHANGED)
+//               // IMAGE UPLOAD FROM URL
 //               // ===============================
 //               let imagesArr = [];
 
@@ -1100,47 +1478,43 @@ const importProductsFromCSV = async (req, res) => {
 //               }
 
 //               // ===============================
-//                // BUILD VARIANT OBJECT
-//                // ===============================
-//                const wholesale = row.wholesale === "true";
-//                const wholesaleBase = wholesale ? Number(row.wholesaleBase) : undefined;
-//                const wholesaleSale = wholesale ? (row.wholesaleSale ? Number(row.wholesaleSale) : null) : undefined;
-//                let moq = 1;
-//                if (wholesale) {
-//                  moq = row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0 ? Number(row.minimumOrderQuantity) : 1;
-//                }
-//                const variant = {
-//                  sku:
-//                    "SKU-" +
-//                    Math.floor(100000 + Math.random() * 900000),
-//                  barcode: row.barcode || "",
-//                  wholesale,
-//                  attributes: variantAttributes,
-//                  weight: Number(row.weight) || 0,
-//                  dimensions: {
-//                    length: Number(row.length) || 0,
-//                    width: Number(row.width) || 0,
-//                    height: Number(row.height) || 0,
-//                  },
-//                  price: {
-//                    base: cleanBasePrice,
-//                    sale: cleanSalePrice
-//                      ? Number(cleanSalePrice)
-//                      : null,
-//                    wholesaleBase,
-//                    wholesaleSale
-//                  },
-//                  minimumOrderQuantity: moq,
-//                  inventory: {
-//                    quantity: Number(row.quantity) || 0,
-//                    trackInventory: true,
-//                    lowStockThreshold: 5,
-//                  },
-//                  images: imagesArr,
-//                  isActive: true,
-//                };
+//               // BUILD VARIANT OBJECT
+//               // ===============================
+//               const wholesale = row.wholesale === "true";
+//               const wholesaleBase = wholesale ? Number(row.wholesaleBase) : undefined;
+//               const wholesaleSale = wholesale ? (row.wholesaleSale ? Number(row.wholesaleSale) : null) : undefined;
+//               let moq = 1;
+//               if (wholesale) {
+//                 moq = row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0 ? Number(row.minimumOrderQuantity) : 1;
+//               }
+//               const variant = {
+//                 sku: "SKU-" + Math.floor(100000 + Math.random() * 900000),
+//                 barcode: row.barcode || "",
+//                 wholesale,
+//                 attributes: variantAttributes,
+//                 weight: Number(row.weight) || 0,
+//                 dimensions: {
+//                   length: Number(row.length) || 0,
+//                   width: Number(row.width) || 0,
+//                   height: Number(row.height) || 0,
+//                 },
+//                 price: {
+//                   base: cleanBasePrice,
+//                   sale: cleanSalePrice ? Number(cleanSalePrice) : null,
+//                   wholesaleBase,
+//                   wholesaleSale
+//                 },
+//                 minimumOrderQuantity: moq,
+//                 inventory: {
+//                   quantity: Number(row.quantity) || 0,
+//                   trackInventory: true,
+//                   lowStockThreshold: 5,
+//                 },
+//                 images: imagesArr,
+//                 isActive: true,
+//               };
 
-//                productMap[productName].variants.push(variant);
+//               productMap[productName].variants.push(variant);
 
 //               if (
 //                 productAttributes.length &&
@@ -1157,7 +1531,49 @@ const importProductsFromCSV = async (req, res) => {
 //             }
 //           }
 
+//           // =====================================================
+//           // ✅ POSITION 2: AFTER ALL ROWS PROCESSED, BEFORE insertMany
+//           // =====================================================
+//           // This is where we add SEO to all products
 //           const finalProducts = Object.values(productMap);
+          
+//           // 👇 ADD THIS BLOCK - Generate SEO for each product
+//           for (const productData of finalProducts) {
+//             try {
+//               // Fetch category to get category name for SEO
+//               let categoryForSEO = null;
+//               if (productData.category) {
+//                 const catDoc = await Category.findById(productData.category).lean();
+//                 categoryForSEO = catDoc ? { name: catDoc.name } : null;
+//               }
+              
+//               // Generate SEO data
+//               const seoData = generateSEOData({
+//                 name: productData.name,
+//                 description: productData.description,
+//                 category: categoryForSEO,
+//                 variants: productData.variants
+//               });
+              
+//               // Assign SEO to product
+//               productData.seo = seoData;
+              
+//             } catch (seoErr) {
+//               console.error(`SEO generation failed for ${productData.name}:`, seoErr.message);
+//               // Set default SEO if generation fails
+//               productData.seo = {
+//                 meta_title: `${productData.name} | Buy Online | YourStore`,
+//                 meta_description: 'Shop now for best prices with free shipping and COD',
+//                 meta_keywords: 'buy online, best price',
+//                 og_title: productData.name,
+//                 og_description: productData.description?.substring(0, 200) || productData.name,
+//                 og_image: null,
+//                 canonical_url: null
+//               };
+//             }
+//           }
+          
+//           // Now insert all products with SEO data
 //           let inserted = [];
 
 //           if (finalProducts.length > 0) {
@@ -1191,9 +1607,8 @@ const importProductsFromCSV = async (req, res) => {
 // };
 
 
-// Bulk upload products with images via CSV and ZIP
 
-
+//Bulk ypload from CSV with images in ZIP
 const bulkUploadNewProductsWithImages = async (req, res) => {
   try {
 
@@ -1350,6 +1765,28 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 
         const salePrice = row.salePrice ? Number(row.salePrice) : null;
 
+        // ✅ NEW: HSN CODE VALIDATION
+        let finalHsnCode = null;
+        if (row.hsnCode && row.hsnCode.trim()) {
+          finalHsnCode = row.hsnCode.trim().toUpperCase();
+          if (finalHsnCode.length > 20) {
+            throw new Error(`HSN code cannot exceed 20 characters for product: ${row.name}`);
+          }
+        }
+
+        // ✅ NEW: TAX RATE VALIDATION
+        let finalTaxRate = null;
+        if (row.taxRate !== undefined && row.taxRate !== null && row.taxRate !== "") {
+          const parsedTaxRate = Number(row.taxRate);
+          if (isNaN(parsedTaxRate) || parsedTaxRate < 0) {
+            throw new Error(`Invalid tax rate for product: ${row.name}. Must be a number >= 0`);
+          }
+          finalTaxRate = parsedTaxRate;
+        }
+
+        // ✅ NEW: FRAGILE FLAG
+        const finalIsFragile = row.isFragile === "true" || row.isFragile === "yes" || row.isFragile === "1";
+
         // =============================
         // ATTRIBUTES
         // =============================
@@ -1370,7 +1807,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
           price: {
             base: basePrice,
             sale: salePrice
-              ? Number(cleanSalePrice)
+              ? Number(salePrice)
               : null,
           },
           inventory: {
@@ -1384,13 +1821,25 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
         // =============================
 
         if (product) {
-          // For existing product, just add variant (no SEO update needed for variants)
+          // For existing product, just add variant
           product.variants.push(newVariant);
+          
+          // ✅ NEW: Update product-level fields if provided (optional)
+          if (finalHsnCode !== null && !product.hsnCode) {
+            product.hsnCode = finalHsnCode;
+          }
+          if (finalTaxRate !== null && !product.taxRate) {
+            product.taxRate = finalTaxRate;
+          }
+          if (finalIsFragile && !product.isFragile) {
+            product.isFragile = finalIsFragile;
+          }
+          
           await product.save();
 
         } else {
           // =====================================================
-          // ✅ POSITION 1: NEW PRODUCT - Generate SEO before saving
+          // NEW PRODUCT - Generate SEO before saving
           // =====================================================
           
           const slug = await generateSlug(row.name);
@@ -1417,7 +1866,12 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
             isFeatured: row.isfeatured === "true",
             attributes: productAttributes,
             variants: [newVariant],
-            seo: seoData  // 👈 ADD SEO HERE
+            seo: seoData,
+            
+            // ✅ NEW FIELDS ADDED HERE
+            hsnCode: finalHsnCode,
+            taxRate: finalTaxRate,
+            isFragile: finalIsFragile
           });
 
           await product.save();
@@ -1440,14 +1894,9 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
     }
 
     // =====================================================
-    // ✅ POSITION 2: AFTER ALL PRODUCTS PROCESSED
-    //    (Optional: Update existing products that might need SEO)
+    // Update SEO for existing products that were updated
     // =====================================================
-    // If you want to add SEO to products that were updated (variant added)
-    // but didn't have SEO, you can add a loop here
     
-    // For any existing products that were updated and don't have SEO,
-    // you can update them (optional)
     for (const successItem of success) {
       try {
         const product = await Product.findOne({ name: successItem.name });
@@ -1702,14 +2151,27 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 //         // =============================
 
 //         if (product) {
-
+//           // For existing product, just add variant (no SEO update needed for variants)
 //           product.variants.push(newVariant);
-
 //           await product.save();
 
 //         } else {
-
+//           // =====================================================
+//           // ✅ POSITION 1: NEW PRODUCT - Generate SEO before saving
+//           // =====================================================
+          
 //           const slug = await generateSlug(row.name);
+          
+//           // Prepare category for SEO
+//           const categoryForSEO = categoryDoc ? { name: categoryDoc.name } : null;
+          
+//           // Generate SEO data for the new product
+//           const seoData = generateSEOData({
+//             name: row.name,
+//             description: row.description || '',
+//             category: categoryForSEO,
+//             variants: [newVariant]
+//           });
 
 //           product = new Product({
 //             name: row.name,
@@ -1721,7 +2183,8 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 //             status: row.status || "draft",
 //             isFeatured: row.isfeatured === "true",
 //             attributes: productAttributes,
-//             variants: [newVariant]
+//             variants: [newVariant],
+//             seo: seoData  // 👈 ADD SEO HERE
 //           });
 
 //           await product.save();
@@ -1740,6 +2203,34 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 //           error: err.message
 //         });
 
+//       }
+//     }
+
+//     // =====================================================
+//     // ✅ POSITION 2: AFTER ALL PRODUCTS PROCESSED
+//     //    (Optional: Update existing products that might need SEO)
+//     // =====================================================
+//     // If you want to add SEO to products that were updated (variant added)
+//     // but didn't have SEO, you can add a loop here
+    
+//     // For any existing products that were updated and don't have SEO,
+//     // you can update them (optional)
+//     for (const successItem of success) {
+//       try {
+//         const product = await Product.findOne({ name: successItem.name });
+//         if (product && (!product.seo || !product.seo.meta_title)) {
+//           const categoryDoc = await Category.findById(product.category).lean();
+//           const seoData = generateSEOData({
+//             name: product.name,
+//             description: product.description,
+//             category: categoryDoc ? { name: categoryDoc.name } : null,
+//             variants: product.variants
+//           });
+//           product.seo = seoData;
+//           await product.save();
+//         }
+//       } catch (err) {
+//         console.error(`Failed to update SEO for ${successItem.name}:`, err.message);
 //       }
 //     }
 
@@ -1790,6 +2281,8 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 
 
 
+
+//update product or variant
 const updateProduct = async (req, res) => {
   try {
 
@@ -1820,6 +2313,49 @@ const updateProduct = async (req, res) => {
       }
       return value;
     };
+
+    // =====================================================
+    // ✅ NEW: VALIDATE HSN CODE
+    // =====================================================
+    if (updates.hsnCode !== undefined) {
+      if (updates.hsnCode && updates.hsnCode.trim()) {
+        const trimmedHsn = updates.hsnCode.trim().toUpperCase();
+        if (trimmedHsn.length > 20) {
+          return res.status(400).json({
+            success: false,
+            message: "HSN code cannot exceed 20 characters"
+          });
+        }
+        updates.hsnCode = trimmedHsn;
+      } else {
+        updates.hsnCode = null;
+      }
+    }
+
+    // =====================================================
+    // ✅ NEW: VALIDATE TAX RATE
+    // =====================================================
+    if (updates.taxRate !== undefined) {
+      if (updates.taxRate !== null && updates.taxRate !== "") {
+        const parsedTaxRate = Number(updates.taxRate);
+        if (isNaN(parsedTaxRate) || parsedTaxRate < 0) {
+          return res.status(400).json({
+            success: false,
+            message: "Tax rate must be a valid number greater than or equal to 0"
+          });
+        }
+        updates.taxRate = parsedTaxRate;
+      } else {
+        updates.taxRate = null;
+      }
+    }
+
+    // =====================================================
+    // ✅ NEW: VALIDATE FRAGILE FLAG
+    // =====================================================
+    if (updates.isFragile !== undefined) {
+      updates.isFragile = updates.isFragile === true || updates.isFragile === "true";
+    }
 
     // =====================================================
     // ✅ VARIANT UPDATE BY BARCODE
@@ -2061,8 +2597,8 @@ const updateProduct = async (req, res) => {
 
     }
 
-      // =====================================================
-    // ✅ ADD THIS BLOCK: Regenerate SEO if name or description changed
+    // =====================================================
+    // ✅ REGENERATE SEO if name or description changed
     // =====================================================
     if (updates.name || updates.description) {
       // Fetch category for SEO
@@ -2073,7 +2609,7 @@ const updateProduct = async (req, res) => {
         name: updates.name || existingProduct.name,
         description: updates.description || existingProduct.description,
         category: categoryDoc ? { name: categoryDoc.name } : null,
-        variants: existingProduct.variants  // Use existing variants
+        variants: existingProduct.variants
       };
       
       // Generate fresh SEO data
@@ -2083,7 +2619,25 @@ const updateProduct = async (req, res) => {
       updates.seo = seoData;
     }
 
-
+    // =====================================================
+    // ✅ REGENERATE SEO if hsnCode or taxRate changed (optional but good for meta keywords)
+    // =====================================================
+    if (updates.hsnCode !== undefined || updates.taxRate !== undefined) {
+      const categoryDoc = await Category.findById(existingProduct.category).lean();
+      
+      const productDataForSEO = {
+        name: updates.name || existingProduct.name,
+        description: updates.description || existingProduct.description,
+        category: categoryDoc ? { name: categoryDoc.name } : null,
+        variants: existingProduct.variants,
+        // Pass new fields for SEO (can be used in generateSEOData if needed)
+        hsnCode: updates.hsnCode !== undefined ? updates.hsnCode : existingProduct.hsnCode,
+        taxRate: updates.taxRate !== undefined ? updates.taxRate : existingProduct.taxRate
+      };
+      
+      const seoData = generateSEOData(productDataForSEO);
+      updates.seo = seoData;
+    }
 
     const updatedProduct = await Product.findByIdAndUpdate(
       existingProduct._id,
@@ -2109,8 +2663,339 @@ const updateProduct = async (req, res) => {
 
   }
 };
-// Soft delete (archive)
-// Soft delete (archive)
+
+// const updateProduct = async (req, res) => {
+//   try {
+
+//     const slug = req.params.slug;
+
+//     const existingProduct = await Product.findOne({ slug });
+
+//     if (!existingProduct) {
+//       return res.status(404).json({
+//         success: false,
+//         message: "Product not found"
+//       });
+//     }
+
+//     const updates = { ...req.body };
+
+//     delete updates.slug;
+//     delete updates.sku;
+//     delete updates.variants;
+
+//     const parseIfString = (value, fallback) => {
+//       if (typeof value === "string") {
+//         try {
+//           return JSON.parse(value);
+//         } catch {
+//           return fallback;
+//         }
+//       }
+//       return value;
+//     };
+
+//     // =====================================================
+//     // ✅ VARIANT UPDATE BY BARCODE
+//     // =====================================================
+
+//     if (updates.barcode) {
+
+//       const barcodeNumber = Number(updates.barcode);
+
+//       if (isNaN(barcodeNumber)) {
+//         return res.status(400).json({
+//           success: false,
+//           message: "Invalid barcode"
+//         });
+//       }
+
+//       const variantIndex = existingProduct.variants.findIndex(
+//         v => v.barcode === barcodeNumber
+//       );
+
+//       if (variantIndex === -1) {
+//         return res.status(404).json({
+//           success: false,
+//           message: "No product found with this barcode"
+//         });
+//       }
+
+//       const existingVariant = existingProduct.variants[variantIndex];
+
+//       const updateFields = {};
+
+//       // =========================
+//       // PRICE UPDATE
+//       // =========================
+
+//       if (updates.price) {
+
+//         const parsedPrice = parseIfString(updates.price, {});
+
+//         const base =
+//           parsedPrice.base !== undefined
+//             ? Number(parsedPrice.base)
+//             : existingVariant.price.base;
+
+//         const sale =
+//           parsedPrice.sale !== undefined
+//             ? parsedPrice.sale != null
+//               ? Number(parsedPrice.sale)
+//               : null
+//             : existingVariant.price.sale;
+
+//         if (sale != null && sale >= base) {
+//           return res.status(400).json({
+//             success: false,
+//             message: "Sale price must be less than base price"
+//           });
+//         }
+
+//         if (parsedPrice.base !== undefined) {
+//           updateFields["variants.$.price.base"] = base;
+//         }
+
+//         if (parsedPrice.sale !== undefined) {
+//           updateFields["variants.$.price.sale"] = sale;
+//         }
+//       }
+
+//       // =========================
+//       // INVENTORY UPDATE
+//       // =========================
+
+//       if (updates.inventory) {
+
+//         const parsedInventory = parseIfString(updates.inventory, {});
+
+//         if (parsedInventory.quantity !== undefined) {
+//           updateFields["variants.$.inventory.quantity"] =
+//             Number(parsedInventory.quantity);
+//         }
+
+//         if (parsedInventory.lowStockThreshold !== undefined) {
+//           updateFields["variants.$.inventory.lowStockThreshold"] =
+//             Number(parsedInventory.lowStockThreshold);
+//         }
+
+//         if (parsedInventory.trackInventory !== undefined) {
+//           updateFields["variants.$.inventory.trackInventory"] =
+//             parsedInventory.trackInventory;
+//         }
+//       }
+
+//       // =========================
+//       // ✅ IMAGES UPDATE (FIXED)
+//       // =========================
+
+//       if (req.files && req.files.length > 0) {
+
+//         // delete old images
+//         if (existingVariant.images && existingVariant.images.length > 0) {
+
+//           for (const img of existingVariant.images) {
+
+//             if (img.publicId) {
+//               await deleteFromCloudinary(img.publicId);
+//             }
+
+//           }
+
+//         }
+
+//         const uploadedImages = [];
+
+//         for (let i = 0; i < req.files.length; i++) {
+
+//           const file = req.files[i];
+
+//           // ensure buffer exists
+//           if (!file.buffer) {
+//             continue;
+//           }
+
+//           const uploadResult = await uploadToCloudinary(
+//             file.buffer,
+//             "products"
+//           );
+
+//           uploadedImages.push({
+//             url: uploadResult.url,
+//             publicId: uploadResult.publicId,
+//             altText: existingProduct.name,
+//             order: i
+//           });
+
+//         }
+
+//         updateFields["variants.$.images"] = uploadedImages;
+
+//       }
+
+//       const updatedProduct = await Product.findOneAndUpdate(
+//         { slug, "variants.barcode": barcodeNumber },
+//         { $set: updateFields },
+//         { new: true }
+//       );
+
+//       // 🔁 Recalculate totals
+//       const effectivePrices = updatedProduct.variants.map(v =>
+//         v.price.sale != null ? v.price.sale : v.price.base
+//       );
+
+//       updatedProduct.priceRange = {
+//         min: Math.min(...effectivePrices),
+//         max: Math.max(...effectivePrices)
+//       };
+
+//       updatedProduct.totalStock =
+//         updatedProduct.variants.reduce(
+//           (sum, v) => sum + (v.inventory.quantity || 0),
+//           0
+//         );
+
+//       await updatedProduct.save();
+
+//       return res.status(200).json({
+//         success: true,
+//         message: "Variant updated successfully",
+//         product: updatedProduct
+//       });
+
+//     }
+
+//     // =====================================================
+//     // PRODUCT FIELD UPDATE
+//     // =====================================================
+
+//     if (updates.name && updates.name !== existingProduct.name) {
+
+//       updates.slug = await generateSlug(
+//         updates.name,
+//         existingProduct._id
+//       );
+
+//     }
+
+//     if (updates.soldInfo) {
+
+//       const parsed = parseIfString(updates.soldInfo, {});
+
+//       updates.soldInfo = {
+//         ...existingProduct.soldInfo.toObject(),
+//         ...parsed,
+//         enabled: parsed.enabled === true || parsed.enabled === "true",
+//         count: Number(parsed.count ?? 0)
+//       };
+
+//     }
+
+//     if (updates.fomo) {
+
+//       const parsed = parseIfString(updates.fomo, {});
+
+//       updates.fomo = {
+//         ...existingProduct.fomo.toObject(),
+//         ...parsed,
+//         enabled: parsed.enabled === true || parsed.enabled === "true",
+//         viewingNow: Number(parsed.viewingNow ?? 0),
+//         productLeft: Number(parsed.productLeft ?? 0),
+//         type: ["viewing_now", "product_left", "custom"].includes(parsed.type)
+//           ? parsed.type
+//           : existingProduct.fomo.type
+//       };
+
+//     }
+
+//     if (updates.shipping) {
+
+//       const parsed = parseIfString(updates.shipping, {});
+
+//       updates.shipping = {
+//         ...existingProduct.shipping.toObject(),
+//         ...parsed,
+//         weight: Number(parsed.weight ?? 0),
+//         dimensions: {
+//           length: Number(parsed.dimensions?.length ?? 0),
+//           width: Number(parsed.dimensions?.width ?? 0),
+//           height: Number(parsed.dimensions?.height ?? 0)
+//         }
+//       };
+
+//     }
+
+//     if (updates.attributes) {      
+
+//       const parsed = parseIfString(updates.attributes, []);
+
+//       updates.attributes = Array.isArray(parsed)
+//         ? parsed.map(a => ({ key: a.key, value: a.value }))
+//         : [];
+
+//     }
+
+//       // =====================================================
+//     // ✅ ADD THIS BLOCK: Regenerate SEO if name or description changed
+//     // =====================================================
+//     if (updates.name || updates.description) {
+//       // Fetch category for SEO
+//       const categoryDoc = await Category.findById(existingProduct.category).lean();
+      
+//       // Prepare product data for SEO generation
+//       const productDataForSEO = {
+//         name: updates.name || existingProduct.name,
+//         description: updates.description || existingProduct.description,
+//         category: categoryDoc ? { name: categoryDoc.name } : null,
+//         variants: existingProduct.variants  // Use existing variants
+//       };
+      
+//       // Generate fresh SEO data
+//       const seoData = generateSEOData(productDataForSEO);
+      
+//       // Add to updates
+//       updates.seo = seoData;
+//     }
+
+
+
+//     const updatedProduct = await Product.findByIdAndUpdate(
+//       existingProduct._id,
+//       { $set: updates },
+//       { new: true, runValidators: true }
+//     );
+
+//     return res.status(200).json({
+//       success: true,
+//       message: "Product updated successfully",
+//       product: updatedProduct
+//     });
+
+//   } catch (error) {
+
+//     console.error("Update product error:", error);
+
+//     return res.status(500).json({
+//       success: false,
+//       message: "Error updating product",
+//       error: error.message
+//     });
+
+//   }
+// };
+
+
+
+
+
+
+
+
+
+
+
+
+
 const deleteProduct = async (req, res) => {
   try {
     const { slug } = req.params;
@@ -2732,8 +3617,9 @@ const bulkHardDelete = async (req, res) => {
   }
 };
 
-//get All prodcuts or admin with limits and q 
 
+
+//get All prodcuts or admin with limits and q 
 const getAllProductsAdmin = async (req, res) => {
   try {
     let { page = 1, limit = 20 } = req.query;
@@ -2913,37 +3799,6 @@ const addVariant = async (req, res) => {
       }
     }
 
-    // =========================
-    // BUILD NEW VARIANT
-    // =========================
-    // const newVariant = {
-    //   sku: skuVal,
-    //   barcode: barcodeNumber,
-
-    //   attributes: Array.isArray(variant.attributes)
-    //     ? variant.attributes
-    //         .filter(a => a.key && a.value)
-    //         .map(a => ({
-    //           key: a.key,
-    //           value: a.value
-    //         }))
-    //     : [],
-
-    //   price: {
-    //     base: basePrice,
-    //     sale: salePrice
-    //   },
-
-    //   inventory: {
-    //     quantity: Number(variant.inventory?.quantity || 0),
-    //     lowStockThreshold: Number(variant.inventory?.lowStockThreshold || 5),
-    //     trackInventory: variant.inventory?.trackInventory !== false
-    //   },
-
-    //   images: uploadedImages,
-
-    //   isActive: variant.isActive !== false
-    // };
 const newVariant = {
   sku: skuVal,
   barcode: barcodeNumber,
@@ -3141,6 +3996,9 @@ const getVariantByBarcode = async (req, res) => {
         category: 1,
         fomo: 1,
         soldInfo: 1,
+        hsnCode: 1,
+        taxRate: 1,
+        isFragile: 1,
         "variants.$": 1
       }
     );
@@ -3161,7 +4019,10 @@ const getVariantByBarcode = async (req, res) => {
         brand: product.brand,
         category: product.category,
         fomo: product.fomo,
-        soldInfo: product.soldInfo
+        soldInfo: product.soldInfo,
+        hsnCode: product.hsnCode,
+        taxRate: product.taxRate,
+        isFragile: product.isFragile
       },
       variant: product.variants[0] // matched variant
     });
@@ -3428,6 +4289,7 @@ const updateVariant = async (req, res) => {
     });
   }
 };
+
 module.exports = {
   createProduct,
   updateProduct,
@@ -3440,8 +4302,7 @@ module.exports = {
   getArchivedProducts,
   getDraftProducts,
   getAllActiveProducts,
-  getProductBySlug , 
-   bulkCreateProducts ,
+  getProductBySlug ,
    bulkRestore  , 
    importProductsFromCSV ,
    getAllProductsAdmin , 

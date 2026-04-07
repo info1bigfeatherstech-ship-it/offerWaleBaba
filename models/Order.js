@@ -1,77 +1,44 @@
-// const mongoose = require('mongoose');
-
-// const orderItemSchema = new mongoose.Schema(
-//   {
-//     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-//     variantId: { type: mongoose.Schema.Types.ObjectId, required: true },
-//     quantity: { type: Number, required: true, min: 1 },
-//     priceSnapshot: {
-//       base: { type: Number, required: true },
-//       sale: { type: Number, default: null },
-//     },
-//     variantAttributesSnapshot: [
-//       { key: String, value: String }
-//     ]
-//   },
-//   { _id: false }
-// );
-
-
-// const orderSchema = new mongoose.Schema(
-//   {
-//     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-//     items: { type: [orderItemSchema], required: true },
-//     totalAmount: { type: Number, required: true },
-//     address: { type: mongoose.Schema.Types.ObjectId, ref: 'Address', required: true },
-//     orderStatus: { type: String, enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'], default: 'pending' },
-//     paymentStatus: { type: String, enum: ['pending', 'paid', 'failed'], default: 'pending' },
-//     paymentInfo: { type: Object, default: null }
-//   },
-//   { timestamps: true }
-// );
-
-// orderSchema.index({ userId: 1, createdAt: -1 });
-
-// module.exports = mongoose.model('Order', orderSchema);
-
-
-
 // models/Order.js
 const mongoose = require('mongoose');
 
 const orderItemSchema = new mongoose.Schema(
   {
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-    variantId: { type: mongoose.Schema.Types.ObjectId }, // Make optional if not using variants
+    variantId: { type: mongoose.Schema.Types.ObjectId },
     quantity: { type: Number, required: true, min: 1 },
     priceSnapshot: {
       base: { type: Number, required: true },
       sale: { type: Number, default: null },
-      total: { type: Number, required: true } // Add total price for this item
+      total: { type: Number, required: true }
     },
     variantAttributesSnapshot: [
       { key: String, value: String }
     ],
-    userType: { type: String, enum: ['normal', 'wholesaler'], required: true } // Track which price was used
+    userType: { type: String, enum: ['normal', 'wholesaler'], required: true },
+    
+    // ✅ NEW FIELDS FOR AGGREGATOR
+    hsnCode: { type: String, trim: true, uppercase: true, default: null },
+    taxRate: { type: Number, min: 0, default: null },
+    isFragile: { type: Boolean, default: false }
   },
   { _id: false }
 );
 
 const orderSchema = new mongoose.Schema(
   {
-    orderId: { type: String, unique: true, required: true }, // Add custom order ID
+    orderId: { type: String, unique: true, required: true },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     items: { type: [orderItemSchema], required: true },
     
     // Price breakdown (calculated on server)
-    subtotal: { type: Number, required: true }, // Sum of all items
+    subtotal: { type: Number, required: true },
     deliveryCharges: { type: Number, required: true, default: 0 },
     tax: { type: Number, required: true, default: 0 },
     discount: { type: Number, default: 0 },
-    totalAmount: { type: Number, required: true }, // subtotal + delivery + tax - discount
+    totalAmount: { type: Number, required: true },
     
     address: { type: mongoose.Schema.Types.ObjectId, ref: 'Address', required: true },
-    addressSnapshot: { type: Object, required: true }, // Store address at order time
+    addressSnapshot: { type: Object, required: true },
     
     userType: { type: String, enum: ['normal', 'wholesaler'], required: true },
     
@@ -117,14 +84,11 @@ const orderSchema = new mongoose.Schema(
         code: { type: String },
         discount: { type: Number, default: 0 }
     }
-    
   },
-    
   { timestamps: true }
 );
 
 // Generate order ID before saving
-// ✅ PRODUCTION GRADE - Mongoose 6+ compatible (NO 'next' parameter)
 orderSchema.pre('save', function() {
   if (!this.orderId) {
     this.orderId = `ORD-${Date.now()}-${Math.floor(Math.random() * 10000)}`;

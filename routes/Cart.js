@@ -36,7 +36,6 @@ router.delete('/clear', verifyToken, clearCart);
 // Merge guest cart after login
 router.post('/merge', verifyToken, mergeCart);
 
-// Checkout
-router.post('/checkout', verifyToken, checkout);
+
 
 module.exports = router;
