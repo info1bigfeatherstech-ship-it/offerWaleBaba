@@ -336,4 +336,122 @@ const deleteCategory = async (req, res) => {
 };
 
 
-module.exports = { getAllCategories, getCategoryById, createCategory, updateCategory, deleteCategory };
+// Reorder categories (bulk update)
+const reorderCategories = async (req, res) => {
+  try {
+    const { categories } = req.body; // [{ id: "xxx", order: 0 }, ...]
+    
+    if (!categories || !Array.isArray(categories)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request. Expected { categories: [{ id, order }] }"
+      });
+    }
+
+    const bulkOps = categories.map(cat => ({
+      updateOne: {
+        filter: { _id: cat.id },
+        update: { order: cat.order }
+      }
+    }));
+
+    await Category.bulkWrite(bulkOps);
+
+    // Fetch updated categories to return
+    const updatedCategories = await Category.find()
+      .sort({ order: 1, name: 1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      message: "Categories reordered successfully",
+      categories: updatedCategories
+    });
+  } catch (error) {
+    console.error('Reorder categories error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error reordering categories',
+      error: error.message
+    });
+  }
+};
+
+// Toggle category visibility (hide/unhide)
+const toggleCategoryVisibility = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isHidden } = req.body; // true = hidden, false = visible
+
+    const category = await Category.findById(id);
+    if (!category) {
+      return res.status(404).json({
+        success: false,
+        message: 'Category not found'
+      });
+    }
+
+    // Use status field: 'active' = visible, 'inactive' = hidden
+    category.status = isHidden ? 'inactive' : 'active';
+    await category.save();
+
+    return res.status(200).json({
+      success: true,
+      message: `Category ${isHidden ? 'hidden' : 'shown'} successfully`,
+      category
+    });
+  } catch (error) {
+    console.error('Toggle category visibility error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error toggling category visibility',
+      error: error.message
+    });
+  }
+};
+
+
+// Get all categories (including inactive for admin) // remove it we dont need it 
+const getAllCategoriesAdmin = async (req, res) => {
+  try {
+    // Return ALL categories (including inactive) for admin
+    const categories = await Category.find()
+      .sort({ order: 1, name: 1 })
+      .lean();
+
+    const map = new Map();
+    categories.forEach(cat => {
+      cat.children = [];
+      cat.isHidden = cat.status === 'inactive'; // Add isHidden flag for frontend
+      map.set(String(cat._id), cat);
+    });
+
+    const roots = [];
+    categories.forEach(cat => {
+      if (cat.parent) {
+        const parent = map.get(String(cat.parent));
+        if (parent) parent.children.push(cat);
+        else roots.push(cat);
+      } else {
+        roots.push(cat);
+      }
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: categories.length,
+      categories: roots
+    });
+  } catch (error) {
+    console.error('Get all categories admin error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error fetching categories',
+      error: error.message
+    });
+  }
+};
+
+
+
+module.exports = { getAllCategories, getCategoryById, createCategory, updateCategory, deleteCategory, reorderCategories, toggleCategoryVisibility, getAllCategoriesAdmin  };

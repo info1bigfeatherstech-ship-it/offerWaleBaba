@@ -9,6 +9,12 @@ const categoryController = require('../controllers/categoryController');
 router.get('/categories', categoryController.getAllCategories);
 router.get('/categories/:id', categoryController.getCategoryById);
 
+
+// Admin routes for reordering and visibility
+router.post('/admin/categories/reorder', verifyToken, authorizeRoles('admin', 'product_manager'), categoryController.reorderCategories);
+router.patch('/admin/categories/:id/toggle-visibility', verifyToken, authorizeRoles('admin', 'product_manager'), categoryController.toggleCategoryVisibility);
+router.get('/admin/categories/all', verifyToken, authorizeRoles('admin', 'product_manager'), categoryController.getAllCategoriesAdmin);//rmeove it we dont need it 
+
 // Admin category endpoints
 router.post('/admin/categories', verifyToken, authorizeRoles('admin', 'product_manager'), uploadSingleImage, categoryController.createCategory);
 router.put('/admin/categories/:id', verifyToken, authorizeRoles('admin', 'product_manager'), uploadSingleImage, categoryController.updateCategory);

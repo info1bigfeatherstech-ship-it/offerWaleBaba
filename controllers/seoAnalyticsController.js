@@ -41,6 +41,7 @@ const getTraffic = async (req, res) => {
   }
 };
 
+
 const getDevices = async (req, res) => {
   try {
     const deviceCounts = await analyticsService.getDevices();
