@@ -69,7 +69,7 @@ app.use(helmet({
 }));
 
 app.use(cors({
-  origin: [process.env.FRONTEND_URL || 'http://localhost:5173' , 'http://127.0.0.1:5500' , 'http://localhost:5500'],
+  origin: [process.env.FRONTEND_URL || 'http://192.168.1.4:5173', 'http://localhost:5173' , 'http://127.0.0.1:5500' , 'http://localhost:5500'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
@@ -290,7 +290,7 @@ async function startApplication() {
     // });
     // Step 3: Start HTTP Server
     console.log('\n[3/3] Starting HTTP server...');
-    server = app.listen(PORT, () => {
+    server = app.listen(PORT, '0.0.0.0', () => {
       console.log('='.repeat(70));
       console.log(`✓ Server is running on port ${PORT}`);
       console.log(`✓ API Base URL: http://localhost:${PORT}/api`);
