@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const { verifyToken } = require('../middlewares/auth');
+const { authorizeRoles } = require('../middlewares/authorizeRoles');
 const {
     createOrder,
     verifyPayment,
@@ -41,7 +42,7 @@ router.get('/items/:orderId/invoice', verifyToken, generateInvoice);
 router.put('/items/:orderId/cancel', verifyToken, cancelOrder);
 
 // ========== ADMIN ROUTES ==========
-// Update order status (admin only)
-router.put('/admin/items/:orderId/status', verifyToken, updateOrderStatus);
+// Update order status (admin or order_manager)
+router.put('/admin/items/:orderId/status', verifyToken, authorizeRoles('admin', 'order_manager'), updateOrderStatus);
 
 module.exports = router;

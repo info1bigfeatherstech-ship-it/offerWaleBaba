@@ -2,7 +2,7 @@
 const jwt = require('jsonwebtoken');
 const { redisClient } = require('../config/redis.config');
 const tokenStore = require('../config/tokenBlacklist');
-const User = require('../models/User'); // ADD THIS
+const User = require('../models/User');
 
 /**
  * Verify JWT Token Middleware
@@ -75,8 +75,8 @@ const verifyToken = async (req, res, next) => {
       }
     }
 
-    // ✅ ADD THIS: Fetch user to get userType
-    const user = await User.findById(decoded.id).select('userType');
+    // Fetch user to get role and userType for RBAC
+    const user = await User.findById(decoded.id).select('userType role');
     
     if (!user) {
       return res.status(401).json({
@@ -86,10 +86,16 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // Attach both userId and userType to request
+    const resolvedRole = user.role || user.userType || 'user';
+
     req.userId = decoded.id;
-    req.userType = user.userType;  // ← CRITICAL: This is what order controller needs
-    
+    req.userType = user.userType || 'user';
+    req.user = {
+      id: decoded.id,
+      role: String(resolvedRole).toLowerCase()
+    };
+    req.userRole = req.user.role;
+
     next();
   } catch (error) {
     if (error.name === 'TokenExpiredError') {

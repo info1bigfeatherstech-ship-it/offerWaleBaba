@@ -17,12 +17,12 @@ const {
 // const { protect, authorize } = require('../middleware/authMiddleware');
 
 //auth middleware 
-const {verifyToken}=require("../middlewares/auth");
-const {requireAdmin}=require("../middlewares/isAdmin");
+const { verifyToken } = require('../middlewares/auth');
+const { authorizeRoles } = require('../middlewares/authorizeRoles');
 
-// All routes require authentication and admin role
+// All routes require authentication and admin/marketing role
 router.use(verifyToken);
-router.use(requireAdmin);
+router.use(authorizeRoles('admin', 'marketing_manager'));
 
 // User analytics
 router.get('/users', getAllUsers);

@@ -38,6 +38,7 @@ const assistantRoutes=require("./routes/assistant.routes");
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
 const adminCouponRoutes = require('./routes/adminCouponRoutes');
 const userCouponRoutes = require('./routes/userCouponRoutes');
+const analyticsRoutes = require('./routes/seoAnalyticsRoutes');
 
 
 
@@ -207,7 +208,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/wholesalers', wholesalerRoutes);
 app.use("/api/assistant", assistantRoutes)
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
-
+app.use('/api/analytics', analyticsRoutes);
 
 
 // Admin routes

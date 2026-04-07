@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { body, validationResult } = require('express-validator');
-const { requireAdmin } = require('../middlewares/isAdmin');
-const { uploadProductImages, uploadCSVFile,  uploadBulkNewProductFiles } = require('../middlewares/uploadMiddleware');
+const { verifyToken } = require('../middlewares/auth');
+const { authorizeRoles } = require('../middlewares/authorizeRoles');
+const { uploadProductImages, uploadCSVFile, uploadBulkNewProductFiles } = require('../middlewares/uploadMiddleware');
 const productController = require('../controllers/productController');
 
 // Validation middleware to check for rejected fields
@@ -16,9 +17,11 @@ const rejectSlugSku = (req, res, next) => {
 // POST /admin/products Create new product with optional image uploads
 // Request body (form-data): name, description, category, price, inventory, variants, status
 // Files: images (array of up to 10 image files)
+router.use(verifyToken);
+router.use(authorizeRoles('admin', 'product_manager'));
+
 router.post(
   '/',
-  requireAdmin,
   uploadProductImages,
   rejectSlugSku,
   [
@@ -69,62 +72,61 @@ router.post(
 );
 
 // Bulk create (JSON body)
-router.post('/bulk-create', requireAdmin, productController.bulkCreateProducts);
+router.post('/bulk-create', productController.bulkCreateProducts);
 
 // Import from CSV
-router.post('/import-csv', requireAdmin,uploadCSVFile, productController.importProductsFromCSV);
+router.post('/import-csv', uploadCSVFile, productController.importProductsFromCSV);
 
 //import csv for new products with images
-router.post("/bulk-new-products", requireAdmin , uploadBulkNewProductFiles, productController.bulkUploadNewProductsWithImages);
+router.post('/bulk-new-products', uploadBulkNewProductFiles, productController.bulkUploadNewProductsWithImages);
+
 // Get archived products
-router.get('/archived', requireAdmin, productController.getArchivedProducts);
+router.get('/archived', productController.getArchivedProducts);
 
 // POST /admin/products/bulk-delete Bulk delete (archive)
-router.post('/bulk-delete', requireAdmin, productController.bulkDelete);
+router.post('/bulk-delete', productController.bulkDelete);
 
 // Bulk restore
-router.patch('/bulk-restore', requireAdmin, productController.bulkRestore);
-
+router.patch('/bulk-restore', productController.bulkRestore);
 
 // GET /admin/products/low-stock Get low stock products
-router.get('/low-stock', requireAdmin, productController.getLowStockProducts);
-
+router.get('/low-stock', productController.getLowStockProducts);
 
 // Get draft products
-router.get('/drafts', requireAdmin, productController.getDraftProducts);
+router.get('/drafts', productController.getDraftProducts);
 
 //with limit and page query
-router.get('/all', requireAdmin, productController.getAllProductsAdmin);
+router.get('/all', productController.getAllProductsAdmin);
 
 // Get all active products
-router.get('/', requireAdmin, productController.getAllActiveProducts);
+router.get('/', productController.getAllActiveProducts);
 
 // Bulk hard delete
-router.delete('/bulk-hard-delete', requireAdmin, productController.bulkHardDelete);
+router.delete('/bulk-hard-delete', productController.bulkHardDelete);
 
 // Restore single
-router.patch('/restore/:slug', requireAdmin, productController.restoreProduct);
+router.patch('/restore/:slug', productController.restoreProduct);
 
 // Hard delete single (only archived)
-router.delete('/hard/:slug', requireAdmin, productController.hardDeleteProduct);
+router.delete('/hard/:slug', productController.hardDeleteProduct);
 
 //post //add variant to product
-router.post('/:slug/variants', requireAdmin,  uploadProductImages, productController.addVariant);
+router.post('/:slug/variants', uploadProductImages, productController.addVariant);
 
 //delete variant from product
-router.delete('/:slug/variants', requireAdmin, productController.deleteVariant);
+router.delete('/:slug/variants', productController.deleteVariant);
 
 //get variant by barcode
-router.get('/variant/:barcode', requireAdmin, productController.getVariantByBarcode);
+router.get('/variant/:barcode', productController.getVariantByBarcode);
 
 // PUT /admin/products/:slug Update product with optional image uploads
-router.put('/:slug', requireAdmin, uploadProductImages, rejectSlugSku, productController.updateProduct);
+router.put('/:slug', uploadProductImages, rejectSlugSku, productController.updateProduct);
 
 // DELETE /admin/products/:slug Soft delete (archive)
-router.delete('/:slug', requireAdmin, productController.deleteProduct);
+router.delete('/:slug', productController.deleteProduct);
 
 //Get /admin/products/:slug get porduct by slug name 
-router.get('/:slug', requireAdmin, productController.getProductBySlug);
+router.get('/:slug', productController.getProductBySlug);
 
 
 module.exports = router;

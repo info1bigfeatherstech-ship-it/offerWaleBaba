@@ -1,7 +1,8 @@
 // routes/adminCouponRoutes.js
 const express = require('express');
 const router = express.Router();
-const { requireAdmin } = require('../middlewares/isAdmin');
+const { verifyToken } = require('../middlewares/auth');
+const { authorizeRoles } = require('../middlewares/authorizeRoles');
 const {
     createCoupon,
     getAllCoupons,
@@ -11,8 +12,8 @@ const {
     toggleCouponStatus
 } = require('../controllers/couponController');
 
-// All routes require admin authentication
-router.use(requireAdmin);
+router.use(verifyToken);
+router.use(authorizeRoles('admin', 'product_manager'));
 
 // Coupon CRUD
 router.post('/', createCoupon);
