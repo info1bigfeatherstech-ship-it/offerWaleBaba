@@ -1591,7 +1591,53 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 };
 
 
+// =============================================
+// 🗑️ AUTO CLEANUP OLD ERROR REPORTS
+// =============================================
 
+const cleanupOldReports = () => {
+  try {
+    const uploadsDir = path.join(__dirname, '../uploads');
+    
+    // Check if uploads folder exists
+    if (!fs.existsSync(uploadsDir)) return;
+    
+    const files = fs.readdirSync(uploadsDir);
+    const oneHourAgo = Date.now() - 60 * 60 * 1000; // 1 hour
+    let deletedCount = 0;
+    
+    for (const file of files) {
+      // Only target error report files
+      if ((file.startsWith('failed-import-') || file.startsWith('failed-upload-')) && file.endsWith('.csv')) {
+        const filePath = path.join(uploadsDir, file);
+        try {
+          const stats = fs.statSync(filePath);
+          if (stats.mtimeMs < oneHourAgo) {
+            fs.unlinkSync(filePath);
+            deletedCount++;
+            console.log(`🗑️ Deleted old report: ${file}`);
+          }
+        } catch (err) {
+          console.log(`⚠️ Failed to delete ${file}:`, err.message);
+        }
+      }
+    }
+    
+    if (deletedCount > 0) {
+      console.log(`✅ Cleaned up ${deletedCount} old error report(s)`);
+    }
+  } catch (error) {
+    console.error("Cleanup error:", error.message);
+  }
+};
+
+// Run cleanup on server startup
+cleanupOldReports();
+
+// Run cleanup every hour
+setInterval(cleanupOldReports, 60 * 60 * 1000);
+
+console.log('🗑️ Auto-cleanup initialized for error reports (runs every hour)');
 
 
 
@@ -2297,11 +2343,6 @@ const updateProduct = async (req, res) => {
 
 //   }
 // };
-
-
-
-
-
 
 
 
