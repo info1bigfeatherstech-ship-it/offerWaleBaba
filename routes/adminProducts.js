@@ -132,7 +132,7 @@ router.get('/:slug', productController.getProductBySlug);
 
 
 // Get all active products
-router.get('/', productController.getAllActiveProducts);
+router.get('/active', productController.getAllActiveProducts);
 
 
 module.exports = router;
