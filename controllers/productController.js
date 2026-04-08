@@ -863,12 +863,6 @@ async function buildVariantWithValidation(row, productName) {
     barcode: row.barcode ? Number(row.barcode) : Number(`${timestamp}${random}`.slice(0, 15)),
     wholesale,
     attributes: variantAttributes,
-    weight: Number(row.weight) || 0,
-    dimensions: {
-      length: Number(row.length) || 0,
-      width: Number(row.width) || 0,
-      height: Number(row.height) || 0,
-    },
     price: {
       base: cleanBasePrice,
       sale: cleanSalePrice ? Number(cleanSalePrice) : null,
@@ -885,6 +879,7 @@ async function buildVariantWithValidation(row, productName) {
     isActive: true,
   };
 }
+
 // =============================================
 // HELPER: Build new product with variants
 // =============================================
@@ -931,6 +926,14 @@ async function buildNewProductWithVariants(productName, productRows, variants) {
     hsnCode: finalHsnCode,
     taxRate: finalTaxRate,
     isFragile: finalIsFragile,
+      shipping: {
+      weight: Number(firstRow.weight) || 0,
+      dimensions: {
+        length: Number(firstRow.length) || 0,
+        width: Number(firstRow.width) || 0,
+        height: Number(firstRow.height) || 0,
+      }
+    },
     soldInfo: {
       enabled: parseBoolean(firstRow.soldEnabled),
       count: Number(firstRow.soldCount) || 0,
@@ -1301,12 +1304,6 @@ async function buildCompleteVariant(row, productName, images) {
     barcode,
     wholesale,
     attributes: variantAttributes,
-    weight: Number(row.weight) || 0,
-    dimensions: {
-      length: Number(row.length) || 0,
-      width: Number(row.width) || 0,
-      height: Number(row.height) || 0,
-    },
     price: {
       base: basePrice,
       sale: salePrice,
@@ -1492,6 +1489,14 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
               hsnCode: finalHsnCode,
               taxRate: finalTaxRate,
               isFragile: finalIsFragile,
+                shipping: {
+    weight: Number(row.weight) || 0,
+    dimensions: {
+      length: Number(row.length) || 0,
+      width: Number(row.width) || 0,
+      height: Number(row.height) || 0,
+    }
+  },
               soldInfo: {
                 enabled: parseBoolean(row.soldEnabled),
                 count: Number(row.soldCount) || 0,
