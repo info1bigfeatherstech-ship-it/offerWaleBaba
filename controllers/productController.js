@@ -1639,7 +1639,330 @@ setInterval(cleanupOldReports, 60 * 60 * 1000);
 
 console.log('🗑️ Auto-cleanup initialized for error reports (runs every hour)');
 
+// =============================================
+// SMART PREVIEW API - Works for both CSV-only and ZIP+CSV
+// =============================================
+const previewBulkUpload = async (req, res) => {
+  let csvPath = null;
+  let zipPath = null;
+  let extractPath = null;
+  
+  try {
+    // =============================================
+    // STEP 1: Detect which type of upload
+    // =============================================
+    const hasZip = req.files?.imagesZip && req.files?.imagesZip[0];
+    const hasCSV = req.files?.csvFile && req.files?.csvFile[0] || req.file;
+    
+    // Get CSV file path (works for both single file and multi file)
+    if (req.file) {
+      csvPath = req.file.path; // Single file upload (CSV only)
+    } else if (req.files?.csvFile) {
+      csvPath = req.files.csvFile[0].path; // Multi file upload (CSV + ZIP)
+    }
+    
+    if (!csvPath) {
+      return res.status(400).json({
+        success: false,
+        message: "CSV file is required for preview"
+      });
+    }
 
+    console.log(`📁 Preview - CSV: ${csvPath}`);
+    if (hasZip) {
+      zipPath = req.files.imagesZip[0].path;
+      console.log(`📁 Preview - ZIP: ${zipPath}`);
+    }
+
+    // =============================================
+    // STEP 2: Extract ZIP if provided
+    // =============================================
+    let rootFolder = null;
+    if (hasZip && zipPath) {
+      extractPath = path.join(__dirname, "../uploads/preview_extracted");
+      
+      if (fs.existsSync(extractPath)) {
+        fs.rmSync(extractPath, { recursive: true, force: true });
+      }
+      fs.mkdirSync(extractPath, { recursive: true });
+      
+      const zip = new AdmZip(zipPath);
+      zip.extractAllTo(extractPath, true);
+      
+      const extractedFolders = fs.readdirSync(extractPath);
+      rootFolder = extractedFolders.length === 1 && fs.statSync(path.join(extractPath, extractedFolders[0])).isDirectory()
+        ? path.join(extractPath, extractedFolders[0])
+        : extractPath;
+    }
+
+    // =============================================
+    // STEP 3: Read and parse CSV
+    // =============================================
+    const rows = [];
+    await new Promise((resolve, reject) => {
+      const stream = fs.createReadStream(csvPath)
+        .pipe(csv({ mapHeaders: ({ header }) => header.trim() }));
+      
+      stream.on("data", (row) => {
+        Object.keys(row).forEach(key => {
+          if (typeof row[key] === "string") {
+            row[key] = row[key].trim();
+          }
+        });
+        rows.push(row);
+      });
+      stream.on("end", resolve);
+      stream.on("error", reject);
+    });
+
+    if (!rows.length) {
+      return res.status(422).json({
+        success: false,
+        message: "CSV file is empty"
+      });
+    }
+
+    // =============================================
+    // STEP 4: Validate required columns
+    // =============================================
+    const requiredColumns = ['name', 'category', 'basePrice'];
+    const firstRow = rows[0];
+    const missingColumns = requiredColumns.filter(col => !firstRow.hasOwnProperty(col));
+    
+    if (missingColumns.length > 0) {
+      return res.status(422).json({
+        success: false,
+        message: `Missing required columns: ${missingColumns.join(', ')}`,
+        missingColumns,
+        foundColumns: Object.keys(firstRow)
+      });
+    }
+
+    // =============================================
+    // STEP 5: Group rows by product name
+    // =============================================
+    const productMap = new Map();
+    
+    for (let idx = 0; idx < rows.length; idx++) {
+      const row = rows[idx];
+      const productName = row.name;
+      if (!productName) continue;
+      
+      const key = productName.toLowerCase();
+      if (!productMap.has(key)) {
+        productMap.set(key, {
+          name: productName,
+          rows: [],
+          originalIndex: idx
+        });
+      }
+      productMap.get(key).rows.push({ ...row, rowNumber: idx + 2 });
+    }
+
+    // =============================================
+    // STEP 6: Validate each product and variant
+    // =============================================
+    const products = [];
+    let validProducts = 0;
+    let invalidProducts = 0;
+    let totalVariants = 0;
+    let totalImagesFound = 0;
+    let missingImagesCount = 0;
+    
+    for (const [_, productData] of productMap) {
+      const { name: productName, rows: productRows } = productData;
+      const productErrors = [];
+      const variants = [];
+      const barcodes = new Set();
+      
+      for (const row of productRows) {
+        const variantErrors = [];
+        const variantWarnings = [];
+        const barcode = row.barcode?.trim();
+        
+        // Barcode validation
+        if (!barcode) {
+          variantErrors.push("Barcode is missing");
+        } else if (barcodes.has(barcode)) {
+          variantErrors.push(`Duplicate barcode ${barcode} in same product`);
+        } else {
+          barcodes.add(barcode);
+          
+          // Check if barcode already exists in DB (warning only)
+          if (!isNaN(Number(barcode))) {
+            const existingProduct = await Product.findOne({
+              'variants.barcode': Number(barcode)
+            });
+            if (existingProduct) {
+              variantWarnings.push(`Barcode ${barcode} already exists in product "${existingProduct.name}"`);
+            }
+          }
+        }
+        
+        // Price validation
+        const basePrice = parseFloat(row.basePrice?.replace(/[^0-9.]/g, "") || 0);
+        if (isNaN(basePrice) || basePrice <= 0) {
+          variantErrors.push(`Invalid basePrice: ${row.basePrice}`);
+        }
+        
+        const salePrice = row.salePrice ? parseFloat(row.salePrice.replace(/[^0-9.]/g, "")) : null;
+        if (salePrice !== null && salePrice >= basePrice) {
+          variantErrors.push(`Sale price (${salePrice}) must be less than base price (${basePrice})`);
+        }
+        
+        // Wholesale validation
+        const wholesale = parseBoolean(row.wholesale);
+        if (wholesale && (!row.wholesaleBase || row.wholesaleBase.trim() === "")) {
+          variantErrors.push("wholesaleBase is required when wholesale=true");
+        }
+        
+        // Image validation (only if ZIP provided)
+        let hasImages = false;
+        let imageCount = 0;
+        if (hasZip && rootFolder && barcode) {
+          const imageFolder = path.join(rootFolder, String(barcode));
+          if (fs.existsSync(imageFolder)) {
+            const images = fs.readdirSync(imageFolder).filter(file => 
+              /\.(jpg|jpeg|png|gif|webp)$/i.test(file)
+            );
+            imageCount = images.length;
+            hasImages = imageCount > 0;
+            if (hasImages) totalImagesFound++;
+            if (!hasImages) {
+              variantWarnings.push(`No images found for barcode ${barcode}`);
+              missingImagesCount++;
+            }
+          } else {
+            variantWarnings.push(`Image folder not found for barcode ${barcode}`);
+            missingImagesCount++;
+          }
+        } else if (!hasZip && row.images) {
+          // CSV-only mode: check if image URLs provided
+          const imageUrls = row.images.split(",").filter(url => url.trim());
+          hasImages = imageUrls.length > 0;
+          imageCount = imageUrls.length;
+          if (hasImages) totalImagesFound++;
+        }
+        
+        variants.push({
+          rowNumber: row.rowNumber,
+          barcode: barcode || "N/A",
+          basePrice: basePrice || 0,
+          salePrice: salePrice || null,
+          wholesale,
+          quantity: Number(row.quantity) || 0,
+          hasImages,
+          imageCount,
+          isValid: variantErrors.length === 0,
+          errors: variantErrors,
+          warnings: variantWarnings
+        });
+        
+        if (variantErrors.length === 0) totalVariants++;
+      }
+      
+      // Category validation
+      let categoryValid = true;
+      let categoryWarning = null;
+      const categoryDoc = await Category.findOne({ 
+        name: { $regex: new RegExp(`^${productRows[0].category}$`, 'i') }
+      });
+      if (!categoryDoc) {
+        categoryValid = false;
+        categoryWarning = `Category "${productRows[0].category}" not found in database`;
+        productErrors.push(categoryWarning);
+      }
+      
+      const hasErrors = productErrors.length > 0 || variants.some(v => !v.isValid);
+      
+      if (hasErrors) {
+        invalidProducts++;
+      } else {
+        validProducts++;
+      }
+      
+      products.push({
+        name: productName,
+        category: productRows[0].category,
+        brand: productRows[0].brand || "Generic",
+        status: productRows[0].status || "draft",
+        variantCount: productRows.length,
+        validVariants: variants.filter(v => v.isValid).length,
+        invalidVariants: variants.filter(v => !v.isValid).length,
+        totalQuantity: variants.reduce((sum, v) => sum + v.quantity, 0),
+        priceRange: {
+          min: Math.min(...variants.map(v => v.salePrice || v.basePrice)),
+          max: Math.max(...variants.map(v => v.basePrice))
+        },
+        hasImages: variants.some(v => v.hasImages),
+        errors: productErrors,
+        variants: variants.slice(0, 5), // Show first 5 variants
+        hasErrors
+      });
+    }
+    
+    // =============================================
+    // STEP 7: Cleanup
+    // =============================================
+    if (csvPath && fs.existsSync(csvPath)) {
+      try { fs.unlinkSync(csvPath); } catch(e) {}
+    }
+    if (zipPath && fs.existsSync(zipPath)) {
+      try { fs.unlinkSync(zipPath); } catch(e) {}
+    }
+    if (extractPath && fs.existsSync(extractPath)) {
+      try { fs.rmSync(extractPath, { recursive: true, force: true }); } catch(e) {}
+    }
+    
+    // =============================================
+    // STEP 8: Send response
+    // =============================================
+    const uploadType = hasZip ? "ZIP + CSV" : "CSV only (with image URLs)";
+    console.log(`📊 Preview Summary (${uploadType}): ${products.length} products, Valid: ${validProducts}, Invalid: ${invalidProducts}`);
+    
+    return res.status(200).json({
+      success: true,
+      message: "Preview generated successfully",
+      uploadType: uploadType,
+      summary: {
+        totalRows: rows.length,
+        totalProducts: products.length,
+        validProducts: validProducts,
+        invalidProducts: invalidProducts,
+        totalVariants: totalVariants,
+        totalProductsWithImages: products.filter(p => p.hasImages).length,
+        totalImagesFound: totalImagesFound,
+        missingImages: missingImagesCount,
+        hasValidationErrors: invalidProducts > 0,
+        hasMissingImages: missingImagesCount > 0
+      },
+      products: products,
+      warning: invalidProducts > 0 
+        ? `${invalidProducts} product(s) have validation errors. Please fix before uploading.` 
+        : (missingImagesCount > 0 ? `${missingImagesCount} variant(s) missing images.` : null)
+    });
+    
+  } catch (error) {
+    console.error("Preview error:", error);
+    
+    // Cleanup on error
+    if (csvPath && fs.existsSync(csvPath)) {
+      try { fs.unlinkSync(csvPath); } catch(e) {}
+    }
+    if (zipPath && fs.existsSync(zipPath)) {
+      try { fs.unlinkSync(zipPath); } catch(e) {}
+    }
+    if (extractPath && fs.existsSync(extractPath)) {
+      try { fs.rmSync(extractPath, { recursive: true, force: true }); } catch(e) {}
+    }
+    
+    return res.status(500).json({
+      success: false,
+      message: "Failed to preview upload",
+      error: error.message
+    });
+  }
+};
 
 
 //update product or variant
@@ -2023,332 +2346,6 @@ const updateProduct = async (req, res) => {
 
   }
 };
-
-// const updateProduct = async (req, res) => {
-//   try {
-
-//     const slug = req.params.slug;
-
-//     const existingProduct = await Product.findOne({ slug });
-
-//     if (!existingProduct) {
-//       return res.status(404).json({
-//         success: false,
-//         message: "Product not found"
-//       });
-//     }
-
-//     const updates = { ...req.body };
-
-//     delete updates.slug;
-//     delete updates.sku;
-//     delete updates.variants;
-
-//     const parseIfString = (value, fallback) => {
-//       if (typeof value === "string") {
-//         try {
-//           return JSON.parse(value);
-//         } catch {
-//           return fallback;
-//         }
-//       }
-//       return value;
-//     };
-
-//     // =====================================================
-//     // ✅ VARIANT UPDATE BY BARCODE
-//     // =====================================================
-
-//     if (updates.barcode) {
-
-//       const barcodeNumber = Number(updates.barcode);
-
-//       if (isNaN(barcodeNumber)) {
-//         return res.status(400).json({
-//           success: false,
-//           message: "Invalid barcode"
-//         });
-//       }
-
-//       const variantIndex = existingProduct.variants.findIndex(
-//         v => v.barcode === barcodeNumber
-//       );
-
-//       if (variantIndex === -1) {
-//         return res.status(404).json({
-//           success: false,
-//           message: "No product found with this barcode"
-//         });
-//       }
-
-//       const existingVariant = existingProduct.variants[variantIndex];
-
-//       const updateFields = {};
-
-//       // =========================
-//       // PRICE UPDATE
-//       // =========================
-
-//       if (updates.price) {
-
-//         const parsedPrice = parseIfString(updates.price, {});
-
-//         const base =
-//           parsedPrice.base !== undefined
-//             ? Number(parsedPrice.base)
-//             : existingVariant.price.base;
-
-//         const sale =
-//           parsedPrice.sale !== undefined
-//             ? parsedPrice.sale != null
-//               ? Number(parsedPrice.sale)
-//               : null
-//             : existingVariant.price.sale;
-
-//         if (sale != null && sale >= base) {
-//           return res.status(400).json({
-//             success: false,
-//             message: "Sale price must be less than base price"
-//           });
-//         }
-
-//         if (parsedPrice.base !== undefined) {
-//           updateFields["variants.$.price.base"] = base;
-//         }
-
-//         if (parsedPrice.sale !== undefined) {
-//           updateFields["variants.$.price.sale"] = sale;
-//         }
-//       }
-
-//       // =========================
-//       // INVENTORY UPDATE
-//       // =========================
-
-//       if (updates.inventory) {
-
-//         const parsedInventory = parseIfString(updates.inventory, {});
-
-//         if (parsedInventory.quantity !== undefined) {
-//           updateFields["variants.$.inventory.quantity"] =
-//             Number(parsedInventory.quantity);
-//         }
-
-//         if (parsedInventory.lowStockThreshold !== undefined) {
-//           updateFields["variants.$.inventory.lowStockThreshold"] =
-//             Number(parsedInventory.lowStockThreshold);
-//         }
-
-//         if (parsedInventory.trackInventory !== undefined) {
-//           updateFields["variants.$.inventory.trackInventory"] =
-//             parsedInventory.trackInventory;
-//         }
-//       }
-
-//       // =========================
-//       // ✅ IMAGES UPDATE (FIXED)
-//       // =========================
-
-//       if (req.files && req.files.length > 0) {
-
-//         // delete old images
-//         if (existingVariant.images && existingVariant.images.length > 0) {
-
-//           for (const img of existingVariant.images) {
-
-//             if (img.publicId) {
-//               await deleteFromCloudinary(img.publicId);
-//             }
-
-//           }
-
-//         }
-
-//         const uploadedImages = [];
-
-//         for (let i = 0; i < req.files.length; i++) {
-
-//           const file = req.files[i];
-
-//           // ensure buffer exists
-//           if (!file.buffer) {
-//             continue;
-//           }
-
-//           const uploadResult = await uploadToCloudinary(
-//             file.buffer,
-//             "products"
-//           );
-
-//           uploadedImages.push({
-//             url: uploadResult.url,
-//             publicId: uploadResult.publicId,
-//             altText: existingProduct.name,
-//             order: i
-//           });
-
-//         }
-
-//         updateFields["variants.$.images"] = uploadedImages;
-
-//       }
-
-//       const updatedProduct = await Product.findOneAndUpdate(
-//         { slug, "variants.barcode": barcodeNumber },
-//         { $set: updateFields },
-//         { new: true }
-//       );
-
-//       // 🔁 Recalculate totals
-//       const effectivePrices = updatedProduct.variants.map(v =>
-//         v.price.sale != null ? v.price.sale : v.price.base
-//       );
-
-//       updatedProduct.priceRange = {
-//         min: Math.min(...effectivePrices),
-//         max: Math.max(...effectivePrices)
-//       };
-
-//       updatedProduct.totalStock =
-//         updatedProduct.variants.reduce(
-//           (sum, v) => sum + (v.inventory.quantity || 0),
-//           0
-//         );
-
-//       await updatedProduct.save();
-
-//       return res.status(200).json({
-//         success: true,
-//         message: "Variant updated successfully",
-//         product: updatedProduct
-//       });
-
-//     }
-
-//     // =====================================================
-//     // PRODUCT FIELD UPDATE
-//     // =====================================================
-
-//     if (updates.name && updates.name !== existingProduct.name) {
-
-//       updates.slug = await generateSlug(
-//         updates.name,
-//         existingProduct._id
-//       );
-
-//     }
-
-//     if (updates.soldInfo) {
-
-//       const parsed = parseIfString(updates.soldInfo, {});
-
-//       updates.soldInfo = {
-//         ...existingProduct.soldInfo.toObject(),
-//         ...parsed,
-//         enabled: parsed.enabled === true || parsed.enabled === "true",
-//         count: Number(parsed.count ?? 0)
-//       };
-
-//     }
-
-//     if (updates.fomo) {
-
-//       const parsed = parseIfString(updates.fomo, {});
-
-//       updates.fomo = {
-//         ...existingProduct.fomo.toObject(),
-//         ...parsed,
-//         enabled: parsed.enabled === true || parsed.enabled === "true",
-//         viewingNow: Number(parsed.viewingNow ?? 0),
-//         productLeft: Number(parsed.productLeft ?? 0),
-//         type: ["viewing_now", "product_left", "custom"].includes(parsed.type)
-//           ? parsed.type
-//           : existingProduct.fomo.type
-//       };
-
-//     }
-
-//     if (updates.shipping) {
-
-//       const parsed = parseIfString(updates.shipping, {});
-
-//       updates.shipping = {
-//         ...existingProduct.shipping.toObject(),
-//         ...parsed,
-//         weight: Number(parsed.weight ?? 0),
-//         dimensions: {
-//           length: Number(parsed.dimensions?.length ?? 0),
-//           width: Number(parsed.dimensions?.width ?? 0),
-//           height: Number(parsed.dimensions?.height ?? 0)
-//         }
-//       };
-
-//     }
-
-//     if (updates.attributes) {      
-
-//       const parsed = parseIfString(updates.attributes, []);
-
-//       updates.attributes = Array.isArray(parsed)
-//         ? parsed.map(a => ({ key: a.key, value: a.value }))
-//         : [];
-
-//     }
-
-//       // =====================================================
-//     // ✅ ADD THIS BLOCK: Regenerate SEO if name or description changed
-//     // =====================================================
-//     if (updates.name || updates.description) {
-//       // Fetch category for SEO
-//       const categoryDoc = await Category.findById(existingProduct.category).lean();
-      
-//       // Prepare product data for SEO generation
-//       const productDataForSEO = {
-//         name: updates.name || existingProduct.name,
-//         description: updates.description || existingProduct.description,
-//         category: categoryDoc ? { name: categoryDoc.name } : null,
-//         variants: existingProduct.variants  // Use existing variants
-//       };
-      
-//       // Generate fresh SEO data
-//       const seoData = generateSEOData(productDataForSEO);
-      
-//       // Add to updates
-//       updates.seo = seoData;
-//     }
-
-
-
-//     const updatedProduct = await Product.findByIdAndUpdate(
-//       existingProduct._id,
-//       { $set: updates },
-//       { new: true, runValidators: true }
-//     );
-
-//     return res.status(200).json({
-//       success: true,
-//       message: "Product updated successfully",
-//       product: updatedProduct
-//     });
-
-//   } catch (error) {
-
-//     console.error("Update product error:", error);
-
-//     return res.status(500).json({
-//       success: false,
-//       message: "Error updating product",
-//       error: error.message
-//     });
-
-//   }
-// };
-
-
-
-
-
-
 
 
 const deleteProduct = async (req, res) => {
@@ -3665,5 +3662,6 @@ module.exports = {
    deleteVariant,
    getVariantByBarcode,
    bulkUploadNewProductsWithImages,
-   downloadErrorReport
+   downloadErrorReport,
+   previewBulkUpload
 };
