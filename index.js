@@ -204,18 +204,18 @@ app.use('/api/products', productsRoutes);
 app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/addresses', addressRoutes);
-app.use('/api/orders', orderRoutes); 
-app.use('/api/wholesalers', wholesalerRoutes);
+// app.use('/api/orders', orderRoutes); 
+// app.use('/api/wholesalers', wholesalerRoutes);
 // app.use("/api/assistant", assistantRoutes)
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
 // app.use('/api/analytics', analyticsRoutes);
 
 
 // Admin routes
-app.use('/api/admin/coupons', adminCouponRoutes);
+// app.use('/api/admin/coupons', adminCouponRoutes);
 
 // User routes
-app.use('/api/coupons', userCouponRoutes);
+// app.use('/api/coupons', userCouponRoutes);
 
 // ============================================================================
 // ERROR HANDLING
