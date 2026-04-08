@@ -77,6 +77,11 @@ router.post(
 // Import from CSV
 router.post('/import-csv', uploadCSVFile, productController.importProductsFromCSV);
 
+
+// Download error report
+router.get('/download-error-report/:fileName', productController.downloadErrorReport);
+
+
 //import csv for new products with images
 router.post('/bulk-new-products', uploadBulkNewProductFiles, productController.bulkUploadNewProductsWithImages);
 
@@ -97,9 +102,6 @@ router.get('/drafts', productController.getDraftProducts);
 
 //with limit and page query
 router.get('/all', productController.getAllProductsAdmin);
-
-// Get all active products
-router.get('/', productController.getAllActiveProducts);
 
 // Bulk hard delete
 router.delete('/bulk-hard-delete', productController.bulkHardDelete);
@@ -127,6 +129,10 @@ router.delete('/:slug', productController.deleteProduct);
 
 //Get /admin/products/:slug get porduct by slug name 
 router.get('/:slug', productController.getProductBySlug);
+
+
+// Get all active products
+router.get('/', productController.getAllActiveProducts);
 
 
 module.exports = router;

@@ -428,6 +428,8 @@ const importProductsFromCSV = async (req, res) => {
     const missingColumns = requiredColumns.filter(col => !firstRow.hasOwnProperty(col));
     
     if (missingColumns.length > 0) {
+      // Cleanup file
+      if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
       return res.status(400).json({
         success: false,
         message: `Missing required columns: ${missingColumns.join(', ')}`,
@@ -475,107 +477,96 @@ const importProductsFromCSV = async (req, res) => {
     stats.uniqueProducts = productMap.size;
     console.log(`📦 Unique products: ${stats.uniqueProducts}`);
     
-    // Send immediate response
-    res.status(202).json({
-      success: true,
-      message: "Import started. Processing in background.",
-      totalRows: stats.totalRows,
-      uniqueProducts: stats.uniqueProducts,
-      willGenerateReport: true
-    });
+    // =============================================
+    // STEP 4: Process products (SYNCHRONOUSLY)
+    // =============================================
+    let batchNumber = 0;
+    let currentBatch = [];
     
-    // =============================================
-    // STEP 4: Process asynchronously
-    // =============================================
-    setImmediate(async () => {
-      let batchNumber = 0;
-      let currentBatch = [];
+    const productsArray = Array.from(productMap.values());
+    
+    for (let i = 0; i < productsArray.length; i++) {
+      const { name: productName, rows: productRows } = productsArray[i];
       
       try {
-        const productsArray = Array.from(productMap.values());
+        // Process single product with all its variants
+        const result = await processProductWithRollback(productName, productRows, stats);
         
-        for (let i = 0; i < productsArray.length; i++) {
-          const { name: productName, rows: productRows } = productsArray[i];
-          
-          try {
-            // Process single product with all its variants
-            const result = await processProductWithRollback(productName, productRows);
-            
-            if (result.success) {
-              if (result.action === 'inserted') {
-                stats.inserted++;
-              } else if (result.action === 'updated') {
-                stats.updated++;
-              }
-              currentBatch.push(result.product);
-            } else {
-              stats.failed.push({
-                product: productName,
-                reason: result.error,
-                rows: productRows.map(r => r.rowNumber)
-              });
-            }
-            
-            // Insert batch when full
-            if (currentBatch.length >= BATCH_SIZE) {
-              batchNumber++;
-              await flushBatch(currentBatch, batchNumber, stats);
-              currentBatch = [];
-            }
-            
-            const progress = ((i + 1) / productsArray.length * 100).toFixed(2);
-            console.log(`📈 Progress: ${progress}% | Inserted: ${stats.inserted} | Updated: ${stats.updated} | Failed: ${stats.failed.length}`);
-            
-          } catch (productError) {
-            console.error(`❌ Error processing ${productName}:`, productError.message);
-            stats.failed.push({
-              product: productName,
-              reason: productError.message,
-              rows: productRows.map(r => r.rowNumber)
-            });
+        if (result.success) {
+          if (result.action === 'inserted') {
+            stats.inserted++;
+          } else if (result.action === 'updated') {
+            stats.updated++;
           }
+          currentBatch.push(result.product);
+        } else {
+          stats.failed.push({
+            product: productName,
+            reason: result.error,
+            rows: productRows.map(r => r.rowNumber)
+          });
         }
         
-        // Final batch
-        if (currentBatch.length > 0) {
+        // Insert batch when full
+        if (currentBatch.length >= BATCH_SIZE) {
           batchNumber++;
           await flushBatch(currentBatch, batchNumber, stats);
+          currentBatch = [];
         }
         
-        // =============================================
-        // STEP 5: Generate failure report
-        // =============================================
-        let errorReportPath = null;
+        const progress = ((i + 1) / productsArray.length * 100).toFixed(2);
+        console.log(`📈 Progress: ${progress}% | Inserted: ${stats.inserted} | Updated: ${stats.updated} | Failed: ${stats.failed.length}`);
         
-        if (stats.failed.length > 0) {
-          errorReportPath = await generateErrorReport(stats.failed);
-        }
-        
-        // Cleanup
-        if (filePath && fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-        
-        // =============================================
-        // STEP 6: Final summary
-        // =============================================
-        console.log(`\n🎉 IMPORT COMPLETED!`);
-        console.log(`📊 Summary:`);
-        console.log(`   ✅ Inserted: ${stats.inserted}`);
-        console.log(`   🔄 Updated: ${stats.updated}`);
-        console.log(`   ❌ Failed: ${stats.failed.length}`);
-        console.log(`   ⏭️ Skipped: ${stats.skipped.length}`);
-        
-        if (errorReportPath) {
-          console.log(`📄 Error report: ${errorReportPath}`);
-        }
-        
-      } catch (error) {
-        console.error("Background processing error:", error);
-        if (filePath && fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
+      } catch (productError) {
+        console.error(`❌ Error processing ${productName}:`, productError.message);
+        stats.failed.push({
+          product: productName,
+          reason: productError.message,
+          rows: productRows.map(r => r.rowNumber)
+        });
       }
+    }
+    
+    // Final batch
+    if (currentBatch.length > 0) {
+      batchNumber++;
+      await flushBatch(currentBatch, batchNumber, stats);
+    }
+    
+    // =============================================
+    // STEP 5: Generate failure report
+    // =============================================
+    let errorReportUrl = null;
+    
+    if (stats.failed.length > 0) {
+      const report = await generateErrorReport(stats.failed, req);
+      errorReportUrl = report.downloadUrl;
+      console.log(`📄 Error report ready: ${errorReportUrl}`);
+    }
+    
+    // Cleanup
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    
+    // =============================================
+    // STEP 6: Send FINAL response with download link
+    // =============================================
+    console.log(`\n🎉 IMPORT COMPLETED!`);
+    console.log(`📊 Summary:`);
+    console.log(`   ✅ Inserted: ${stats.inserted}`);
+    console.log(`   🔄 Updated: ${stats.updated}`);
+    console.log(`   ❌ Failed: ${stats.failed.length}`);
+    
+    return res.status(200).json({
+      success: true,
+      message: "Import completed",
+      totalRows: stats.totalRows,
+      uniqueProducts: stats.uniqueProducts,
+      inserted: stats.inserted,
+      updated: stats.updated,
+      failed: stats.failed.length,
+      downloadUrl: errorReportUrl  // ✅ Direct download link in response
     });
     
   } catch (error) {
@@ -585,7 +576,7 @@ const importProductsFromCSV = async (req, res) => {
     console.error("CSV import error:", error);
     return res.status(500).json({
       success: false,
-      message: "CSV import failed to start",
+      message: "CSV import failed",
       error: error.message,
     });
   }
@@ -593,62 +584,91 @@ const importProductsFromCSV = async (req, res) => {
 // =============================================
 // HELPER: Process single product with rollback
 // =============================================
-async function processProductWithRollback(productName, productRows) {
+async function processProductWithRollback(productName, productRows, stats) {
   const firstRow = productRows[0];
   
   try {
-    // Check if product already exists
     let existingProduct = await Product.findOne({ 
       name: { $regex: new RegExp(`^${productName}$`, 'i') }
     });
     
-    // Validate and build all variants first
     const variants = [];
     const duplicateBarcodes = new Map();
     
+    // FIRST: Validate all barcodes before building anything
     for (const row of productRows) {
-      // Validate barcode uniqueness within this product
       const barcode = row.barcode?.trim();
-      if (barcode) {
-        if (duplicateBarcodes.has(barcode)) {
-          throw new Error(`Duplicate barcode ${barcode} found in same product. Row ${row.rowNumber} and ${duplicateBarcodes.get(barcode)}`);
-        }
-        duplicateBarcodes.set(barcode, row.rowNumber);
-        
-        // Check if barcode already exists in database
-        const existingVariant = await Product.findOne({
-          'variants.barcode': Number(barcode),
-          _id: { $ne: existingProduct?._id }
-        });
-        
-        if (existingVariant) {
-          throw new Error(`Barcode ${barcode} already exists in product "${existingVariant.name}". Please use unique barcode.`);
+      if (!barcode) continue;
+      
+      // Check duplicate in same CSV
+      if (duplicateBarcodes.has(barcode)) {
+        throw new Error(`Duplicate barcode ${barcode} found in same product. Row ${row.rowNumber} and ${duplicateBarcodes.get(barcode)}`);
+      }
+      duplicateBarcodes.set(barcode, row.rowNumber);
+      
+      // Check if barcode already exists in database (across ALL products)
+      const existingProductWithBarcode = await Product.findOne({
+        'variants.barcode': Number(barcode)
+      });
+      
+      if (existingProductWithBarcode) {
+        // If we're updating the SAME product, check if this barcode is already in it
+        if (existingProduct && existingProduct._id.toString() === existingProductWithBarcode._id.toString()) {
+          // Same product - check if variant with this barcode already exists
+          const barcodeExistsInProduct = existingProduct.variants.some(v => v.barcode === Number(barcode));
+          if (barcodeExistsInProduct) {
+            throw new Error(`Barcode ${barcode} already exists as a variant in product "${productName}". Please use unique barcode.`);
+          }
+        } else {
+          // Different product - block immediately
+          throw new Error(`Barcode ${barcode} already exists in product "${existingProductWithBarcode.name}". Please use unique barcode.`);
         }
       }
-      
-      // Build variant with wholesale validation
+    }
+    
+    // SECOND: Build all variants (validation passed)
+    for (const row of productRows) {
       const variant = await buildVariantWithValidation(row, productName);
       variants.push(variant);
     }
     
+    // THIRD: Save to database
     if (existingProduct) {
-      // Add variants to existing product
+      let addedCount = 0;
+      
       for (const variant of variants) {
-        // Check if variant with same attributes already exists
-        const variantExists = existingProduct.variants.some(v => 
+        // Final safety check - verify barcode not already in product
+        const barcodeExists = existingProduct.variants.some(v => v.barcode === variant.barcode);
+        if (barcodeExists) {
+          stats.skipped.push({
+            product: productName,
+            barcode: variant.barcode,
+            reason: "Variant with same barcode already exists in this product"
+          });
+          continue;
+        }
+        
+        // Check for duplicate attributes
+        const attributeMatch = existingProduct.variants.some(v => 
           JSON.stringify(v.attributes) === JSON.stringify(variant.attributes)
         );
         
-        if (variantExists) {
+        if (attributeMatch) {
           stats.skipped.push({
             product: productName,
-            variant: variant.attributes,
+            barcode: variant.barcode,
+            attributes: variant.attributes,
             reason: "Variant with same attributes already exists"
           });
           continue;
         }
         
         existingProduct.variants.push(variant);
+        addedCount++;
+      }
+      
+      if (addedCount === 0) {
+        return { success: true, action: 'skipped', product: existingProduct };
       }
       
       // Update SEO
@@ -662,12 +682,11 @@ async function processProductWithRollback(productName, productRows) {
       });
       existingProduct.seo = seoData;
       
-      // ✅ FIX: Use save() instead of update to avoid updatedAt conflict
       await existingProduct.save();
       return { success: true, action: 'updated', product: existingProduct };
       
     } else {
-      // Create new product
+      // New product - create directly
       const newProduct = await buildNewProductWithVariants(productName, productRows, variants);
       return { success: true, action: 'inserted', product: newProduct };
     }
@@ -1006,9 +1025,12 @@ async function flushBatch(batch, batchNumber, stats) {
 }
 
 // =============================================
-// HELPER: Generate error report CSV
+// HELPER: Generate error report CSV with download URL
 // =============================================
-async function generateErrorReport(failedItems) {
+// =============================================
+// HELPER: Generate error report CSV with download URL
+// =============================================
+async function generateErrorReport(failedItems, req = null) {
   const { Parser } = require('json2csv');
   
   const parser = new Parser({
@@ -1029,11 +1051,93 @@ async function generateErrorReport(failedItems) {
   fs.writeFileSync(filePath, csvData);
   console.log(`📄 Error report generated: ${filePath}`);
   
-  return `/uploads/${fileName}`;
+  // Generate download URL if req is provided
+  let downloadUrl = null;
+  if (req) {
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    // ✅ FIX: Match your actual route
+    downloadUrl = `${baseUrl}/api/admin/products/download-error-report/${fileName}`;
+    console.log(`🔗 Download URL: ${downloadUrl}`);
+  }
+  
+  return {
+    path: `/uploads/${fileName}`,
+    downloadUrl: downloadUrl,
+    fileName: fileName,
+    fullPath: filePath
+  };
 }
 
 
 
+
+// =============================================
+// DOWNLOAD ERROR REPORT API (Common for both controllers)
+// =============================================
+const downloadErrorReport = async (req, res) => {
+  try {
+    const { fileName } = req.params;
+    
+    // ✅ Security: Allow both types of error reports
+    if (!fileName || !fileName.endsWith('.csv')) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid file format. Only CSV files allowed."
+      });
+    }
+    
+    // ✅ Check if it's a valid error report (either failed-import or failed-upload)
+    if (!fileName.startsWith('failed-import-') && !fileName.startsWith('failed-upload-')) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid error report file name"
+      });
+    }
+    
+    const filePath = path.join(__dirname, '../uploads', fileName);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        success: false,
+        message: "Error report not found or already deleted"
+      });
+    }
+    
+    // Send file for download
+    res.download(filePath, fileName, (err) => {
+      if (err) {
+        console.error("Download error:", err);
+        return res.status(500).json({
+          success: false,
+          message: "Failed to download file"
+        });
+      }
+      
+      // Optional: Delete file after successful download (cleanup)
+      // setTimeout(() => {
+      //   if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      // }, 60 * 60 * 1000); // Delete after 1 hour
+    });
+    
+  } catch (error) {
+    console.error("Download error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to download error report",
+      error: error.message
+    });
+  }
+};
+
+
+
+////////=================================
+//=================================
+//=================================
+// NEW PRORDUCTS UPLOADS WITH ZIP AND CSV
+//=================================
+//=================================
+///////===================================
 
 //Bulk ypload from CSV with images in ZIP
 
@@ -1275,206 +1379,203 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 
     console.log(`📊 Total rows in CSV: ${rows.length}`);
 
-    // Send immediate response for async processing
-    res.status(202).json({
-      success: true,
-      message: "Bulk upload started. Processing in background.",
-      totalRows: rows.length,
-      willGenerateReport: true
-    });
+    const stats = {
+      total: rows.length,
+      successful: 0,
+      failed: 0,
+      errors: [],
+      products: []
+    };
 
-    // Process asynchronously
-    setImmediate(async () => {
-      const stats = {
-        total: rows.length,
-        successful: 0,
-        failed: 0,
-        errors: [],
-        products: []
-      };
+    const BATCH_SIZE = 50;
+    const BATCH_DELAY_MS = 1000;
 
-      const BATCH_SIZE = 50; // Process 50 products at a time
-      const BATCH_DELAY_MS = 1000; // 1 second delay between batches
-
-      try {
-        for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-          const batch = rows.slice(i, i + BATCH_SIZE);
-          const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+    // =============================================
+    // Process products (SYNCHRONOUSLY)
+    // =============================================
+    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+      const batch = rows.slice(i, i + BATCH_SIZE);
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      
+      console.log(`🔄 Processing batch ${batchNumber}/${Math.ceil(rows.length / BATCH_SIZE)} (${batch.length} products)`);
+      
+      const batchPromises = batch.map(async (row) => {
+        try {
+          const barcode = Number(row.barcode);
           
-          console.log(`🔄 Processing batch ${batchNumber}/${Math.ceil(rows.length / BATCH_SIZE)} (${batch.length} products)`);
-          
-          // Process batch in parallel but with limit
-          const batchPromises = batch.map(async (row) => {
-            try {
-              const barcode = Number(row.barcode);
-              
-              if (isNaN(barcode)) {
-                throw new Error(`Invalid barcode: ${row.barcode}`);
-              }
+          if (isNaN(barcode)) {
+            throw new Error(`Invalid barcode: ${row.barcode}`);
+          }
 
-              // Validate category
-              const categoryDoc = await Category.findOne({ 
-                name: { $regex: new RegExp(`^${row.category}$`, 'i') }
-              });
-              
-              if (!categoryDoc) {
-                throw new Error(`Category not found: ${row.category}`);
-              }
-
-              // Upload images from barcode folder
-              const imageFolder = path.join(rootFolder, String(barcode));
-              const variantImages = await uploadVariantImages(imageFolder, row.name, barcode);
-
-              // Build complete variant with wholesale
-              const newVariant = await buildCompleteVariant(row, row.name, variantImages);
-
-              // Check if product exists
-              let product = await Product.findOne({ 
-                name: { $regex: new RegExp(`^${row.name}$`, 'i') }
-              });
-
-              // Parse product-level fields
-              const finalHsnCode = row.hsnCode?.trim().toUpperCase() || null;
-              const finalTaxRate = row.taxRate ? parseFloat(row.taxRate) : null;
-              const finalIsFragile = parseBoolean(row.isFragile);
-              const parseAttributes = (attrString) => {
-                if (!attrString) return [];
-                return attrString.split("|").map(item => {
-                  const [key, value] = item.split(":");
-                  return { key: key?.trim(), value: value?.trim() };
-                }).filter(attr => attr.key && attr.value);
-              };
-              const productAttributes = parseAttributes(row.productAttributes);
-
-              if (product) {
-                // Check for duplicate variant attributes
-                const variantExists = product.variants.some(v => 
-                  JSON.stringify(v.attributes) === JSON.stringify(newVariant.attributes)
-                );
-                
-                if (variantExists) {
-                  throw new Error(`Variant with same attributes already exists for product ${row.name}`);
-                }
-                
-                product.variants.push(newVariant);
-                
-                // Update product-level fields if not set
-                if (finalHsnCode && !product.hsnCode) product.hsnCode = finalHsnCode;
-                if (finalTaxRate !== null && !product.taxRate) product.taxRate = finalTaxRate;
-                if (finalIsFragile && !product.isFragile) product.isFragile = finalIsFragile;
-                if (productAttributes.length && !product.attributes?.length) {
-                  product.attributes = productAttributes;
-                }
-                
-                await product.save();
-                stats.successful++;
-                stats.products.push({ name: row.name, barcode, action: 'updated' });
-              } else {
-                // Create new product
-                const slug = await generateSlug(row.name);
-                
-                // Generate SEO
-                const seoData = generateSEOData({
-                  name: row.name,
-                  title: row.title || row.name,
-                  description: row.description || '',
-                  category: { name: categoryDoc.name },
-                  variants: [newVariant]
-                });
-                
-                product = new Product({
-                  name: row.name,
-                  title: row.title || row.name,
-                  slug,
-                  description: row.description || "",
-                  category: categoryDoc._id,
-                  brand: row.brand || "Generic",
-                  status: row.status?.toLowerCase() || "active",
-                  isFeatured: parseBoolean(row.isfeatured),
-                  attributes: productAttributes,
-                  variants: [newVariant],
-                  seo: seoData,
-                  hsnCode: finalHsnCode,
-                  taxRate: finalTaxRate,
-                  isFragile: finalIsFragile,
-                  soldInfo: {
-                    enabled: parseBoolean(row.soldEnabled),
-                    count: Number(row.soldCount) || 0,
-                  },
-                  fomo: {
-                    enabled: parseBoolean(row.fomoEnabled),
-                    type: row.fomoType || "viewing_now",
-                    viewingNow: Number(row.viewingNow) || 0,
-                    productLeft: Number(row.productLeft) || 0,
-                    customMessage: row.customMessage || "",
-                  }
-                });
-                
-                await product.save();
-                stats.successful++;
-                stats.products.push({ name: row.name, barcode, action: 'inserted' });
-              }
-              
-            } catch (err) {
-              stats.failed++;
-              stats.errors.push({
-                row: row.name || "Unknown",
-                barcode: row.barcode,
-                error: err.message
-              });
-              console.error(`❌ Failed to process ${row.name}:`, err.message);
-            }
+          // Validate category
+          const categoryDoc = await Category.findOne({ 
+            name: { $regex: new RegExp(`^${row.category}$`, 'i') }
           });
           
-          // Wait for current batch to complete
-          await Promise.all(batchPromises);
-          
-          // Delay between batches to avoid overwhelming the database
-          if (i + BATCH_SIZE < rows.length) {
-            console.log(`⏳ Waiting ${BATCH_DELAY_MS}ms before next batch...`);
-            await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
+          if (!categoryDoc) {
+            throw new Error(`Category not found: ${row.category}`);
+          }
+
+          // Upload images from barcode folder
+          const imageFolder = path.join(rootFolder, String(barcode));
+          const variantImages = await uploadVariantImages(imageFolder, row.name, barcode);
+
+          // Build complete variant with wholesale
+          const newVariant = await buildCompleteVariant(row, row.name, variantImages);
+
+          // Check if product exists
+          let product = await Product.findOne({ 
+            name: { $regex: new RegExp(`^${row.name}$`, 'i') }
+          });
+
+          // Parse product-level fields
+          const finalHsnCode = row.hsnCode?.trim().toUpperCase() || null;
+          const finalTaxRate = row.taxRate ? parseFloat(row.taxRate) : null;
+          const finalIsFragile = parseBoolean(row.isFragile);
+          const parseAttributes = (attrString) => {
+            if (!attrString) return [];
+            return attrString.split("|").map(item => {
+              const [key, value] = item.split(":");
+              return { key: key?.trim(), value: value?.trim() };
+            }).filter(attr => attr.key && attr.value);
+          };
+          const productAttributes = parseAttributes(row.productAttributes);
+
+          if (product) {
+            // Check for duplicate variant attributes
+            const variantExists = product.variants.some(v => 
+              JSON.stringify(v.attributes) === JSON.stringify(newVariant.attributes)
+            );
+            
+            if (variantExists) {
+              throw new Error(`Variant with same attributes already exists for product ${row.name}`);
+            }
+            
+            product.variants.push(newVariant);
+            
+            // Update product-level fields if not set
+            if (finalHsnCode && !product.hsnCode) product.hsnCode = finalHsnCode;
+            if (finalTaxRate !== null && !product.taxRate) product.taxRate = finalTaxRate;
+            if (finalIsFragile && !product.isFragile) product.isFragile = finalIsFragile;
+            if (productAttributes.length && !product.attributes?.length) {
+              product.attributes = productAttributes;
+            }
+            
+            await product.save();
+            stats.successful++;
+            stats.products.push({ name: row.name, barcode, action: 'updated' });
+          } else {
+            // Create new product
+            const slug = await generateSlug(row.name);
+            
+            // Generate SEO
+            const seoData = generateSEOData({
+              name: row.name,
+              title: row.title || row.name,
+              description: row.description || '',
+              category: { name: categoryDoc.name },
+              variants: [newVariant]
+            });
+            
+            product = new Product({
+              name: row.name,
+              title: row.title || row.name,
+              slug,
+              description: row.description || "",
+              category: categoryDoc._id,
+              brand: row.brand || "Generic",
+              status: row.status?.toLowerCase() || "active",
+              isFeatured: parseBoolean(row.isfeatured),
+              attributes: productAttributes,
+              variants: [newVariant],
+              seo: seoData,
+              hsnCode: finalHsnCode,
+              taxRate: finalTaxRate,
+              isFragile: finalIsFragile,
+              soldInfo: {
+                enabled: parseBoolean(row.soldEnabled),
+                count: Number(row.soldCount) || 0,
+              },
+              fomo: {
+                enabled: parseBoolean(row.fomoEnabled),
+                type: row.fomoType || "viewing_now",
+                viewingNow: Number(row.viewingNow) || 0,
+                productLeft: Number(row.productLeft) || 0,
+                customMessage: row.customMessage || "",
+              }
+            });
+            
+            await product.save();
+            stats.successful++;
+            stats.products.push({ name: row.name, barcode, action: 'inserted' });
           }
           
-          console.log(`📊 Batch ${batchNumber} completed. Success: ${stats.successful}, Failed: ${stats.failed}`);
+        } catch (err) {
+          stats.failed++;
+          stats.errors.push({
+            row: row.name || "Unknown",
+            barcode: row.barcode,
+            error: err.message
+          });
+          console.error(`❌ Failed to process ${row.name}:`, err.message);
         }
-
-        // Generate error report if any failures
-        let errorReportPath = null;
-        if (stats.errors.length > 0) {
-          const { Parser } = require('json2csv');
-          const parser = new Parser({ fields: ["row", "barcode", "error"] });
-          const csvData = parser.parse(stats.errors);
-          const fileName = `failed-upload-${Date.now()}.csv`;
-          errorReportPath = path.join(__dirname, "../uploads", fileName);
-          fs.writeFileSync(errorReportPath, csvData);
-          console.log(`📄 Error report generated: ${errorReportPath}`);
-        }
-
-        // Cleanup
-        if (csvPath && fs.existsSync(csvPath)) fs.unlinkSync(csvPath);
-        if (zipPath && fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-        if (extractPath && fs.existsSync(extractPath)) {
-          fs.rmSync(extractPath, { recursive: true, force: true });
-        }
-
-        console.log(`\n🎉 BULK UPLOAD COMPLETED!`);
-        console.log(`✅ Successful: ${stats.successful}`);
-        console.log(`❌ Failed: ${stats.failed}`);
-        
-      } catch (error) {
-        console.error("Background processing error:", error);
-        // Cleanup on error
-        if (csvPath && fs.existsSync(csvPath)) fs.unlinkSync(csvPath);
-        if (zipPath && fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-        if (extractPath && fs.existsSync(extractPath)) {
-          fs.rmSync(extractPath, { recursive: true, force: true });
-        }
+      });
+      
+      await Promise.all(batchPromises);
+      
+      if (i + BATCH_SIZE < rows.length) {
+        console.log(`⏳ Waiting ${BATCH_DELAY_MS}ms before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, BATCH_DELAY_MS));
       }
+      
+      console.log(`📊 Batch ${batchNumber} completed. Success: ${stats.successful}, Failed: ${stats.failed}`);
+    }
+
+    // =============================================
+    // Generate error report if any failures
+    // =============================================
+    let errorReportUrl = null;
+    
+    if (stats.errors.length > 0) {
+      const { Parser } = require('json2csv');
+      const parser = new Parser({ fields: ["row", "barcode", "error"] });
+      const csvData = parser.parse(stats.errors);
+      const fileName = `failed-upload-${Date.now()}.csv`;
+      const errorReportPath = path.join(__dirname, "../uploads", fileName);
+      fs.writeFileSync(errorReportPath, csvData);
+      console.log(`📄 Error report generated: ${errorReportPath}`);
+      
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      errorReportUrl = `${baseUrl}/api/admin/products/download-error-report/${fileName}`;
+      console.log(`🔗 Download URL: ${errorReportUrl}`);
+    }
+
+    // Cleanup
+    if (csvPath && fs.existsSync(csvPath)) fs.unlinkSync(csvPath);
+    if (zipPath && fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
+    if (extractPath && fs.existsSync(extractPath)) {
+      fs.rmSync(extractPath, { recursive: true, force: true });
+    }
+
+    console.log(`\n🎉 BULK UPLOAD COMPLETED!`);
+    console.log(`✅ Successful: ${stats.successful}`);
+    console.log(`❌ Failed: ${stats.failed}`);
+
+    // =============================================
+    // Send FINAL response with download link
+    // =============================================
+    return res.status(200).json({
+      success: true,
+      message: "Bulk upload completed",
+      totalRows: rows.length,
+      successful: stats.successful,
+      failed: stats.failed,
+      downloadUrl: errorReportUrl  // ✅ Direct download link in response
     });
     
   } catch (error) {
-    console.error("Bulk upload initialization error:", error);
-    // Cleanup on initialization error
+    console.error("Bulk upload error:", error);
+    // Cleanup on error
     if (csvPath && fs.existsSync(csvPath)) fs.unlinkSync(csvPath);
     if (zipPath && fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
     if (extractPath && fs.existsSync(extractPath)) {
@@ -1483,7 +1584,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
     
     return res.status(500).json({
       success: false,
-      message: "Bulk upload failed to start",
+      message: "Bulk upload failed",
       error: error.message
     });
   }
@@ -3522,5 +3623,6 @@ module.exports = {
    addVariant,
    deleteVariant,
    getVariantByBarcode,
-   bulkUploadNewProductsWithImages
+   bulkUploadNewProductsWithImages,
+   downloadErrorReport
 };

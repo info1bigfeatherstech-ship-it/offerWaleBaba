@@ -1,0 +1,4 @@
+"row","barcode","error"
+"Unknown","","Category not found: "
+"Nike Shoes New","4343","Barcode 4343 already exists in product ""Nike Shoes New"""
+"iPhone 15 New","3434","Barcode 3434 already exists in product ""iPhone 15 New"""
