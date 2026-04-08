@@ -219,5 +219,5 @@ router.get('/variant/:barcode', productController.getVariantByBarcode);
 router.put('/:slug', uploadProductImages, rejectSlugSku, productController.updateProduct);
 router.delete('/:slug', productController.deleteProduct);
 router.get('/:slug', productController.getProductBySlug);
-
+// router.get('/', productController.getAllActiveProducts); // Get products with filters, pagination, search, etc.
 module.exports = router;

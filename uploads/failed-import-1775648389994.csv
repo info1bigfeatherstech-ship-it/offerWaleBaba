@@ -1,2 +1,0 @@
-"product","reason","rows","timestamp"
-"Adidas Shoes","Product validation failed: status: `actove` is not a valid enum value for path `status`.","3","2026-04-08T11:39:49.994Z"
