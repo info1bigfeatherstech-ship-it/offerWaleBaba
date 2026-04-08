@@ -48,7 +48,7 @@ const analyticsRoutes = require('./routes/seoAnalyticsRoutes');
 // CONFIGURATION
 // ============================================================================
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8081;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const SHUTDOWN_TIMEOUT = 30000;
 const HEALTH_CHECK_INTERVAL = 30000;
@@ -206,9 +206,9 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/orders', orderRoutes); 
 app.use('/api/wholesalers', wholesalerRoutes);
-app.use("/api/assistant", assistantRoutes)
+// app.use("/api/assistant", assistantRoutes)
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
-app.use('/api/analytics', analyticsRoutes);
+// app.use('/api/analytics', analyticsRoutes);
 
 
 // Admin routes
