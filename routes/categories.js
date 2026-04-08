@@ -9,7 +9,6 @@ const categoryController = require('../controllers/categoryController');
 router.get('/categories', categoryController.getAllCategories);
 router.get('/categories/:id', categoryController.getCategoryById);
 
-
 // Admin routes for reordering and visibility
 router.post('/admin/categories/reorder', verifyToken, authorizeRoles('admin', 'product_manager'), categoryController.reorderCategories);
 router.patch('/admin/categories/:id/toggle-visibility', verifyToken, authorizeRoles('admin', 'product_manager'), categoryController.toggleCategoryVisibility);

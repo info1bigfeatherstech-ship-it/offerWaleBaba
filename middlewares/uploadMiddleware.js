@@ -1,69 +1,6 @@
-// const multer = require('multer');
-// const path = require('path');
-
-// // Configure multer for in-memory storage (will upload to Cloudinary)
-// const storage = multer.memoryStorage();
-
-// const fileFilter = (req, file, cb) => {
-//   // Accept only image files
-//   const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-//   if (allowedMimes.includes(file.mimetype)) {
-//     cb(null, true);
-//   } else {
-//     cb(new Error('Only image files (jpeg, png, gif, webp) are allowed'), false);
-//   }
-// };
-
-// const upload = multer({
-//   storage,
-//   fileFilter,
-//   limits: { fileSize: 5 * 1024 * 1024 } // 5MB max per file
-// });
-
-// // Middleware to handle multiple image uploads (array field name: 'images')
-// const uploadProductImages = upload.array('images', 10); // max 10 images per product
-
-// module.exports = { uploadProductImages };
-
-
-// const multer = require('multer');
-
-// // In-memory storage (best for cloud uploads)
-// const storage = multer.memoryStorage();
-
-// const fileFilter = (req, file, cb) => {
-//   const allowedMimes = [
-//     'image/jpeg',
-//     'image/png',
-//     'image/webp',
-//     'image/jpg'
-//   ];
-
-//   if (allowedMimes.includes(file.mimetype)) {
-//     cb(null, true);
-//   } else {
-//     cb(new Error('Only jpeg, jpg, png, webp images are allowed'), false);
-//   }
-// };
-
-// const upload = multer({
-//   storage,
-//   fileFilter,
-//   limits: { fileSize: 10 * 1024 * 1024 } // 8MB max
-// });
-
-
-
-
-
-// const uploadProductImages = upload.any();
-// const uploadSingleImage = upload.single('image');
-// const uploadCSVFile = upload.single('csvFile');
-
-
-
 const multer = require('multer');
-
+const path = require('path');
+const fs = require('fs');  // ✅ ADD THIS - Required for file system operations
 
 // ===============================
 // IMAGE UPLOAD (for products)
@@ -96,14 +33,23 @@ const uploadSingleImage = imageUpload.single('image');
 
 
 // ===============================
-// CSV / EXCEL UPLOAD (NEW)
+// CSV / EXCEL UPLOAD
 // ===============================
 const csvStorage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'uploads/');
+    const uploadDir = path.join(__dirname, '../uploads');
+    
+    // ✅ Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    
+    cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
+    // ✅ Sanitize filename - remove spaces and special characters
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+    cb(null, Date.now() + '-' + cleanName);
   }
 });
 
@@ -130,6 +76,9 @@ const csvUpload = multer({
 const uploadCSVFile = csvUpload.single('csvFile');
 
 
+// ===============================
+// BULK UPLOAD (CSV + ZIP)
+// ===============================
 const uploadBulkNewProductFiles = multer({
   storage: csvStorage,
   fileFilter: (req, file, cb) => {
@@ -156,6 +105,3 @@ module.exports = {
   uploadCSVFile,
   uploadBulkNewProductFiles
 };
-
-
-

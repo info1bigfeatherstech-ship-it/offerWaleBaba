@@ -16,7 +16,7 @@ const KNOWN_SOURCE_GROUPS = [
   'youtube',
   'linkedin',
   'tiktok'
-];
+]; 
 
 const isBlankValue = (value) => {
   return value === undefined || value === null || value === '' || value === '(not set)';
