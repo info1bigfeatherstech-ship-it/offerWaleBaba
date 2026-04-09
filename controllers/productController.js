@@ -16,6 +16,37 @@ const { Parser } = require("json2csv");   // ✅ ADD THIS
 const {generateSEOData}=require("../utils/seoUtils");
 
 
+// =============================================
+// ✅ CACHE INVALIDATION HELPERS (SINGLE DEFINITION)
+// =============================================
+const invalidateProductCaches = async (productSlug = null) => {
+  try {
+    const cacheService = require('../services/cache.service');
+    const cacheConfig = require('../config/cache.config');
+    
+    // Invalidate ALL product caches - simplest approach
+    await cacheService.forget(`${cacheConfig.prefixes.PRODUCT}:*`);
+    await cacheService.forget(`${cacheConfig.prefixes.SEARCH}:*`);
+    
+    console.log(`✅ Cache invalidated for product: ${productSlug || 'all'}`);
+  } catch (err) {
+    console.error('Cache invalidation error:', err);
+  }
+};
+
+const invalidateAllProductCaches = async () => {
+  try {
+    const cacheService = require('../services/cache.service');
+    
+    // Flush all product-related caches
+    await cacheService.forget('p:*');
+    await cacheService.forget('s:*');
+    
+    console.log('✅ All product caches invalidated (bulk)');
+  } catch (err) {
+    console.error('Cache invalidation error:', err);
+  }
+};
 
 // =============================================
 // HELPER: Parse boolean from various formats
@@ -2206,6 +2237,7 @@ const updateProduct = async (req, res) => {
         );
 
       await updatedProduct.save();
+      await invalidateProductCaches(updatedProduct.slug);
 
       return res.status(200).json({
         success: true,
@@ -2374,6 +2406,8 @@ const deleteProduct = async (req, res) => {
         message: "Product not found or already archived"
       });
     }
+  
+    await invalidateProductCaches(slug);
 
     return res.status(200).json({
       success: true,
@@ -2437,6 +2471,8 @@ const bulkDelete = async (req, res) => {
       }
     );
 
+      await invalidateAllProductCaches();
+
     return res.status(200).json({
       success: true,
       message: "Bulk archive completed",
@@ -2476,6 +2512,9 @@ const restoreProduct = async (req, res) => {
         message: "Archived product not found"
       });
     }
+
+       // ✅ INVALIDATE ALL PRODUCT CACHES
+    await invalidateProductCaches(slug);
 
     return res.status(200).json({
       success: true,
@@ -2538,6 +2577,10 @@ const bulkRestore = async (req, res) => {
       }
     );
 
+
+    // ✅ ADD THIS - Invalidate caches after bulk restore
+    await invalidateAllProductCaches(); 
+    
     return res.status(200).json({
       success: true,
       message: "Bulk restore completed",
@@ -3211,6 +3254,9 @@ const newVariant = {
 
     await product.save();
 
+       // ✅ INVALIDATE ALL PRODUCT CACHES
+    await invalidateProductCaches(product.slug);
+
     return res.status(200).json({
       success: true,
       message: "Variant added successfully",
@@ -3304,6 +3350,9 @@ const deleteVariant = async (req, res) => {
     );
          
     await product.save();
+
+     // ✅ INVALIDATE ALL PRODUCT CACHES
+    await invalidateProductCaches(product.slug);
 
     return res.status(200).json({
       success: true,

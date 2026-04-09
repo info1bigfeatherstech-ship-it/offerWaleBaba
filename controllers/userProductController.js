@@ -338,16 +338,97 @@ const getProductsByCategory = async (req, res) => {
 // =============================================
 // GET /products/featured - WITH PAGINATION & CACHE
 // =============================================
+// const getFeaturedProducts = async (req, res) => {
+//   try {
+//     // ✅ ADD PAGINATION SUPPORT
+//     const page = Math.max(1, parseInt(req.query.page) || 1);
+//     const limit = Math.max(1, parseInt(req.query.limit) || 12);
+//     const skip = (page - 1) * limit;
+    
+//     const userType = req.userType || 'user';
+
+//     // ✅ GENERATE CACHE KEY (include page now)
+//     const cacheKey = cacheConfig.generateKey('PRODUCT', { 
+//       featured: true, 
+//       page, 
+//       limit, 
+//       userType 
+//     });
+
+//     // ✅ CHECK CACHE FIRST
+//     const cachedData = await cacheService.get(cacheKey);
+//     if (cachedData) {
+//       res.setHeader('X-Cache', 'HIT');
+//       res.setHeader('Cache-Control', 'public, max-age=900');
+//       return res.json(cachedData);
+//     }
+
+//     const filters = { 
+//       status: 'active', 
+//       isFeatured: true 
+//     };
+
+//     // ✅ GET TOTAL COUNT FOR PAGINATION
+//     const total = await Product.countDocuments(filters);
+
+//     const products = await Product.find(filters)
+//       .sort({ createdAt: -1 })
+//       .skip(skip)
+//       .limit(limit)
+//       .populate('category')
+//       .lean();
+
+//     const productsWithData = products.map(product => ({
+//       ...product,
+//       variants: product.variants.map(variant => ({
+//         ...variant,
+//         price: getVariantPrice(variant, userType)
+//       }))
+//     }));
+
+//     const responseData = { 
+//       success: true, 
+//       pagination: {
+//         total,
+//         page,
+//         limit,
+//         totalPages: Math.ceil(total / limit),
+//         hasNextPage: page * limit < total,
+//         hasPrevPage: page > 1
+//       },
+//       products: productsWithData,
+//       userType: userType
+//     };
+
+//     // ✅ STORE IN CACHE
+//     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_FEATURED);
+
+//     res.setHeader('X-Cache', 'MISS');
+//     res.setHeader('Cache-Control', 'public, max-age=900');
+//     return res.json(responseData);
+
+//   } catch (err) {
+//     console.error('getFeaturedProducts:', err);
+//     return res.status(500).json({ 
+//       success: false, 
+//       message: 'Server error' 
+//     });
+//   }
+// };
 const getFeaturedProducts = async (req, res) => {
   try {
-    // ✅ ADD PAGINATION SUPPORT
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
     const skip = (page - 1) * limit;
-    
     const userType = req.userType || 'user';
-
-    // ✅ GENERATE CACHE KEY (include page now)
+    
+    // ✅ DEBUG - Check what's coming from query
+    console.log('🔍 Query params:', req.query);
+    console.log('🔍 Page:', page, 'Limit:', limit, 'Skip:', skip);
+    
+    // ✅ Add timestamp to bypass cache for debugging
+    const bypassCache = req.query._cb === '1';
+    
     const cacheKey = cacheConfig.generateKey('PRODUCT', { 
       featured: true, 
       page, 
@@ -355,21 +436,22 @@ const getFeaturedProducts = async (req, res) => {
       userType 
     });
 
-    // ✅ CHECK CACHE FIRST
-    const cachedData = await cacheService.get(cacheKey);
-    if (cachedData) {
+    // ✅ Skip cache if bypass flag is set
+    let cachedData = null;
+    if (!bypassCache) {
+      cachedData = await cacheService.get(cacheKey);
+    }
+    
+    if (cachedData && !bypassCache) {
       res.setHeader('X-Cache', 'HIT');
       res.setHeader('Cache-Control', 'public, max-age=900');
       return res.json(cachedData);
     }
 
-    const filters = { 
-      status: 'active', 
-      isFeatured: true 
-    };
-
-    // ✅ GET TOTAL COUNT FOR PAGINATION
+    const filters = { status: 'active', isFeatured: true };
     const total = await Product.countDocuments(filters);
+
+    console.log(`📊 Fetching featured products - Page: ${page}, Limit: ${limit}, Skip: ${skip}`);
 
     const products = await Product.find(filters)
       .sort({ createdAt: -1 })
@@ -400,7 +482,6 @@ const getFeaturedProducts = async (req, res) => {
       userType: userType
     };
 
-    // ✅ STORE IN CACHE
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_FEATURED);
 
     res.setHeader('X-Cache', 'MISS');
@@ -421,8 +502,11 @@ const getFeaturedProducts = async (req, res) => {
 // =============================================
 const getRelatedProducts = async (req, res) => {
   try {
+       console.log('🔍 Raw query params:', req.query);
+    console.log('🔍 Page param:', req.query.page);
     const { slug } = req.params;
     const limit = Math.max(1, parseInt(req.query.limit) || 8);
+        console.log('🔍 Parsed page:', page);
     const userType = req.userType || 'user';
 
     // ✅ GENERATE CACHE KEY
