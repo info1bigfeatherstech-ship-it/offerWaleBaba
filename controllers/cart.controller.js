@@ -37,24 +37,36 @@ const getUserSpecificPrice = (variant, userType) => {
   };
 };
 
-// ✅ HELPER: Format cart item with FULL variant data (like admin response)
+// ✅ HELPER: Calculate discount percentage
+const calculateDiscountPercentage = (base, sale) => {
+  if (!sale || sale <= 0 || sale >= base) return 0;
+  return Math.round(((base - sale) / base) * 100);
+};
+
+// ✅ HELPER: Format cart item with FULL variant data (including virtuals)
 const formatCartItem = (item, product, variant, userType) => {
   if (!product || !variant) return null;
   
   const price = getUserSpecificPrice(variant, userType);
   
+  // Calculate sale validity and discount
+  const isSaleValidForVariant = price.sale && price.sale > 0 && price.sale < price.base;
+  const discountPercentage = isSaleValidForVariant 
+    ? calculateDiscountPercentage(price.base, price.sale)
+    : 0;
+  
   // Calculate current price
-  let currentPrice = price.sale || price.base;
+  let currentPrice = isSaleValidForVariant ? price.sale : price.base;
   
   const itemTotal = currentPrice * item.quantity;
   
-  // ✅ FULL VARIANT OBJECT with all data
+  // ✅ FULL VARIANT OBJECT with all data including virtuals
   const fullVariant = {
     _id: variant._id,
     sku: variant.sku,
     barcode: variant.barcode,
     attributes: variant.attributes || [],
-    images: variant.images || [],  // ✅ IMAGES YAHAN PE
+    images: variant.images || [],
     inventory: variant.inventory || {},
     price: {
       base: price.base,
@@ -67,7 +79,11 @@ const formatCartItem = (item, product, variant, userType) => {
     },
     isActive: variant.isActive,
     wholesale: variant.wholesale || false,
-    minimumOrderQuantity: variant.minimumOrderQuantity || 1
+    minimumOrderQuantity: variant.minimumOrderQuantity || 1,
+    // ✅ ADD VIRTUALS HERE
+    isSaleActive: isSaleValidForVariant,
+    finalPrice: currentPrice,
+    discountPercentage: discountPercentage
   };
   
   // ✅ FULL PRODUCT OBJECT with variants array
@@ -91,7 +107,7 @@ const formatCartItem = (item, product, variant, userType) => {
     status: product.status,
     createdAt: product.createdAt,
     updatedAt: product.updatedAt,
-    variants: [fullVariant]  // Only the selected variant in cart
+    variants: [fullVariant]
   };
   
   return {
@@ -102,7 +118,9 @@ const formatCartItem = (item, product, variant, userType) => {
     price: {
       base: price.base,
       sale: price.sale,
-      current: currentPrice
+      current: currentPrice,
+      discountPercentage: discountPercentage,
+      isSaleActive: isSaleValidForVariant
     },
     product: fullProduct,
     total: itemTotal
@@ -121,7 +139,7 @@ const getCart = async (req, res) => {
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
-      });
+      }).lean();
 
     if (!cart) {
       return res.json({ 
@@ -157,6 +175,17 @@ const getCart = async (req, res) => {
     
     // Calculate total
     const totalAmount = itemsWithFullData.reduce((sum, item) => sum + item.total, 0);
+    
+    // Calculate total discount
+    const totalOriginalAmount = itemsWithFullData.reduce((sum, item) => {
+      const originalPrice = item.price.base;
+      return sum + (originalPrice * item.quantity);
+    }, 0);
+    
+    const totalDiscount = totalOriginalAmount - totalAmount;
+    const totalDiscountPercentage = totalOriginalAmount > 0 
+      ? Math.round((totalDiscount / totalOriginalAmount) * 100)
+      : 0;
 
     return res.json({
       success: true,
@@ -165,6 +194,9 @@ const getCart = async (req, res) => {
         userId: cart.userId,
         items: itemsWithFullData,
         totalAmount: totalAmount,
+        totalOriginalAmount: totalOriginalAmount,
+        totalDiscount: totalDiscount,
+        totalDiscountPercentage: totalDiscountPercentage,
         createdAt: cart.createdAt,
         updatedAt: cart.updatedAt
       },
@@ -345,6 +377,9 @@ const addToCart = async (req, res) => {
     }
     
     const totalAmt = formattedItems.reduce((sum, it) => sum + it.total, 0);
+    const totalOriginalAmt = formattedItems.reduce((sum, it) => sum + (it.price.base * it.quantity), 0);
+    const totalDisc = totalOriginalAmt - totalAmt;
+    const totalDiscPerc = totalOriginalAmt > 0 ? Math.round((totalDisc / totalOriginalAmt) * 100) : 0;
 
     return res.json({ 
       success: true, 
@@ -353,6 +388,9 @@ const addToCart = async (req, res) => {
         userId: updatedCart.userId,
         items: formattedItems,
         totalAmount: totalAmt,
+        totalOriginalAmount: totalOriginalAmt,
+        totalDiscount: totalDisc,
+        totalDiscountPercentage: totalDiscPerc,
         createdAt: updatedCart.createdAt,
         updatedAt: updatedCart.updatedAt
       },
@@ -437,12 +475,20 @@ const updateCartItem = async (req, res) => {
         if (formatted) formattedItems.push(formatted);
       }
       
+      const totalAmt = formattedItems.reduce((sum, it) => sum + it.total, 0);
+      const totalOriginalAmt = formattedItems.reduce((sum, it) => sum + (it.price.base * it.quantity), 0);
+      const totalDisc = totalOriginalAmt - totalAmt;
+      const totalDiscPerc = totalOriginalAmt > 0 ? Math.round((totalDisc / totalOriginalAmt) * 100) : 0;
+      
       return res.json({ 
         success: true, 
         cart: {
           ...updatedCart.toObject(),
           items: formattedItems,
-          totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+          totalAmount: totalAmt,
+          totalOriginalAmount: totalOriginalAmt,
+          totalDiscount: totalDisc,
+          totalDiscountPercentage: totalDiscPerc
         },
         userType: userType
       });
@@ -513,13 +559,21 @@ const updateCartItem = async (req, res) => {
       const formatted = formatCartItem(it, prod, varObj, userType);
       if (formatted) formattedItems.push(formatted);
     }
+    
+    const totalAmt = formattedItems.reduce((sum, it) => sum + it.total, 0);
+    const totalOriginalAmt = formattedItems.reduce((sum, it) => sum + (it.price.base * it.quantity), 0);
+    const totalDisc = totalOriginalAmt - totalAmt;
+    const totalDiscPerc = totalOriginalAmt > 0 ? Math.round((totalDisc / totalOriginalAmt) * 100) : 0;
 
     return res.json({ 
       success: true, 
       cart: {
         ...populatedCart.toObject(),
         items: formattedItems,
-        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+        totalAmount: totalAmt,
+        totalOriginalAmount: totalOriginalAmt,
+        totalDiscount: totalDisc,
+        totalDiscountPercentage: totalDiscPerc
       },
       userType: userType
     });
@@ -534,7 +588,7 @@ const updateCartItem = async (req, res) => {
 };
 
 // =============================================
-// MERGE CART (Guest cart after login)
+// MERGE CART (Guest cart after login) - Simplified version
 // =============================================
 const mergeCart = async (req, res) => {
   const userId = req.userId;
@@ -555,118 +609,33 @@ const mergeCart = async (req, res) => {
     });
   }
 
-  if (items.length === 0) {
-    const cart = await Cart.findOne({ userId }).populate({ 
-      path: 'items.productId', 
-      select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
-    });
-    
-    // Format response
-    let formattedItems = [];
-    if (cart) {
-      for (const it of cart.items) {
-        const prod = it.productId;
-        if (!prod) continue;
-        let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
-        if (!varObj) varObj = prod.variants?.find(v => v.isActive);
-        if (!varObj) continue;
-        const formatted = formatCartItem(it, prod, varObj, userType);
-        if (formatted) formattedItems.push(formatted);
-      }
-    }
-    
-    return res.json({ 
-      success: true, 
-      cart: cart ? {
-        ...cart.toObject(),
-        items: formattedItems,
-        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
-      } : { items: [], totalAmount: 0 },
-      userType: userType 
-    });
-  }
-
   try {
     let cart = await Cart.findOne({ userId });
     if (!cart) cart = new Cart({ userId, items: [] });
 
-    // normalize duplicates
-    const mergedMap = {};
-
-    for (const item of items) {
-      const key = `${item.productId}_${item.variantId}`;
-      if (!mergedMap[key]) {
-        mergedMap[key] = { ...item };
-      } else {
-        mergedMap[key].quantity += Number(item.quantity);
-      }
-    }
-
-    const normalizedItems = Object.values(mergedMap);
-
-    // fetch all products in one query
-    const productIds = normalizedItems.map(i => i.productId);
-    const products = await Product.find({
-      _id: { $in: productIds },
-      status: 'active'
-    }).select('variants name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt');
-
-    const productMap = new Map();
-    products.forEach(product => {
-      productMap.set(String(product._id), product);
-    });
-
-    let itemsAdded = 0;
-
-    for (const incoming of normalizedItems) {
+    for (const incoming of items) {
       const { productId, variantId, quantity } = incoming;
+      if (!productId || !variantId || quantity <= 0) continue;
 
-      const product = productMap.get(String(productId));
-      if (!product) continue;
+      // Check if product exists
+      const product = await Product.findById(productId).select('variants status');
+      if (!product || product.status !== 'active') continue;
 
-      const variant = product.variants.find(
-        v => String(v._id) === String(variantId)
-      );
-
+      const variant = product.variants.find(v => String(v._id) === String(variantId));
       if (!variant || !variant.isActive) continue;
 
       let qty = Number(quantity);
       if (qty <= 0) continue;
 
-      // Check MOQ for wholesaler
-      if (userType === 'wholesaler') {
-        const moq = variant.minimumOrderQuantity || 1;
-        if (qty < moq) {
-          qty = moq;
-        }
-      }
-
-      if (qty > variant.inventory.quantity) {
-        qty = variant.inventory.quantity;
-      }
-
-      // Get user-specific pricing
-      const price = getUserSpecificPrice(variant, userType);
-      
       const existing = cart.items.find(
-        it =>
-          String(it.productId) === String(productId) &&
-          String(it.variantId) === String(variantId)
+        it => String(it.productId) === String(productId) && 
+              String(it.variantId) === String(variantId)
       );
 
       if (existing) {
         existing.quantity += qty;
-        if (existing.quantity > variant.inventory.quantity) {
-          existing.quantity = variant.inventory.quantity;
-        }
-        existing.priceSnapshot = {
-          base: price.base,
-          sale: price.sale,
-          costPrice: variant.price?.costPrice ?? null,
-          saleStartDate: variant.price?.saleStartDate ?? null,
-          saleEndDate: variant.price?.saleEndDate ?? null
-        };
       } else {
+        const price = getUserSpecificPrice(variant, userType);
         cart.items.push({
           productId,
           variantId,
@@ -683,22 +652,21 @@ const mergeCart = async (req, res) => {
             value: a.value
           }))
         });
-        itemsAdded++;
       }
     }
 
     cart.calculateTotal();
     await cart.save();
 
+    // Return updated cart
     const populatedCart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
-    // Format response
     const formattedItems = [];
-    for (const it of populatedCart.items) {
+    for (const it of populatedCart?.items || []) {
       const prod = it.productId;
       if (!prod) continue;
       let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
@@ -708,14 +676,21 @@ const mergeCart = async (req, res) => {
       if (formatted) formattedItems.push(formatted);
     }
 
+    const totalAmt = formattedItems.reduce((sum, it) => sum + it.total, 0);
+    const totalOriginalAmt = formattedItems.reduce((sum, it) => sum + (it.price.base * it.quantity), 0);
+    const totalDisc = totalOriginalAmt - totalAmt;
+    const totalDiscPerc = totalOriginalAmt > 0 ? Math.round((totalDisc / totalOriginalAmt) * 100) : 0;
+
     return res.json({ 
       success: true, 
-      message: `${itemsAdded} item(s) merged from guest cart`,
-      cart: {
+      cart: populatedCart ? {
         ...populatedCart.toObject(),
         items: formattedItems,
-        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
-      },
+        totalAmount: totalAmt,
+        totalOriginalAmount: totalOriginalAmt,
+        totalDiscount: totalDisc,
+        totalDiscountPercentage: totalDiscPerc
+      } : { items: [], totalAmount: 0 },
       userType: userType
     });
 
@@ -760,7 +735,6 @@ const removeCartItem = async (req, res) => {
         select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
-    // Format response
     const formattedItems = [];
     if (populatedCart) {
       for (const it of populatedCart.items) {
@@ -774,12 +748,20 @@ const removeCartItem = async (req, res) => {
       }
     }
 
+    const totalAmt = formattedItems.reduce((sum, it) => sum + it.total, 0);
+    const totalOriginalAmt = formattedItems.reduce((sum, it) => sum + (it.price.base * it.quantity), 0);
+    const totalDisc = totalOriginalAmt - totalAmt;
+    const totalDiscPerc = totalOriginalAmt > 0 ? Math.round((totalDisc / totalOriginalAmt) * 100) : 0;
+
     res.json({ 
       success: true, 
       cart: populatedCart ? {
         ...populatedCart.toObject(),
         items: formattedItems,
-        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+        totalAmount: totalAmt,
+        totalOriginalAmount: totalOriginalAmt,
+        totalDiscount: totalDisc,
+        totalDiscountPercentage: totalDiscPerc
       } : { items: [], totalAmount: 0 },
       userType: userType
     });
@@ -826,7 +808,6 @@ const bulkRemove = async (req, res) => {
         select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
-    // Format response
     const formattedItems = [];
     if (populatedCart) {
       for (const it of populatedCart.items) {
@@ -840,12 +821,20 @@ const bulkRemove = async (req, res) => {
       }
     }
 
+    const totalAmt = formattedItems.reduce((sum, it) => sum + it.total, 0);
+    const totalOriginalAmt = formattedItems.reduce((sum, it) => sum + (it.price.base * it.quantity), 0);
+    const totalDisc = totalOriginalAmt - totalAmt;
+    const totalDiscPerc = totalOriginalAmt > 0 ? Math.round((totalDisc / totalOriginalAmt) * 100) : 0;
+
     res.json({ 
       success: true, 
       cart: populatedCart ? {
         ...populatedCart.toObject(),
         items: formattedItems,
-        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+        totalAmount: totalAmt,
+        totalOriginalAmount: totalOriginalAmt,
+        totalDiscount: totalDisc,
+        totalDiscountPercentage: totalDiscPerc
       } : { items: [], totalAmount: 0 },
       userType: userType
     });

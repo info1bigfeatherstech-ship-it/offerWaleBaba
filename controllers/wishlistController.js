@@ -2,23 +2,80 @@ const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
 const Cart = require('../models/cart');
 
-// ✅ HELPER: Get variant price based on user type
+// ✅ HELPER: Calculate discount percentage
+const calculateDiscountPercentage = (base, sale) => {
+  if (!sale || sale <= 0 || sale >= base) return 0;
+  return Math.round(((base - sale) / base) * 100);
+};
+
+// ✅ HELPER: Get variant price based on user type with virtuals
 const getVariantPrice = (variant, userType) => {
   if (userType === 'wholesaler') {
+    const base = variant.price?.wholesaleBase || variant.price?.base || 0;
+    const sale = variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0;
+    const isSaleActive = sale > 0 && sale < base;
+    const discountPercentage = isSaleActive ? calculateDiscountPercentage(base, sale) : 0;
+    
     return {
-      base: variant.price?.wholesaleBase || variant.price?.base || 0,
-      sale: variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0,
+      base: base,
+      sale: sale,
+      current: isSaleActive ? sale : base,
+      isSaleActive: isSaleActive,
+      discountPercentage: discountPercentage,
       minimumOrderQuantity: variant.minimumOrderQuantity || 1
     };
   }
+  
+  // Normal user
+  const base = variant.price?.base || 0;
+  const sale = variant.price?.sale || null;
+  const isSaleActive = sale && sale > 0 && sale < base;
+  const discountPercentage = isSaleActive ? calculateDiscountPercentage(base, sale) : 0;
+  
   return {
-    base: variant.price?.base || 0,
-    sale: variant.price?.sale || variant.price?.base || 0,
+    base: base,
+    sale: sale,
+    current: isSaleActive ? sale : base,
+    isSaleActive: isSaleActive,
+    discountPercentage: discountPercentage,
     minimumOrderQuantity: 1
   };
 };
 
-// ✅ HELPER: Format wishlist item response (SAME AS ADMIN PRODUCT RESPONSE)
+// ✅ HELPER: Format variant with all virtual fields
+const formatVariantWithVirtuals = (variant, userType) => {
+  const price = getVariantPrice(variant, userType);
+  
+  return {
+    _id: variant._id,
+    sku: variant.sku,
+    barcode: variant.barcode,
+    attributes: variant.attributes || [],
+    images: variant.images || [],
+    inventory: variant.inventory || {},
+    price: {
+      base: price.base,
+      sale: price.sale,
+      current: price.current,
+      isSaleActive: price.isSaleActive,
+      discountPercentage: price.discountPercentage,
+      ...(userType === 'wholesaler' && {
+        wholesaleBase: variant.price?.wholesaleBase,
+        wholesaleSale: variant.price?.wholesaleSale,
+        minimumOrderQuantity: variant.minimumOrderQuantity
+      })
+    },
+    isActive: variant.isActive,
+    wholesale: variant.wholesale || false,
+    minimumOrderQuantity: variant.minimumOrderQuantity || 1,
+    // ✅ Virtual fields
+    isSaleActive: price.isSaleActive,
+    finalPrice: price.current,
+    discountPercentage: price.discountPercentage
+  };
+};
+
+// ✅ HELPER: Format wishlist item response (SAME AS CART RESPONSE)
 const formatWishlistItem = (item, userType) => {
   const product = item.productId;
   if (!product) return null;
@@ -36,19 +93,18 @@ const formatWishlistItem = (item, userType) => {
   
   if (!variant) return null;
   
-  // ✅ FULL VARIANT OBJECT with all data (like admin response)
-  const variantWithPrice = {
-    ...variant.toObject ? variant.toObject() : variant,
-    price: getVariantPrice(variant, userType)
-  };
+  // ✅ Format variant with all virtuals
+  const formattedVariant = formatVariantWithVirtuals(variant, userType);
   
-  // ✅ FULL PRODUCT RESPONSE with variants array (like admin response)
+  // ✅ FULL PRODUCT RESPONSE with variants array
+  const productObj = product.toObject ? product.toObject() : product;
+  
   return {
     _id: item._id,
     addedAt: item.addedAt,
     product: {
-      ...product.toObject ? product.toObject() : product,
-      variants: [variantWithPrice]  // Only the selected variant in wishlist
+      ...productObj,
+      variants: [formattedVariant]  // Only the selected variant in wishlist
     }
   };
 };
@@ -344,14 +400,18 @@ const moveToCart = async (req, res) => {
       }
       if (!variant) continue;
 
-      // Calculate price based on user type
-      let basePrice, salePrice;
+      // Calculate price based on user type (with discount)
+      let basePrice, salePrice, isSaleActive, discountPercentage;
       if (userType === 'wholesaler') {
         basePrice = variant.price?.wholesaleBase || variant.price?.base || 0;
         salePrice = variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0;
+        isSaleActive = salePrice > 0 && salePrice < basePrice;
+        discountPercentage = isSaleActive ? calculateDiscountPercentage(basePrice, salePrice) : 0;
       } else {
         basePrice = variant.price?.base || 0;
-        salePrice = variant.price?.sale || basePrice;
+        salePrice = variant.price?.sale || null;
+        isSaleActive = salePrice && salePrice > 0 && salePrice < basePrice;
+        discountPercentage = isSaleActive ? calculateDiscountPercentage(basePrice, salePrice) : 0;
       }
 
       const existing = cart.items.find(it =>
@@ -369,6 +429,8 @@ const moveToCart = async (req, res) => {
           priceSnapshot: {
             base: basePrice,
             sale: salePrice,
+            isSaleActive: isSaleActive,
+            discountPercentage: discountPercentage,
             costPrice: variant.price?.costPrice ?? null,
             saleStartDate: variant.price?.saleStartDate ?? null,
             saleEndDate: variant.price?.saleEndDate ?? null
