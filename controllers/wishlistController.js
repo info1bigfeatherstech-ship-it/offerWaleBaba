@@ -2,9 +2,60 @@ const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
 const Cart = require('../models/cart');
 
+// ✅ HELPER: Get variant price based on user type
+const getVariantPrice = (variant, userType) => {
+  if (userType === 'wholesaler') {
+    return {
+      base: variant.price?.wholesaleBase || variant.price?.base || 0,
+      sale: variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0,
+      minimumOrderQuantity: variant.minimumOrderQuantity || 1
+    };
+  }
+  return {
+    base: variant.price?.base || 0,
+    sale: variant.price?.sale || variant.price?.base || 0,
+    minimumOrderQuantity: 1
+  };
+};
 
-// controllers/wishlistController.js
+// ✅ HELPER: Format wishlist item response (SAME AS ADMIN PRODUCT RESPONSE)
+const formatWishlistItem = (item, userType) => {
+  const product = item.productId;
+  if (!product) return null;
+  
+  // Find the specific variant
+  let variant = null;
+  if (item.variantId) {
+    variant = product.variants?.find(v => String(v._id) === String(item.variantId));
+  }
+  
+  // If no variant found, use first active variant
+  if (!variant) {
+    variant = (product.variants || []).find(v => v.isActive);
+  }
+  
+  if (!variant) return null;
+  
+  // ✅ FULL VARIANT OBJECT with all data (like admin response)
+  const variantWithPrice = {
+    ...variant.toObject ? variant.toObject() : variant,
+    price: getVariantPrice(variant, userType)
+  };
+  
+  // ✅ FULL PRODUCT RESPONSE with variants array (like admin response)
+  return {
+    _id: item._id,
+    addedAt: item.addedAt,
+    product: {
+      ...product.toObject ? product.toObject() : product,
+      variants: [variantWithPrice]  // Only the selected variant in wishlist
+    }
+  };
+};
+
+// =============================================
 // GET WISHLIST
+// =============================================
 const getWishlist = async (req, res) => {
   try {
     const userId = req.userId;
@@ -13,79 +64,28 @@ const getWishlist = async (req, res) => {
     const wishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants'  // ✅ Added images
+        select: 'name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt'
       });
 
     if (!wishlist) {
       return res.json({
         success: true,
-        wishlist: { products: [] }
+        wishlist: { products: [] },
+        userType: userType
       });
     }
 
-    const validProducts = wishlist.products.filter(p => p.productId);
-    
-    const productsWithPricing = validProducts.map(item => {
-      const product = item.productId;
-      
-      // Find the specific variant
-      let variant = null;
-      if (item.variantId) {
-        variant = product.variants?.find(v => String(v._id) === String(item.variantId));
-      }
-      
-      // If no variant found, use first active variant
-      if (!variant) {
-        variant = (product.variants || []).find(v => v.isActive);
-      }
-      
-      if (!variant) return null;
-      
-      // ✅ PRICE INSIDE VARIANT - CORRECT STRUCTURE
-      let variantPrice = {};
-      if (userType === 'wholesaler') {
-        variantPrice = {
-          base: variant.price?.wholesaleBase || variant.price?.base || 0,
-          sale: variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0,
-          minimumOrderQuantity: variant.minimumOrderQuantity || 1
-        };
-      } else {
-        variantPrice = {
-          base: variant.price?.base || 0,
-          sale: variant.price?.sale || variant.price?.base || 0,
-          minimumOrderQuantity: 1
-        };
-      }
-      
-      return {
-        _id: item._id,
-        productId: product._id,
-        variantId: item.variantId,
-        addedAt: item.addedAt,
-        product: {
-          _id: product._id,
-          name: product.name,
-          slug: product.slug,
-          variant: {
-            _id: variant._id,
-            sku: variant.sku,
-            barcode: variant.barcode,
-            attributes: variant.attributes || [],
-            inventory: variant.inventory || {},
-            images: variant.images || [],  // Variant level images
-            price: variantPrice,  // ✅ PRICE YAHAN PE HONA CHAHIYE
-            isActive: variant.isActive
-          }
-        }
-      };
-    }).filter(item => item !== null);  // Remove null items
+    // ✅ Format each item with full product and variant data
+    const formattedProducts = wishlist.products
+      .map(item => formatWishlistItem(item, userType))
+      .filter(item => item !== null);
 
     return res.json({
       success: true,
       wishlist: {
         _id: wishlist._id,
         userId: wishlist.userId,
-        products: productsWithPricing,
+        products: formattedProducts,
         createdAt: wishlist.createdAt,
         updatedAt: wishlist.updatedAt
       },
@@ -100,12 +100,15 @@ const getWishlist = async (req, res) => {
     });
   }
 };
-// POST /wishlist/add
-// body: { productSlug, wishlistId?, userId? }
+
+// =============================================
+// ADD TO WISHLIST
+// =============================================
 const addToWishlist = async (req, res) => {
   try {
     const userId = req.userId;
     const { productSlug, variantId } = req.body;
+    const userType = req.userType || 'user';
 
     if (!productSlug) {
       return res.status(400).json({ 
@@ -117,7 +120,7 @@ const addToWishlist = async (req, res) => {
     const product = await Product.findOne({ 
       slug: productSlug.toLowerCase(), 
       status: 'active' 
-    }).select('variants');
+    }).select('name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt');
 
     if (!product) {
       return res.status(404).json({ 
@@ -126,7 +129,7 @@ const addToWishlist = async (req, res) => {
       });
     }
 
-    // ✅ Check if variant exists
+    // Check if variant exists
     let chosenVariantId = variantId;
     if (chosenVariantId) {
       const variantExists = product.variants.some(v => 
@@ -149,12 +152,12 @@ const addToWishlist = async (req, res) => {
       chosenVariantId = firstActive._id;
     }
 
-    // ✅ Check if already in wishlist to avoid duplicate
+    // Check if already in wishlist
     const existingWishlist = await Wishlist.findOne({ userId });
     if (existingWishlist) {
       const alreadyExists = existingWishlist.products.some(p => 
         String(p.productId) === String(product._id) &&
-        (!chosenVariantId || String(p.variantId) === String(chosenVariantId))
+        String(p.variantId) === String(chosenVariantId)
       );
       
       if (alreadyExists) {
@@ -165,6 +168,7 @@ const addToWishlist = async (req, res) => {
       }
     }
 
+    // Add to wishlist
     await Wishlist.updateOne(
       { userId },
       {
@@ -175,13 +179,28 @@ const addToWishlist = async (req, res) => {
       { upsert: true }
     );
 
-    const wishlist = await Wishlist.findOne({ userId })
-      .populate('products.productId', 'name slug images variants');
+    // Get updated wishlist with full data
+    const updatedWishlist = await Wishlist.findOne({ userId })
+      .populate({
+        path: 'products.productId',
+        select: 'name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+      });
+
+    const formattedProducts = updatedWishlist.products
+      .map(item => formatWishlistItem(item, userType))
+      .filter(item => item !== null);
 
     return res.json({ 
       success: true, 
-      message: 'Added to wishlist', 
-      wishlist 
+      message: 'Added to wishlist',
+      wishlist: {
+        _id: updatedWishlist._id,
+        userId: updatedWishlist.userId,
+        products: formattedProducts,
+        createdAt: updatedWishlist.createdAt,
+        updatedAt: updatedWishlist.updatedAt
+      },
+      userType: userType
     });
 
   } catch (err) {
@@ -193,9 +212,9 @@ const addToWishlist = async (req, res) => {
   }
 };
 
-
-// DELETE /wishlist/remove/:productSlug?wishlistId=...&userId=...
-// DELETE /wishlist/remove/:productSlug
+// =============================================
+// REMOVE FROM WISHLIST
+// =============================================
 const removeFromWishlist = async (req, res) => {
   try {
     const { productSlug } = req.params;
@@ -212,7 +231,7 @@ const removeFromWishlist = async (req, res) => {
     const product = await Product.findOne({
       slug: productSlug.toLowerCase(),
       status: 'active'
-    });
+    }).select('_id');
 
     if (!product) {
       return res.status(404).json({ 
@@ -226,73 +245,31 @@ const removeFromWishlist = async (req, res) => {
       { $pull: { products: { productId: product._id } } }
     );
 
-    // ✅ Fetch updated wishlist with pricing (same as getWishlist)
+    // Get updated wishlist
     const updatedWishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug images variants'
+        select: 'name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt'
       });
 
     if (!updatedWishlist) {
-      return res.json({ success: true, wishlist: { products: [] } });
+      return res.json({ 
+        success: true, 
+        wishlist: { products: [] },
+        userType: userType
+      });
     }
 
-    // Add user-specific pricing to response
-    const validProducts = updatedWishlist.products.filter(p => p.productId);
-    const productsWithPricing = validProducts.map(item => {
-      const product = item.productId;
-      let variant = null;
-      
-      if (item.variantId) {
-        variant = product.variants.find(v => String(v._id) === String(item.variantId));
-      }
-      if (!variant) {
-        variant = (product.variants || []).find(v => v.isActive);
-      }
-      
-      let price = {};
-      if (userType === 'wholesaler') {
-        price = {
-          base: variant?.price?.wholesaleBase || variant?.price?.base || 0,
-          sale: variant?.price?.wholesaleSale || variant?.price?.wholesaleBase || variant?.price?.base || 0,
-          minimumOrderQuantity: variant?.minimumOrderQuantity || 1
-        };
-      } else {
-        price = {
-          base: variant?.price?.base || 0,
-          sale: variant?.price?.sale || variant?.price?.base || 0,
-          minimumOrderQuantity: 1
-        };
-      }
-      
-      return {
-        _id: item._id,
-        productId: product._id,
-        variantId: item.variantId,
-        addedAt: item.addedAt,
-        product: {
-          _id: product._id,
-          name: product.name,
-          slug: product.slug,
-          images: product.images,
-          price: price,
-          variant: variant ? {
-            _id: variant._id,
-            sku: variant.sku,
-            attributes: variant.attributes,
-            inventory: variant.inventory,
-               images: variant.images || []  // ✅ Add this
-          } : null
-        }
-      };
-    });
+    const formattedProducts = updatedWishlist.products
+      .map(item => formatWishlistItem(item, userType))
+      .filter(item => item !== null);
 
     return res.json({
       success: true,
       wishlist: {
         _id: updatedWishlist._id,
         userId: updatedWishlist.userId,
-        products: productsWithPricing,
+        products: formattedProducts,
         createdAt: updatedWishlist.createdAt,
         updatedAt: updatedWishlist.updatedAt
       },
@@ -308,11 +285,12 @@ const removeFromWishlist = async (req, res) => {
   }
 };
 
-// POST /wishlist/move-to-cart/:productSlug?wishlistId=...&userId=...
-// For now: remove item from wishlist and return product data (cart not implemented)
+// =============================================
+// MOVE TO CART
+// =============================================
 const moveToCart = async (req, res) => {
   const userId = req.userId;
-  const userType = req.userType || 'user'; // Get user type
+  const userType = req.userType || 'user';
   const { productIds = [], moveAll = false } = req.body;
 
   if (!userId)
@@ -337,15 +315,26 @@ const moveToCart = async (req, res) => {
     if (!itemsToMove.length)
       return res.status(400).json({ success: false, message: 'No items selected' });
 
+    // Get full product details
+    const productIdsList = itemsToMove.map(item => item.productId);
+    const products = await Product.find({ 
+      _id: { $in: productIdsList },
+      status: 'active'
+    }).select('name slug variants images brand');
+
+    const productMap = new Map();
+    products.forEach(product => {
+      productMap.set(String(product._id), product);
+    });
+
     let cart = await Cart.findOne({ userId });
     if (!cart) cart = new Cart({ userId, items: [] });
 
     for (const item of itemsToMove) {
-      const product = await Product.findById(item.productId).select('variants status');
+      const product = productMap.get(String(item.productId));
+      if (!product) continue;
 
-      if (!product || product.status !== 'active') continue;
-
-      // Find the specific variant or first active variant
+      // Find the variant
       let variant = null;
       if (item.variantId) {
         variant = product.variants.find(v => String(v._id) === String(item.variantId));
@@ -355,15 +344,11 @@ const moveToCart = async (req, res) => {
       }
       if (!variant) continue;
 
-      // ✅ Calculate price based on user type
+      // Calculate price based on user type
       let basePrice, salePrice;
       if (userType === 'wholesaler') {
-        basePrice = variant.price?.wholesaleBase || variant.price?.base;
-        salePrice = variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base;
-        
-        // Check MOQ for wholesaler
-        const moq = variant.minimumOrderQuantity || 1;
-        // Note: You might want to handle MOQ validation here or in cart
+        basePrice = variant.price?.wholesaleBase || variant.price?.base || 0;
+        salePrice = variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0;
       } else {
         basePrice = variant.price?.base || 0;
         salePrice = variant.price?.sale || basePrice;
@@ -423,7 +408,9 @@ const moveToCart = async (req, res) => {
   }
 };
 
-//merge the wishlist (for logged in user) with the one stored in local storage (if any)
+// =============================================
+// MERGE WISHLIST (Guest to User)
+// =============================================
 const mergeWishlist = async (req, res) => {
   try {
     const userId = req.userId;
@@ -434,7 +421,6 @@ const mergeWishlist = async (req, res) => {
       items = slugs.map(slug => ({ slug, variantId: null }));
     }
 
-    // Validate items array
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ 
         success: false, 
@@ -442,7 +428,7 @@ const mergeWishlist = async (req, res) => {
       });
     }
 
-    // Normalize items - Handle both string and object formats
+    // Normalize items
     const normalizedItems = [];
     for (const item of items) {
       if (typeof item === 'string') {
@@ -462,16 +448,16 @@ const mergeWishlist = async (req, res) => {
       });
     }
 
-    // Fetch all products - ✅ FIXED: Include slug in select
+    // Fetch all products
     const slugsList = normalizedItems.map(item => item.slug.toLowerCase());
     const products = await Product.find({
       slug: { $in: slugsList },
       status: 'active'
-    }).select('slug variants');  // ✅ ADDED 'slug' field
+    }).select('slug variants');
 
     const productMap = new Map();
     products.forEach(product => {
-      productMap.set(product.slug, product);  // ✅ Ab slug available hai
+      productMap.set(product.slug, product);
     });
 
     const productEntries = [];
@@ -544,11 +530,14 @@ const mergeWishlist = async (req, res) => {
   }
 };
 
-//Bulk remove from wishlist
+// =============================================
+// BULK REMOVE FROM WISHLIST
+// =============================================
 const removeBulkFromWishlist = async (req, res) => {
   try {
     const userId = req.userId;
     const { slugs } = req.body;
+    const userType = req.userType || 'user';
 
     if (!Array.isArray(slugs) || slugs.length === 0) {
       return res.status(400).json({
@@ -576,12 +565,33 @@ const removeBulkFromWishlist = async (req, res) => {
     }
 
     const updatedWishlist = await Wishlist.findOne({ userId })
-      .populate("products.productId", "name slug images variants")
-      .lean();
+      .populate({
+        path: 'products.productId',
+        select: 'name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+      });
+
+    if (!updatedWishlist) {
+      return res.json({
+        success: true,
+        wishlist: { products: [] },
+        userType: userType
+      });
+    }
+
+    const formattedProducts = updatedWishlist.products
+      .map(item => formatWishlistItem(item, userType))
+      .filter(item => item !== null);
 
     return res.json({
       success: true,
-      wishlist: updatedWishlist || { products: [] }
+      wishlist: {
+        _id: updatedWishlist._id,
+        userId: updatedWishlist.userId,
+        products: formattedProducts,
+        createdAt: updatedWishlist.createdAt,
+        updatedAt: updatedWishlist.updatedAt
+      },
+      userType: userType
     });
 
   } catch (err) {
@@ -593,10 +603,13 @@ const removeBulkFromWishlist = async (req, res) => {
   }
 };
 
-
+// =============================================
+// CLEAR WISHLIST
+// =============================================
 const clearWishlist = async (req, res) => {
   try {
     const userId = req.userId;
+    const userType = req.userType || 'user';
 
     const wishlist = await Wishlist.findOneAndUpdate(
       { userId },
@@ -607,7 +620,8 @@ const clearWishlist = async (req, res) => {
     return res.json({
       success: true,
       message: "Wishlist cleared",
-      wishlist: wishlist || { products: [] }
+      wishlist: wishlist || { products: [] },
+      userType: userType
     });
 
   } catch (err) {
@@ -618,7 +632,6 @@ const clearWishlist = async (req, res) => {
     });
   }
 };
-
 
 module.exports = {
   getWishlist,

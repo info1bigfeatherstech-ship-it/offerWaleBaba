@@ -2,51 +2,38 @@ const Category = require('../models/Category');
 const Product = require('../models/Product');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinaryHelper');
 
-// Get all categories (hierarchical)
-// const getAllCategories = async (req, res) => {
-//   try {
-//     const categories = await Category.find().sort({ order: 1, name: 1 }).lean();
+// ✅ ADD THESE 2 LINES AT THE TOP
+const cacheService = require('../services/cache.service');
+const cacheConfig = require('../config/cache.config');
 
-//     const map = new Map();
-//     categories.forEach(cat => { cat.children = []; map.set(String(cat._id), cat); });
-
-//     const roots = [];
-//     categories.forEach(cat => {
-//       if (cat.parent) {
-//         const p = map.get(String(cat.parent));
-//         if (p) p.children.push(cat);
-//         else roots.push(cat);
-//       } else {
-//         roots.push(cat);
-//       }
-//     });
-
-//     return res.status(200).json({ success: true, count: categories.length, categories: roots });
-//   } catch (error) {
-//     console.error('Get categories error:', error);
-//     return res.status(500).json({ success: false, message: 'Error fetching categories', error: error.message });
-//   }
-// };
-// Get all categories (hierarchical + filtered)
-// Get all active categories (hierarchical)
+// =============================================
+// GET /categories - WITH CACHE
+// =============================================
 const getAllCategories = async (req, res) => {
   try {
+    // ✅ GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('CATEGORY', { all: true });
+
+    // ✅ CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=1800');
+      return res.status(200).json(cachedData);
+    }
+
     // Only active categories
     const categories = await Category.find({ status: 'active' })
       .sort({ order: 1, name: 1 })
       .lean();
 
     const map = new Map();
-
-    // Prepare map and add children array
     categories.forEach(cat => {
       cat.children = [];
       map.set(String(cat._id), cat);
     });
 
     const roots = [];
-
-    // Build hierarchy
     categories.forEach(cat => {
       if (cat.parent) {
         const parent = map.get(String(cat.parent));
@@ -57,15 +44,21 @@ const getAllCategories = async (req, res) => {
       }
     });
 
-    return res.status(200).json({
+    const responseData = {
       success: true,
       count: categories.length,
       categories: roots
-    });
+    };
+
+    // ✅ STORE IN CACHE (30 minutes)
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.CATEGORY_LIST);
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=1800');
+    return res.status(200).json(responseData);
 
   } catch (error) {
     console.error('Get categories error:', error);
-
     return res.status(500).json({
       success: false,
       message: 'Error fetching categories',
@@ -74,26 +67,24 @@ const getAllCategories = async (req, res) => {
   }
 };
 
-
-// Get single category
-// const getCategoryById = async (req, res) => {
-//   try {
-//     const { id } = req.params;
-//     const cat = await Category.findById(id).lean();
-//     if (!cat) return res.status(404).json({ success: false, message: 'Category not found' });
-//     return res.status(200).json({ success: true, category: cat });
-//   } catch (error) {
-//     console.error('Get category error:', error);
-//     return res.status(500).json({ success: false, message: 'Error fetching category', error: error.message });
-//   }
-// };
-
-// Get single active category by ID
+// =============================================
+// GET /categories/:id - WITH CACHE
+// =============================================
 const getCategoryById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Only fetch if active
+    // ✅ GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('CATEGORY', { id });
+
+    // ✅ CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=1800');
+      return res.status(200).json(cachedData);
+    }
+
     const category = await Category.findOne({
       _id: id,
       status: 'active'
@@ -106,14 +97,20 @@ const getCategoryById = async (req, res) => {
       });
     }
 
-    return res.status(200).json({
+    const responseData = {
       success: true,
       category
-    });
+    };
+
+    // ✅ STORE IN CACHE
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.CATEGORY_DETAIL);
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=1800');
+    return res.status(200).json(responseData);
 
   } catch (error) {
     console.error('Get category error:', error);
-
     return res.status(500).json({
       success: false,
       message: 'Error fetching category',
@@ -122,6 +119,9 @@ const getCategoryById = async (req, res) => {
   }
 };
 
+// =============================================
+// REST ALL FUNCTIONS SAME AS BEFORE (NO CHANGE)
+// =============================================
 
 const createCategory = async (req, res) => {
   try {
@@ -134,7 +134,6 @@ const createCategory = async (req, res) => {
       showInMenu
     } = req.body;
 
-    // 1️⃣ Validate name
     if (!name) { 
       return res.status(400).json({
         success: false,
@@ -142,11 +141,8 @@ const createCategory = async (req, res) => {
       });
     }
 
-   
-    // 2️⃣ If parent provided, verify it exists and is active
     if (parent) {
       const parentExists = await Category.findById(parent);
-
       if (!parentExists || parentExists.status !== 'active') {
         return res.status(400).json({
           success: false,
@@ -155,19 +151,18 @@ const createCategory = async (req, res) => {
       }
     }
     
-// user cannot create a category with same name under same parent camel case insensitive
     const existingCategory = await Category.findOne({
       name: { $regex: new RegExp(`^${name}$`, 'i') },
       parent: parent || null
-     });
+    });
+    
     if (existingCategory) {
       return res.status(400).json({
         success: false,
         message: 'Category with the same name already exists under the same parent'
-  });
+      });
     }
 
-    // 3️⃣ Create category object
     const category = new Category({
       name,
       description: description || '',
@@ -177,7 +172,6 @@ const createCategory = async (req, res) => {
       showInMenu: showInMenu !== undefined ? showInMenu : true
     });
 
-    // calculate level based on parent
     if (parent) {
       const p = await Category.findById(parent);
       category.level = p ? (p.level || 0) + 1 : 0;
@@ -185,15 +179,12 @@ const createCategory = async (req, res) => {
       category.level = 0;
     }
 
-   
-    // 4️⃣ Handle image upload
     if (req.file && req.file.buffer) {
       try {
         const { url, publicId } = await uploadToCloudinary(
           req.file.buffer,
           'categories'
         );
-
         category.image = { url, publicId };
       } catch (err) {
         console.error('Category image upload failed:', err.message);
@@ -201,6 +192,9 @@ const createCategory = async (req, res) => {
     }
 
     await category.save();
+
+    // ✅ INVALIDATE CATEGORY CACHE AFTER CREATE
+    await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
 
     return res.status(201).json({
       success: true,
@@ -210,7 +204,6 @@ const createCategory = async (req, res) => {
 
   } catch (error) {
     console.error('Create category error:', error);
-
     return res.status(500).json({
       success: false,
       message: 'Error creating category',
@@ -219,8 +212,6 @@ const createCategory = async (req, res) => {
   }
 };
 
-
-// Update category (admin)
 const updateCategory = async (req, res) => {
   try {
     const { id } = req.params;
@@ -243,10 +234,8 @@ const updateCategory = async (req, res) => {
       category.level = 0;
     }
 
-    // image handling
     if (req.file && req.file.buffer) {
       try {
-        // delete old image if exists
         if (category.image && category.image.publicId) await deleteFromCloudinary(category.image.publicId);
         const { url, publicId } = await uploadToCloudinary(req.file.buffer, 'categories');
         category.image = { url, publicId };
@@ -256,6 +245,10 @@ const updateCategory = async (req, res) => {
     }
 
     await category.save();
+
+    // ✅ INVALIDATE CATEGORY CACHE AFTER UPDATE
+    await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
+
     return res.status(200).json({ success: true, message: 'Category updated', category });
   } catch (error) {
     console.error('Update category error:', error);
@@ -263,15 +256,11 @@ const updateCategory = async (req, res) => {
   }
 };
 
-// Delete category (admin) - soft delete (set status to 'inactive')
-// Prevent deletion if any products reference this category
 const deleteCategory = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1️⃣ Check if category exists
     const category = await Category.findById(id);
-
     if (!category) {
       return res.status(404).json({
         success: false,
@@ -279,7 +268,6 @@ const deleteCategory = async (req, res) => {
       });
     }
 
-    // 2️⃣ Prevent deleting already inactive category
     if (category.status !== 'active') {
       return res.status(400).json({
         success: false,
@@ -287,7 +275,6 @@ const deleteCategory = async (req, res) => {
       });
     }
 
-    // 3️⃣ Check if any active subcategories exist
     const childCategories = await Category.countDocuments({
       parent: id,
       status: 'active'
@@ -300,7 +287,6 @@ const deleteCategory = async (req, res) => {
       });
     }
 
-    // 4️⃣ Check if any products reference this category
     const productCount = await Product.countDocuments({
       category: id
     });
@@ -312,11 +298,12 @@ const deleteCategory = async (req, res) => {
       });
     }
 
-    // 5️⃣ Soft delete (archive)
     category.status = 'inactive';
     category.showInMenu = false;
-
     await category.save();
+
+    // ✅ INVALIDATE CATEGORY CACHE AFTER DELETE
+    await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
 
     return res.status(200).json({
       success: true,
@@ -326,7 +313,6 @@ const deleteCategory = async (req, res) => {
 
   } catch (error) {
     console.error('Delete category error:', error);
-
     return res.status(500).json({
       success: false,
       message: 'Error deleting category',
@@ -335,11 +321,9 @@ const deleteCategory = async (req, res) => {
   }
 };
 
-
-// Reorder categories (bulk update)
 const reorderCategories = async (req, res) => {
   try {
-    const { categories } = req.body; // [{ id: "xxx", order: 0 }, ...]
+    const { categories } = req.body;
     
     if (!categories || !Array.isArray(categories)) {
       return res.status(400).json({
@@ -357,7 +341,9 @@ const reorderCategories = async (req, res) => {
 
     await Category.bulkWrite(bulkOps);
 
-    // Fetch updated categories to return
+    // ✅ INVALIDATE CATEGORY CACHE AFTER REORDER
+    await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
+
     const updatedCategories = await Category.find()
       .sort({ order: 1, name: 1 })
       .lean();
@@ -377,11 +363,10 @@ const reorderCategories = async (req, res) => {
   }
 };
 
-// Toggle category visibility (hide/unhide)
 const toggleCategoryVisibility = async (req, res) => {
   try {
     const { id } = req.params;
-    const { isHidden } = req.body; // true = hidden, false = visible
+    const { isHidden } = req.body;
 
     const category = await Category.findById(id);
     if (!category) {
@@ -391,9 +376,11 @@ const toggleCategoryVisibility = async (req, res) => {
       });
     }
 
-    // Use status field: 'active' = visible, 'inactive' = hidden
     category.status = isHidden ? 'inactive' : 'active';
     await category.save();
+
+    // ✅ INVALIDATE CATEGORY CACHE AFTER TOGGLE
+    await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
 
     return res.status(200).json({
       success: true,
@@ -410,11 +397,8 @@ const toggleCategoryVisibility = async (req, res) => {
   }
 };
 
-
-// Get all categories (including inactive for admin) // remove it we dont need it 
 const getAllCategoriesAdmin = async (req, res) => {
   try {
-    // Return ALL categories (including inactive) for admin
     const categories = await Category.find()
       .sort({ order: 1, name: 1 })
       .lean();
@@ -422,7 +406,7 @@ const getAllCategoriesAdmin = async (req, res) => {
     const map = new Map();
     categories.forEach(cat => {
       cat.children = [];
-      cat.isHidden = cat.status === 'inactive'; // Add isHidden flag for frontend
+      cat.isHidden = cat.status === 'inactive';
       map.set(String(cat._id), cat);
     });
 
@@ -452,6 +436,13 @@ const getAllCategoriesAdmin = async (req, res) => {
   }
 };
 
-
-
-module.exports = { getAllCategories, getCategoryById, createCategory, updateCategory, deleteCategory, reorderCategories, toggleCategoryVisibility, getAllCategoriesAdmin  };
+module.exports = {
+  getAllCategories,
+  getCategoryById,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  reorderCategories,
+  toggleCategoryVisibility,
+  getAllCategoriesAdmin
+};

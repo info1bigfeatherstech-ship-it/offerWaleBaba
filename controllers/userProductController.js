@@ -2,17 +2,19 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 
+// ✅ ADD THESE 2 LINES AT THE TOP
+const cacheService = require('../services/cache.service');
+const cacheConfig = require('../config/cache.config');
+
 // ✅ ONLY PRICE LOGIC - Baaki sab same
 const getVariantPrice = (variant, userType) => {
   if (userType === 'wholesaler') {
-    // Wholesaler ko wholesale price
     return {
       base: variant.price.wholesaleBase || variant.price.base,
       sale: variant.price.wholesaleSale || variant.price.wholesaleBase || variant.price.base,
       minimumOrderQuantity: variant.minimumOrderQuantity || 1
     };
   }
-  // Normal user ya guest ko normal price
   return {
     base: variant.price.base,
     sale: variant.price.sale || variant.price.base,
@@ -21,7 +23,7 @@ const getVariantPrice = (variant, userType) => {
 };
 
 // =============================================
-// GET /products/all
+// GET /products/all - WITH CACHE
 // =============================================
 const getProducts = async (req, res) => {
   try {
@@ -48,6 +50,23 @@ const getProducts = async (req, res) => {
 
     const userType = req.userType || 'user';
 
+    // ✅ GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('PRODUCT', {
+      page, limit,
+      category: req.query.category,
+      featured: req.query.featured,
+      q: req.query.q,
+      userType
+    });
+
+    // ✅ CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=600');
+      return res.json(cachedData);
+    }
+
     const [total, products] = await Promise.all([
       Product.countDocuments(filters),
       Product.find(filters)
@@ -58,7 +77,6 @@ const getProducts = async (req, res) => {
         .lean()
     ]);
 
-    // ✅ SAB KUCH RETURN KARO - VARIANTS KE SAATH
     const productsWithData = products.map(product => ({
       ...product,
       variants: product.variants.map(variant => ({
@@ -67,9 +85,7 @@ const getProducts = async (req, res) => {
       }))
     }));
 
-    res.set('Cache-Control', 'public, max-age=600');
-
-    return res.json({
+    const responseData = {
       success: true,
       pagination: {
         total,
@@ -81,7 +97,15 @@ const getProducts = async (req, res) => {
       },
       products: productsWithData,
       userType: userType
-    });
+    };
+
+    // ✅ STORE IN CACHE
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_LIST);
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=600');
+
+    return res.json(responseData);
 
   } catch (err) {
     console.error('getProducts:', err);
@@ -93,11 +117,23 @@ const getProducts = async (req, res) => {
 };
 
 // =============================================
-// GET /products/:slug
+// GET /products/:slug - WITH CACHE
 // =============================================
 const getProductBySlug = async (req, res) => {
   try {
     const { slug } = req.params;
+    const userType = req.userType || 'user';
+
+    // ✅ GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('PRODUCT', { slug, userType });
+
+    // ✅ CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=900');
+      return res.json(cachedData);
+    }
     
     const product = await Product.findOne({ 
       slug: String(slug).toLowerCase(), 
@@ -110,8 +146,6 @@ const getProductBySlug = async (req, res) => {
         message: 'Product not found' 
       });
     }
-
-    const userType = req.userType || 'user';
     
     const productResponse = {
       ...product.toObject(),
@@ -121,12 +155,18 @@ const getProductBySlug = async (req, res) => {
       }))
     };
 
-    res.set('Cache-Control', 'public, max-age=900');
-    return res.json({ 
+    const responseData = { 
       success: true, 
       product: productResponse,
       userType: userType
-    });
+    };
+
+    // ✅ STORE IN CACHE
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_DETAIL);
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=900');
+    return res.json(responseData);
 
   } catch (err) {
     console.error('getProductBySlug:', err);
@@ -138,7 +178,7 @@ const getProductBySlug = async (req, res) => {
 };
 
 // =============================================
-// GET /products/search
+// GET /products/search - WITH CACHE
 // =============================================
 const searchProducts = async (req, res) => {
   try {
@@ -153,13 +193,23 @@ const searchProducts = async (req, res) => {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
     const skip = (page - 1) * limit;
+    const userType = req.userType || 'user';
+
+    // ✅ GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType });
+
+    // ✅ CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      return res.json(cachedData);
+    }
 
     const filters = { 
       status: 'active', 
       $text: { $search: q } 
     };
-
-    const userType = req.userType || 'user';
 
     const total = await Product.countDocuments(filters);
     const products = await Product.find(filters, { score: { $meta: 'textScore' } })
@@ -177,15 +227,21 @@ const searchProducts = async (req, res) => {
       }))
     }));
 
-    res.set('Cache-Control', 'public, max-age=300');
-    return res.json({ 
+    const responseData = { 
       success: true, 
       total, 
       page, 
       limit, 
       products: productsWithData,
       userType: userType
-    });
+    };
+
+    // ✅ STORE IN CACHE
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_SEARCH);
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    return res.json(responseData);
 
   } catch (err) {
     console.error('searchProducts:', err);
@@ -197,11 +253,27 @@ const searchProducts = async (req, res) => {
 };
 
 // =============================================
-// GET /products/category/:slug
+// GET /products/category/:slug - WITH CACHE
 // =============================================
 const getProductsByCategory = async (req, res) => {
   try {
     const { slug } = req.params;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit) || 12);
+    const skip = (page - 1) * limit;
+    const userType = req.userType || 'user';
+
+    // ✅ GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('PRODUCT', { categorySlug: slug, page, limit, userType });
+
+    // ✅ CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=600');
+      return res.json(cachedData);
+    }
+
     const category = await Category.findOne({ 
       slug: String(slug).toLowerCase() 
     });
@@ -213,16 +285,10 @@ const getProductsByCategory = async (req, res) => {
       });
     }
 
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.max(1, parseInt(req.query.limit) || 12);
-    const skip = (page - 1) * limit;
-
     const filters = { 
       status: 'active', 
       category: category._id 
     };
-
-    const userType = req.userType || 'user';
 
     const total = await Product.countDocuments(filters);
     const products = await Product.find(filters)
@@ -240,8 +306,7 @@ const getProductsByCategory = async (req, res) => {
       }))
     }));
 
-    res.set('Cache-Control', 'public, max-age=600');
-    return res.json({ 
+    const responseData = { 
       success: true, 
       total, 
       page, 
@@ -249,7 +314,14 @@ const getProductsByCategory = async (req, res) => {
       products: productsWithData, 
       category,
       userType: userType
-    });
+    };
+
+    // ✅ STORE IN CACHE
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_CATEGORY);
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    return res.json(responseData);
 
   } catch (err) {
     console.error('getProductsByCategory:', err);
@@ -261,12 +333,23 @@ const getProductsByCategory = async (req, res) => {
 };
 
 // =============================================
-// GET /products/featured
+// GET /products/featured - WITH CACHE
 // =============================================
 const getFeaturedProducts = async (req, res) => {
   try {
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
     const userType = req.userType || 'user';
+
+    // ✅ GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('PRODUCT', { featured: true, limit, userType });
+
+    // ✅ CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      res.setHeader('Cache-Control', 'public, max-age=900');
+      return res.json(cachedData);
+    }
 
     const products = await Product.find({ 
       status: 'active', 
@@ -285,12 +368,18 @@ const getFeaturedProducts = async (req, res) => {
       }))
     }));
 
-    res.set('Cache-Control', 'public, max-age=900');
-    return res.json({ 
+    const responseData = { 
       success: true, 
       products: productsWithData,
       userType: userType
-    });
+    };
+
+    // ✅ STORE IN CACHE
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_FEATURED);
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Cache-Control', 'public, max-age=900');
+    return res.json(responseData);
 
   } catch (err) {
     console.error('getFeaturedProducts:', err);
@@ -302,11 +391,24 @@ const getFeaturedProducts = async (req, res) => {
 };
 
 // =============================================
-// GET /products/:slug/related
+// GET /products/:slug/related - WITH CACHE
 // =============================================
 const getRelatedProducts = async (req, res) => {
   try {
     const { slug } = req.params;
+    const limit = Math.max(1, parseInt(req.query.limit) || 8);
+    const userType = req.userType || 'user';
+
+    // ✅ GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('PRODUCT', { related: slug, limit, userType });
+
+    // ✅ CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      return res.json(cachedData);
+    }
+
     const product = await Product.findOne({ 
       slug: String(slug).toLowerCase(), 
       status: 'active' 
@@ -318,9 +420,6 @@ const getRelatedProducts = async (req, res) => {
         message: 'Product not found' 
       });
     }
-
-    const limit = Math.max(1, parseInt(req.query.limit) || 8);
-    const userType = req.userType || 'user';
 
     const related = await Product.find({
       _id: { $ne: product._id },
@@ -340,11 +439,17 @@ const getRelatedProducts = async (req, res) => {
       }))
     }));
 
-    return res.json({ 
+    const responseData = { 
       success: true, 
       related: relatedWithData,
       userType: userType
-    });
+    };
+
+    // ✅ STORE IN CACHE
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_RELATED);
+
+    res.setHeader('X-Cache', 'MISS');
+    return res.json(responseData);
 
   } catch (err) {
     console.error('getRelatedProducts:', err);
@@ -356,7 +461,7 @@ const getRelatedProducts = async (req, res) => {
 };
 
 // =============================================
-// GET /products/detailed/:id
+// GET /products/detailed/:id - NO CACHE (admin/debug use)
 // =============================================
 const getProductDetails = async (req, res) => {
   try {

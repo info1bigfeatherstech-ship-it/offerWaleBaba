@@ -1,9 +1,9 @@
-
 const mongoose = require('mongoose');
 const Cart = require('../models/cart');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Address = require('../models/Address');
+
 // Helper: find variant object inside product document
 const findVariant = (product, variantId) => {
   if (!product || !product.variants) return null;
@@ -37,14 +37,91 @@ const getUserSpecificPrice = (variant, userType) => {
   };
 };
 
+// ✅ HELPER: Format cart item with FULL variant data (like admin response)
+const formatCartItem = (item, product, variant, userType) => {
+  if (!product || !variant) return null;
+  
+  const price = getUserSpecificPrice(variant, userType);
+  
+  // Calculate current price
+  let currentPrice = price.sale || price.base;
+  
+  const itemTotal = currentPrice * item.quantity;
+  
+  // ✅ FULL VARIANT OBJECT with all data
+  const fullVariant = {
+    _id: variant._id,
+    sku: variant.sku,
+    barcode: variant.barcode,
+    attributes: variant.attributes || [],
+    images: variant.images || [],  // ✅ IMAGES YAHAN PE
+    inventory: variant.inventory || {},
+    price: {
+      base: price.base,
+      sale: price.sale,
+      ...(userType === 'wholesaler' && {
+        wholesaleBase: variant.price?.wholesaleBase,
+        wholesaleSale: variant.price?.wholesaleSale,
+        minimumOrderQuantity: variant.minimumOrderQuantity
+      })
+    },
+    isActive: variant.isActive,
+    wholesale: variant.wholesale || false,
+    minimumOrderQuantity: variant.minimumOrderQuantity || 1
+  };
+  
+  // ✅ FULL PRODUCT OBJECT with variants array
+  const fullProduct = {
+    _id: product._id,
+    name: product.name,
+    slug: product.slug,
+    title: product.title,
+    description: product.description,
+    brand: product.brand,
+    category: product.category,
+    seo: product.seo,
+    soldInfo: product.soldInfo,
+    fomo: product.fomo,
+    hsnCode: product.hsnCode,
+    taxRate: product.taxRate,
+    isFragile: product.isFragile,
+    shipping: product.shipping,
+    attributes: product.attributes,
+    isFeatured: product.isFeatured,
+    status: product.status,
+    createdAt: product.createdAt,
+    updatedAt: product.updatedAt,
+    variants: [fullVariant]  // Only the selected variant in cart
+  };
+  
+  return {
+    _id: item._id,
+    productId: product._id,
+    variantId: variant._id,
+    quantity: item.quantity,
+    price: {
+      base: price.base,
+      sale: price.sale,
+      current: currentPrice
+    },
+    product: fullProduct,
+    total: itemTotal
+  };
+};
+
+// =============================================
 // GET CART
+// =============================================
 const getCart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
 
   try {
     const cart = await Cart.findOne({ userId })
-      .populate({ path: 'items.productId', select: 'name slug images variants' });
+      .populate({ 
+        path: 'items.productId', 
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+      });
 
     if (!cart) {
       return res.json({ 
@@ -54,74 +131,39 @@ const getCart = async (req, res) => {
       });
     }
 
-    // Add userType pricing to cart items
-    const itemsWithPricing = cart.items.map(item => {
-      const product = item.productId;
-      let variant = null;
-      
-      if (item.variantId) {
-        variant = product?.variants?.find(v => String(v._id) === String(item.variantId));
-      }
-      
-      // Calculate current price based on userType
-      let currentPrice = 0;
-      let basePrice = 0;
-      let salePrice = null;
-      
-      if (userType === 'wholesaler') {
-        basePrice = variant?.price?.wholesaleBase || variant?.price?.base || 0;
-        salePrice = variant?.price?.wholesaleSale || variant?.price?.wholesaleBase || basePrice;
-        currentPrice = salePrice || basePrice;
-      } else {
-        basePrice = variant?.price?.base || 0;
-        salePrice = variant?.price?.sale || null;
-        
-        // Check if sale is valid
-        const now = new Date();
-        const isSaleValid = salePrice && salePrice < basePrice &&
-          (!variant?.price?.saleStartDate || now >= variant.price.saleStartDate) &&
-          (!variant?.price?.saleEndDate || now <= variant.price.saleEndDate);
-        
-        currentPrice = isSaleValid ? salePrice : basePrice;
-      }
-      
-      const itemTotal = currentPrice * item.quantity;
-      
-      return {
-        _id: item._id,
-        productId: item.productId._id,
-        variantId: item.variantId,
-        quantity: item.quantity,
-        price: {
-          base: basePrice,
-          sale: salePrice,
-          current: currentPrice
-        },
-        product: {
-          _id: product._id,
-          name: product.name,
-          slug: product.slug,
-          images: product.images
-        },
-        variant: variant ? {
-          _id: variant._id,
-          sku: variant.sku,
-          attributes: variant.attributes,
-          inventory: variant.inventory
-        } : null,
-        total: itemTotal
-      };
-    });
+    // ✅ Format each item with full data
+    const itemsWithFullData = [];
     
-    // Recalculate total with current prices
-    const totalAmount = itemsWithPricing.reduce((sum, item) => sum + item.total, 0);
+    for (const item of cart.items) {
+      const product = item.productId;
+      if (!product) continue;
+      
+      let variant = null;
+      if (item.variantId) {
+        variant = product.variants?.find(v => String(v._id) === String(item.variantId));
+      }
+      
+      if (!variant) {
+        variant = product.variants?.find(v => v.isActive);
+      }
+      
+      if (!variant) continue;
+      
+      const formattedItem = formatCartItem(item, product, variant, userType);
+      if (formattedItem) {
+        itemsWithFullData.push(formattedItem);
+      }
+    }
+    
+    // Calculate total
+    const totalAmount = itemsWithFullData.reduce((sum, item) => sum + item.total, 0);
 
     return res.json({
       success: true,
       cart: {
         _id: cart._id,
         userId: cart.userId,
-        items: itemsWithPricing,
+        items: itemsWithFullData,
         totalAmount: totalAmount,
         createdAt: cart.createdAt,
         updatedAt: cart.updatedAt
@@ -138,7 +180,9 @@ const getCart = async (req, res) => {
   }
 };
 
-// ADD TO CART - FIXED VERSION
+// =============================================
+// ADD TO CART
+// =============================================
 const addToCart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
@@ -155,12 +199,12 @@ const addToCart = async (req, res) => {
     // Resolve product
     let product;
     if (productId && mongoose.Types.ObjectId.isValid(productId)) {
-      product = await Product.findById(productId).select('variants status name slug');
+      product = await Product.findById(productId).select('name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants');
     } else if (productSlug) {
       product = await Product.findOne({ 
         slug: String(productSlug).toLowerCase(), 
         status: 'active' 
-      }).select('variants status name slug');
+      }).select('name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants');
     }
 
     if (!product) {
@@ -177,11 +221,10 @@ const addToCart = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Strict variant validation
+    // Find variant
     let variant = null;
     
     if (variantId) {
-      // If variantId provided, MUST find exact match
       variant = findVariant(product, variantId);
       if (!variant) {
         return res.status(400).json({ 
@@ -190,7 +233,6 @@ const addToCart = async (req, res) => {
         });
       }
     } else {
-      // If no variantId provided, use first active variant
       variant = (product.variants || []).find(v => v.isActive) || null;
       if (!variant) {
         return res.status(404).json({ 
@@ -276,13 +318,44 @@ const addToCart = async (req, res) => {
     cart.calculateTotal();
     await cart.save();
 
-    // Return cart with updated pricing
+    // Return cart with full data
     const updatedCart = await Cart.findOne({ userId })
-      .populate('items.productId', 'name slug images');
+      .populate({ 
+        path: 'items.productId', 
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+      });
+
+    // Format response
+    const formattedItems = [];
+    for (const item of updatedCart.items) {
+      const prod = item.productId;
+      if (!prod) continue;
+      
+      let varObj = null;
+      if (item.variantId) {
+        varObj = prod.variants?.find(v => String(v._id) === String(item.variantId));
+      }
+      if (!varObj) {
+        varObj = prod.variants?.find(v => v.isActive);
+      }
+      if (!varObj) continue;
+      
+      const formatted = formatCartItem(item, prod, varObj, userType);
+      if (formatted) formattedItems.push(formatted);
+    }
+    
+    const totalAmt = formattedItems.reduce((sum, it) => sum + it.total, 0);
 
     return res.json({ 
       success: true, 
-      cart: updatedCart,
+      cart: {
+        _id: updatedCart._id,
+        userId: updatedCart.userId,
+        items: formattedItems,
+        totalAmount: totalAmt,
+        createdAt: updatedCart.createdAt,
+        updatedAt: updatedCart.updatedAt
+      },
       userType: userType
     });
     
@@ -295,8 +368,9 @@ const addToCart = async (req, res) => {
   }
 };
 
-
+// =============================================
 // UPDATE CART ITEM
+// =============================================
 const updateCartItem = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
@@ -346,12 +420,36 @@ const updateCartItem = async (req, res) => {
       await cart.save();
       
       const updatedCart = await Cart.findOne({ userId })
-        .populate('items.productId', 'name slug images');
-      return res.json({ success: true, cart: updatedCart });
+        .populate({ 
+          path: 'items.productId', 
+          select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        });
+      
+      // Format response
+      const formattedItems = [];
+      for (const it of updatedCart.items) {
+        const prod = it.productId;
+        if (!prod) continue;
+        let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
+        if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+        if (!varObj) continue;
+        const formatted = formatCartItem(it, prod, varObj, userType);
+        if (formatted) formattedItems.push(formatted);
+      }
+      
+      return res.json({ 
+        success: true, 
+        cart: {
+          ...updatedCart.toObject(),
+          items: formattedItems,
+          totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+        },
+        userType: userType
+      });
     }
 
     // Re-check live stock and pricing
-    const product = await Product.findById(productId).select('variants');
+    const product = await Product.findById(productId).select('variants name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt');
     const variant = findVariant(product, variantId);
     if (!variant) {
       return res.status(404).json({ 
@@ -399,11 +497,30 @@ const updateCartItem = async (req, res) => {
 
     // Populate for response
     const populatedCart = await Cart.findOne({ userId })
-      .populate('items.productId', 'name slug images');
+      .populate({ 
+        path: 'items.productId', 
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+      });
+
+    // Format response
+    const formattedItems = [];
+    for (const it of populatedCart.items) {
+      const prod = it.productId;
+      if (!prod) continue;
+      let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
+      if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+      if (!varObj) continue;
+      const formatted = formatCartItem(it, prod, varObj, userType);
+      if (formatted) formattedItems.push(formatted);
+    }
 
     return res.json({ 
       success: true, 
-      cart: populatedCart,
+      cart: {
+        ...populatedCart.toObject(),
+        items: formattedItems,
+        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+      },
       userType: userType
     });
     
@@ -416,8 +533,9 @@ const updateCartItem = async (req, res) => {
   }
 };
 
+// =============================================
 // MERGE CART (Guest cart after login)
-// MERGE CART (Guest cart after login) - FIXED
+// =============================================
 const mergeCart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
@@ -437,12 +555,33 @@ const mergeCart = async (req, res) => {
     });
   }
 
-  // ✅ If no items to merge, just return current cart
   if (items.length === 0) {
-    const cart = await Cart.findOne({ userId }).populate('items.productId', 'name slug images');
+    const cart = await Cart.findOne({ userId }).populate({ 
+      path: 'items.productId', 
+      select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+    });
+    
+    // Format response
+    let formattedItems = [];
+    if (cart) {
+      for (const it of cart.items) {
+        const prod = it.productId;
+        if (!prod) continue;
+        let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
+        if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+        if (!varObj) continue;
+        const formatted = formatCartItem(it, prod, varObj, userType);
+        if (formatted) formattedItems.push(formatted);
+      }
+    }
+    
     return res.json({ 
       success: true, 
-      cart: cart || { items: [], totalAmount: 0 },
+      cart: cart ? {
+        ...cart.toObject(),
+        items: formattedItems,
+        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+      } : { items: [], totalAmount: 0 },
       userType: userType 
     });
   }
@@ -450,10 +589,6 @@ const mergeCart = async (req, res) => {
   try {
     let cart = await Cart.findOne({ userId });
     if (!cart) cart = new Cart({ userId, items: [] });
-
-    // ✅ Log for debugging
-    console.log('📦 Merge Cart - Current cart items:', cart.items.length);
-    console.log('📦 Merge Cart - Incoming items:', items.length);
 
     // normalize duplicates
     const mergedMap = {};
@@ -471,14 +606,10 @@ const mergeCart = async (req, res) => {
 
     // fetch all products in one query
     const productIds = normalizedItems.map(i => i.productId);
-    console.log('🔍 Looking for products with IDs:', productIds);
-
     const products = await Product.find({
       _id: { $in: productIds },
-      status: 'active'  // ✅ Only active products
-    }).select('variants');
-
-    console.log('✅ Found products:', products.length);
+      status: 'active'
+    }).select('variants name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt');
 
     const productMap = new Map();
     products.forEach(product => {
@@ -491,19 +622,13 @@ const mergeCart = async (req, res) => {
       const { productId, variantId, quantity } = incoming;
 
       const product = productMap.get(String(productId));
-      if (!product) {
-        console.log(`❌ Product not found or inactive: ${productId}`);
-        continue;
-      }
+      if (!product) continue;
 
       const variant = product.variants.find(
         v => String(v._id) === String(variantId)
       );
 
-      if (!variant || !variant.isActive) {
-        console.log(`❌ Variant not found or inactive: ${variantId}`);
-        continue;
-      }
+      if (!variant || !variant.isActive) continue;
 
       let qty = Number(quantity);
       if (qty <= 0) continue;
@@ -513,13 +638,11 @@ const mergeCart = async (req, res) => {
         const moq = variant.minimumOrderQuantity || 1;
         if (qty < moq) {
           qty = moq;
-          console.log(`⚠️ Adjusted quantity to MOQ: ${moq}`);
         }
       }
 
       if (qty > variant.inventory.quantity) {
         qty = variant.inventory.quantity;
-        console.log(`⚠️ Adjusted quantity to available stock: ${qty}`);
       }
 
       // Get user-specific pricing
@@ -543,7 +666,6 @@ const mergeCart = async (req, res) => {
           saleStartDate: variant.price?.saleStartDate ?? null,
           saleEndDate: variant.price?.saleEndDate ?? null
         };
-        console.log(`✅ Updated existing item, new quantity: ${existing.quantity}`);
       } else {
         cart.items.push({
           productId,
@@ -562,22 +684,38 @@ const mergeCart = async (req, res) => {
           }))
         });
         itemsAdded++;
-        console.log(`✅ Added new item, quantity: ${qty}`);
       }
     }
 
     cart.calculateTotal();
     await cart.save();
 
-    console.log(`📦 Merge complete - Added ${itemsAdded} new items, Total items: ${cart.items.length}`);
-
     const populatedCart = await Cart.findOne({ userId })
-      .populate('items.productId', 'name slug images');
+      .populate({ 
+        path: 'items.productId', 
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+      });
+
+    // Format response
+    const formattedItems = [];
+    for (const it of populatedCart.items) {
+      const prod = it.productId;
+      if (!prod) continue;
+      let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
+      if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+      if (!varObj) continue;
+      const formatted = formatCartItem(it, prod, varObj, userType);
+      if (formatted) formattedItems.push(formatted);
+    }
 
     return res.json({ 
       success: true, 
       message: `${itemsAdded} item(s) merged from guest cart`,
-      cart: populatedCart,
+      cart: {
+        ...populatedCart.toObject(),
+        items: formattedItems,
+        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+      },
       userType: userType
     });
 
@@ -591,9 +729,12 @@ const mergeCart = async (req, res) => {
   }
 };
 
+// =============================================
 // REMOVE SINGLE ITEM FROM CART
+// =============================================
 const removeCartItem = async (req, res) => {
   const userId = req.userId;
+  const userType = req.userType || 'user';
   const { productId, variantId } = req.body;
 
   try {
@@ -614,11 +755,33 @@ const removeCartItem = async (req, res) => {
     await cart.save();
 
     const populatedCart = await Cart.findOne({ userId })
-      .populate('items.productId', 'name slug images');
+      .populate({ 
+        path: 'items.productId', 
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+      });
+
+    // Format response
+    const formattedItems = [];
+    if (populatedCart) {
+      for (const it of populatedCart.items) {
+        const prod = it.productId;
+        if (!prod) continue;
+        let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
+        if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+        if (!varObj) continue;
+        const formatted = formatCartItem(it, prod, varObj, userType);
+        if (formatted) formattedItems.push(formatted);
+      }
+    }
 
     res.json({ 
       success: true, 
-      cart: populatedCart 
+      cart: populatedCart ? {
+        ...populatedCart.toObject(),
+        items: formattedItems,
+        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+      } : { items: [], totalAmount: 0 },
+      userType: userType
     });
     
   } catch (err) {
@@ -630,9 +793,12 @@ const removeCartItem = async (req, res) => {
   }
 };
 
+// =============================================
 // BULK REMOVE FROM CART
+// =============================================
 const bulkRemove = async (req, res) => {
   const userId = req.userId;
+  const userType = req.userType || 'user';
   const { items } = req.body;
 
   try {
@@ -655,11 +821,33 @@ const bulkRemove = async (req, res) => {
     await cart.save();
 
     const populatedCart = await Cart.findOne({ userId })
-      .populate('items.productId', 'name slug images');
+      .populate({ 
+        path: 'items.productId', 
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+      });
+
+    // Format response
+    const formattedItems = [];
+    if (populatedCart) {
+      for (const it of populatedCart.items) {
+        const prod = it.productId;
+        if (!prod) continue;
+        let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
+        if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+        if (!varObj) continue;
+        const formatted = formatCartItem(it, prod, varObj, userType);
+        if (formatted) formattedItems.push(formatted);
+      }
+    }
 
     res.json({ 
       success: true, 
-      cart: populatedCart 
+      cart: populatedCart ? {
+        ...populatedCart.toObject(),
+        items: formattedItems,
+        totalAmount: formattedItems.reduce((sum, it) => sum + it.total, 0)
+      } : { items: [], totalAmount: 0 },
+      userType: userType
     });
     
   } catch (err) {
@@ -671,9 +859,12 @@ const bulkRemove = async (req, res) => {
   }
 };
 
+// =============================================
 // CLEAR CART
+// =============================================
 const clearCart = async (req, res) => {
   const userId = req.userId;
+  const userType = req.userType || 'user';
 
   try {
     const cart = await Cart.findOne({ userId });
@@ -681,7 +872,8 @@ const clearCart = async (req, res) => {
       return res.json({ 
         success: true, 
         message: 'Cart already empty',
-        cart: { items: [], totalAmount: 0 }
+        cart: { items: [], totalAmount: 0 },
+        userType: userType
       });
     }
 
@@ -692,7 +884,8 @@ const clearCart = async (req, res) => {
     return res.json({
       success: true,
       message: 'Cart cleared successfully',
-      cart: { items: [], totalAmount: 0 }
+      cart: { items: [], totalAmount: 0 },
+      userType: userType
     });
 
   } catch (err) {
@@ -703,8 +896,6 @@ const clearCart = async (req, res) => {
     });
   }
 };
-
-
 
 module.exports = { 
   addToCart, 
