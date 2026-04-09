@@ -335,13 +335,25 @@ const getProductsByCategory = async (req, res) => {
 // =============================================
 // GET /products/featured - WITH CACHE
 // =============================================
+// =============================================
+// GET /products/featured - WITH PAGINATION & CACHE
+// =============================================
 const getFeaturedProducts = async (req, res) => {
   try {
+    // ✅ ADD PAGINATION SUPPORT
+    const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
+    const skip = (page - 1) * limit;
+    
     const userType = req.userType || 'user';
 
-    // ✅ GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('PRODUCT', { featured: true, limit, userType });
+    // ✅ GENERATE CACHE KEY (include page now)
+    const cacheKey = cacheConfig.generateKey('PRODUCT', { 
+      featured: true, 
+      page, 
+      limit, 
+      userType 
+    });
 
     // ✅ CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
@@ -351,11 +363,17 @@ const getFeaturedProducts = async (req, res) => {
       return res.json(cachedData);
     }
 
-    const products = await Product.find({ 
+    const filters = { 
       status: 'active', 
       isFeatured: true 
-    })
+    };
+
+    // ✅ GET TOTAL COUNT FOR PAGINATION
+    const total = await Product.countDocuments(filters);
+
+    const products = await Product.find(filters)
       .sort({ createdAt: -1 })
+      .skip(skip)
       .limit(limit)
       .populate('category')
       .lean();
@@ -370,6 +388,14 @@ const getFeaturedProducts = async (req, res) => {
 
     const responseData = { 
       success: true, 
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+        hasNextPage: page * limit < total,
+        hasPrevPage: page > 1
+      },
       products: productsWithData,
       userType: userType
     };
