@@ -425,7 +425,7 @@ const getFeaturedProducts = async (req, res) => {
     // ✅ DEBUG - Check what's coming from query
     console.log('🔍 Query params:', req.query);
     console.log('🔍 Page:', page, 'Limit:', limit, 'Skip:', skip);
-    
+
     // ✅ Add timestamp to bypass cache for debugging
     const bypassCache = req.query._cb === '1';
     
@@ -502,11 +502,9 @@ const getFeaturedProducts = async (req, res) => {
 // =============================================
 const getRelatedProducts = async (req, res) => {
   try {
-       console.log('🔍 Raw query params:', req.query);
-    console.log('🔍 Page param:', req.query.page);
+      
     const { slug } = req.params;
     const limit = Math.max(1, parseInt(req.query.limit) || 8);
-        console.log('🔍 Parsed page:', page);
     const userType = req.userType || 'user';
 
     // ✅ GENERATE CACHE KEY
