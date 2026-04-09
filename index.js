@@ -15,10 +15,10 @@ const gracefulShutdown = require('./services/shutdown.service');
 const logger = require('./utils/logger');
 
 // Import middleware
-const { optionalAuth } = require('./middlewares/userTypeOptional'); // ✅ Your existing
-const { limiters } = require('./middlewares/rateLimiter'); // NEW - from file 5
+const { optionalAuth } = require('./middlewares/userTypeOptional');
+const { limiters } = require('./middlewares/rateLimiter');
 
-// Import routes
+// Import routes (ACTIVE ONLY)
 const authRoutes = require('./routes/authRoutes');
 const adminProductsRoutes = require('./routes/adminProducts');
 const categoriesRoutes = require('./routes/categories');
@@ -27,6 +27,16 @@ const wishlistRoutes = require('./routes/wishlist');
 const cartRoutes = require('./routes/Cart');
 const addressRoutes = require('./routes/addressRoutes');
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
+
+// =============================================
+// COMMENTED ROUTES (Not active yet)
+// =============================================
+// const orderRoutes = require('./routes/orderRoutes');
+// const wholesalerRoutes = require('./routes/wholesalerRoutes');
+// const assistantRoutes = require('./routes/assistant.routes');
+// const analyticsRoutes = require('./routes/seoAnalyticsRoutes');
+// const adminCouponRoutes = require('./routes/adminCouponRoutes');
+// const userCouponRoutes = require('./routes/userCouponRoutes');
 
 // Configuration
 const PORT = process.env.PORT || 8081;
@@ -69,7 +79,7 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ✅ Apply userType middleware (GLOBAL - for all routes)
-app.use(optionalAuth); // Your existing middleware
+app.use(optionalAuth);
 
 // Request ID middleware
 app.use((req, res, next) => {
@@ -89,16 +99,17 @@ app.use('/api/categories', limiters.categories);
 // Search - MEDIUM limit
 app.use('/api/products/search', limiters.search);
 
-// Write operations - LOW limit
+// Write operations - LOW limit (cart, wishlist, addresses)
 app.use('/api/cart', limiters.write);
 app.use('/api/wishlist', limiters.write);
 app.use('/api/addresses', limiters.write);
 
-// Sensitive operations - VERY LOW limit
+// Sensitive operations - VERY LOW limit (auth)
 app.use('/api/auth/login', limiters.sensitive);
 app.use('/api/auth/register', limiters.sensitive);
-app.use('/api/auth/verify-otp', limiters.sensitive);
-app.use('/api/auth/send-reset-otp', limiters.sensitive);
+app.use('/api/auth/otp-verify-login', limiters.sensitive);
+app.use('/api/auth/forgot-password', limiters.sensitive);
+app.use('/api/auth/change-password', limiters.sensitive);
 
 // Admin operations - MEDIUM limit
 app.use('/api/admin', limiters.admin);
@@ -149,7 +160,7 @@ app.get('/health', async (req, res) => {
       external: `${Math.round(memUsage.external / 1024 / 1024)}MB`
     };
 
-    // Cache stats (NEW)
+    // Cache stats
     const cacheService = require('./services/cache.service');
     healthStatus.cache = cacheService.getStats();
 
@@ -178,7 +189,7 @@ app.get('/health/live', (req, res) => {
   res.status(200).json({ status: 'alive', timestamp: new Date().toISOString() });
 });
 
-// Cache stats endpoint (NEW - for monitoring)
+// Cache stats endpoint (for monitoring)
 app.get('/api/cache/stats', async (req, res) => {
   const cacheService = require('./services/cache.service');
   res.json({
@@ -199,21 +210,33 @@ function getEventLoopLag() {
 }
 
 // ============================================================================
-// Routes
+// Routes - ONLY ACTIVE ROUTES
 // ============================================================================
 
 app.get('/api', (req, res) => {
   res.json({
+    success: true,
     message: 'E-Commerce Platform API v1.0',
     status: 'running',
     version: '1.0.0',
     environment: NODE_ENV,
-    userType: req.userType, // Shows current user type
-    health: '/health'
+    userType: req.userType,
+    activeEndpoints: {
+      auth: '/api/auth',
+      products: '/api/products',
+      categories: '/api/categories',
+      cart: '/api/cart',
+      wishlist: '/api/wishlist',
+      addresses: '/api/addresses',
+      adminProducts: '/api/admin/products',
+      adminAnalytics: '/api/admin/analytics'
+    },
+    health: '/health',
+    cacheStats: '/api/cache/stats'
   });
 });
 
-// API routes (userType already attached via optionalAuth middleware)
+// ✅ ACTIVE ROUTES
 app.use('/api/auth', authRoutes);
 app.use('/api/admin/products', adminProductsRoutes);
 app.use('/api/categories', categoriesRoutes);
@@ -223,12 +246,23 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
 
+// =============================================
+// COMMENTED ROUTES (Uncomment when ready)
+// =============================================
+// app.use('/api/orders', orderRoutes);
+// app.use('/api/wholesalers', wholesalerRoutes);
+// app.use('/api/assistant', assistantRoutes);
+// app.use('/api/analytics', analyticsRoutes);
+// app.use('/api/admin/coupons', adminCouponRoutes);
+// app.use('/api/coupons', userCouponRoutes);
+
 // ============================================================================
 // Error Handling Middleware
 // ============================================================================
 
 app.use((req, res) => {
   res.status(404).json({
+    success: false,
     error: 'Not Found',
     message: `Cannot ${req.method} ${req.path}`,
     timestamp: new Date().toISOString(),
@@ -250,6 +284,7 @@ app.use((err, req, res, next) => {
     : err.message;
 
   res.status(statusCode).json({
+    success: false,
     error: err.name || 'Error',
     message,
     timestamp: new Date().toISOString(),
@@ -276,7 +311,6 @@ async function startApplication() {
       await redisManager.connect();
       logger.info('[Redis] Connected successfully');
       
-      // Show cache stats on startup
       const cacheService = require('./services/cache.service');
       logger.info(`[Cache] Service ready, stats:`, cacheService.getStats());
     } catch (error) {
