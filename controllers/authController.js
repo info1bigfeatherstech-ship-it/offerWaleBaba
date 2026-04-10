@@ -69,15 +69,24 @@ const hashToken = (token) => {
   return crypto.createHash('sha256').update(token).digest('hex');
 };
 
+// ========== COOKIE CONFIGURATION (Industry Standard) ==========
 const getRefreshCookieOptions = () => {
-  // const isProduction = process.env.NODE_ENV === 'production';
-  return {
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  const options = {
     httpOnly: true,
-    secure: true,
-    sameSite: 'none',
+    secure: isProduction,  // Production: true, Development: false
+    sameSite: isProduction ? 'none' : 'lax',
     path: '/',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: 7 * 24 * 60 * 60 * 1000,  // 7 days
   };
+  
+  // Optional: Set domain for production (supports subdomains)
+  if (isProduction && process.env.COOKIE_DOMAIN) {
+    options.domain = process.env.COOKIE_DOMAIN;
+  }
+  
+  return options;
 };
 
 // Google OAuth2 client
@@ -267,18 +276,26 @@ const verifyOTPAndLogin = async (req, res) => {
     user.phoneVerificationOTPExpires = undefined;
 
     // Generate tokens
-    const accessToken = generateAccessToken(user._id, user.userType, user.role);
-    const refreshToken = generateRefreshToken(user._id);
-    const hashedRefreshToken = hashToken(refreshToken);
+   const accessToken = generateAccessToken(user._id, user.userType, user.role);
+const refreshToken = generateRefreshToken(user._id);
+const hashedRefreshToken = hashToken(refreshToken);
 
-    user.refreshTokens = user.refreshTokens || [];
-    user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
-    user.refreshTokens.push({
-      token: hashedRefreshToken,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    });
+// Get device info from request headers
+const deviceInfo = req.headers['user-agent'] || req.body.deviceInfo || 'Unknown';
 
-    await user.save();
+// Remove expired tokens
+user.refreshTokens = user.refreshTokens || [];
+user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
+
+// Add new token
+user.refreshTokens.push({
+  token: hashedRefreshToken,
+  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  createdAt: new Date(),
+  deviceInfo: deviceInfo
+});
+
+await user.save();
 
     res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
@@ -360,29 +377,30 @@ const login = async (req, res) => {
       });
     }
 
-    const accessToken = generateAccessToken(user._id, user.userType, user.role);
-    const refreshToken = generateRefreshToken(user._id);
-    const hashedRefreshToken = hashToken(refreshToken);
+const accessToken = generateAccessToken(user._id, user.userType, user.role);
+const refreshToken = generateRefreshToken(user._id);
+const hashedRefreshToken = hashToken(refreshToken);
 
-    user.refreshTokens = user.refreshTokens || [];
-    user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
-    user.refreshTokens.push({
-      token: hashedRefreshToken,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    });
+// Get device info from request headers
+const deviceInfo = req.headers['user-agent'] || req.body.deviceInfo || 'Unknown';
 
-    await user.save();
+// Remove expired tokens
+user.refreshTokens = user.refreshTokens || [];
+user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
+
+// Add new token
+user.refreshTokens.push({
+  token: hashedRefreshToken,
+  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  createdAt: new Date(),
+  deviceInfo: deviceInfo
+});
+
+   await user.save();
 
     res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
-    
-//       res.cookie("refreshToken", refreshToken, {
-//   httpOnly: true,
-//   secure: true,
-//   sameSite: 'none',
-//   path: '/',
-//   maxAge: 7 * 24 * 60 * 60 * 1000
-// });
+
     return res.status(200).json({
       success: true,
       message: "Login successful",
@@ -669,10 +687,10 @@ const logout = async (req, res) => {
 
 // ========== 8️⃣ REFRESH ACCESS TOKEN ==========
 
+// ========== 8️⃣ REFRESH ACCESS TOKEN ==========
 const refreshAccessToken = async (req, res) => {
   try {
     console.log("🔄 Refresh token request received");
-    console.log("Cookies:", req.cookies);
     
     const refreshToken = req.cookies?.refreshToken;
 
@@ -718,39 +736,49 @@ const refreshAccessToken = async (req, res) => {
       });
     }
 
+    // Remove expired tokens
     user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
 
+    // ✅ Find matching token (supports multiple devices)
     const tokenIndex = user.refreshTokens.findIndex(t => t.token === hashedToken);
+    
     if (tokenIndex === -1) {
-      console.log("❌ Token mismatch - possible reuse");
+      console.log("❌ Token mismatch - session expired");
       return res.status(401).json({
         success: false,
-        message: "Refresh token mismatch"
+        message: "Session expired. Please login again.",
+        code: "SESSION_EXPIRED"
       });
     }
 
-    console.log("✅ Generating new tokens");
+    console.log("✅ Token matched, generating new tokens");
+
+    // Generate new tokens
     const newAccessToken = generateAccessToken(user._id, user.userType, user.role);
     const newRefreshToken = generateRefreshToken(user._id);
     const newHashedToken = hashToken(newRefreshToken);
 
-    user.refreshTokens.splice(tokenIndex, 1);
-    user.refreshTokens.push({
+    // ✅ Replace the specific token (preserve device info)
+    const deviceInfo = user.refreshTokens[tokenIndex].deviceInfo || 'Unknown';
+    
+    user.refreshTokens[tokenIndex] = {
       token: newHashedToken,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    });
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      createdAt: new Date(),
+      deviceInfo: deviceInfo
+    };
 
     await user.save();
 
-    // ✅ Set new cookie with correct options
-    // res.cookie("refreshToken", newRefreshToken, {
-    //   httpOnly: true,
-    //   secure: true,
-    //   sameSite: 'none',
-    //   path: '/',
-    //   maxAge: 7 * 24 * 60 * 60 * 1000
-    // });
-   res.cookie("refreshToken", newRefreshToken, getRefreshCookieOptions());
+    // Set new cookie
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'none',
+      path: '/',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
     console.log("✅ New tokens sent successfully");
 
     return res.status(200).json({
@@ -767,7 +795,6 @@ const refreshAccessToken = async (req, res) => {
     });
   }
 };
-
 // ========== 9️⃣ GET CURRENT USER ==========
 
 const me = async (req, res) => {
@@ -931,19 +958,28 @@ const googleAuth = async (req, res) => {
       });
     }
 
-    const accessToken = generateAccessToken(user._id, user.userType, user.role);
-    const refreshToken = generateRefreshToken(user._id);
-    const hashedRefreshToken = hashToken(refreshToken);
+  const accessToken = generateAccessToken(user._id, user.userType, user.role);
+const refreshToken = generateRefreshToken(user._id);
+const hashedRefreshToken = hashToken(refreshToken);
 
-    user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
-    user.refreshTokens.push({
-      token: hashedRefreshToken,
-      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    });
+// Get device info
+const deviceInfo = req.headers['user-agent'] || req.body.deviceInfo || 'Google-Login';
 
-    await user.save();
+// Remove expired tokens
+user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
 
-    res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
+// Add new token
+user.refreshTokens.push({
+  token: hashedRefreshToken,
+  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  createdAt: new Date(),
+  deviceInfo: deviceInfo
+});
+
+await user.save();
+
+res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
+
 
     return res.status(200).json({
       success: true,
@@ -966,6 +1002,52 @@ const googleAuth = async (req, res) => {
   }
 };
 
+
+// ========== DEVICE MANAGEMENT CONTROLLER FUNCTIONS ==========
+
+// Get all active devices
+const getActiveDevices = async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('refreshTokens');
+    const devices = user.refreshTokens.map(token => ({
+      deviceId: token._id,
+      deviceInfo: token.deviceInfo,
+      lastActive: token.createdAt,
+      expiresAt: token.expiresAt
+    }));
+    return res.json({ success: true, devices });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Logout from specific device
+const logoutDevice = async (req, res) => {
+  try {
+    const { deviceId } = req.body;
+    const user = await User.findById(req.userId);
+    user.refreshTokens = user.refreshTokens.filter(t => t._id.toString() !== deviceId);
+    await user.save();
+    return res.json({ success: true, message: 'Device logged out successfully' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Logout from all devices
+const logoutAllDevices = async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    user.refreshTokens = [];
+    await user.save();
+    res.clearCookie("refreshToken", getRefreshCookieOptions());
+    return res.json({ success: true, message: 'Logged out from all devices' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
 // ========== EXPORTS ==========
 
 module.exports = {
@@ -980,5 +1062,9 @@ module.exports = {
   me,
   updateProfile,
   changePassword,
-  googleAuth
+  googleAuth , 
+  getActiveDevices,
+  logoutDevice,
+  logoutAllDevices,
+  getRefreshCookieOptions
 };

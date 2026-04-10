@@ -64,7 +64,7 @@ const formatCartItem = (item, product, variant, userType) => {
   const fullVariant = {
     _id: variant._id,
     sku: variant.sku,
-    barcode: variant.barcode,
+    productCode: variant.productCode,
     attributes: variant.attributes || [],
     images: variant.images || [],
     inventory: variant.inventory || {},

@@ -41,7 +41,7 @@ const variantSchema = new mongoose.Schema(
       uppercase: true,
       trim: true
     },
-    barcode: {
+    productCode: {
       type: Number,
       required: true
     },
@@ -185,7 +185,7 @@ const productSchema = new mongoose.Schema(
       uppercase: true,
       default: null
     },
-    taxRate: {
+    gstRate: {
       type: Number,
       min: 0
     },
@@ -329,7 +329,7 @@ productSchema.index({ category: 1, status: 1 });
 productSchema.index({ isFeatured: 1 });
 productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
 productSchema.index({ createdAt: -1 });
-productSchema.index({ 'variants.barcode': 1 }, { unique: true, sparse: true });
+productSchema.index({ 'variants.productCode': 1 }, { unique: true, sparse: true });
 productSchema.index({ hsnCode: 1 });
 
 module.exports = mongoose.model('Product', productSchema);

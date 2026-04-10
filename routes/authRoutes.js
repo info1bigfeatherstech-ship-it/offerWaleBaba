@@ -15,7 +15,10 @@ const {
     verifyPasswordResetOTP,
     resetPasswordWithOTP,
     refreshAccessToken, 
-    googleAuth 
+    googleAuth ,
+    getActiveDevices,
+    logoutDevice,
+    logoutAllDevices
 } = require('../controllers/authController');
 const { verifyToken } = require('../middlewares/auth');
 
@@ -185,5 +188,19 @@ router.post('/logout', verifyToken, logout);   //done
 
 router.get('/me', verifyToken, me);     //done
 router.put('/profile', verifyToken, updateProfile);   //done
+
+
+// =============================================
+// DEVICE MANAGEMENT ROUTES
+// =============================================
+
+// Get all active devices
+router.get('/devices', verifyToken, getActiveDevices);
+
+// Logout from specific device
+router.post('/devices/logout', verifyToken, logoutDevice);
+
+// Logout from all devices
+router.post('/logout-all', verifyToken, logoutAllDevices);
 
 module.exports = router;

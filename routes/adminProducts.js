@@ -123,8 +123,8 @@
 // //delete variant from product
 // router.delete('/:slug/variants', productController.deleteVariant);
 
-// //get variant by barcode
-// router.get('/variant/:barcode', productController.getVariantByBarcode);
+// //get variant by productCode
+// router.get('/variant/:productCode', productController.getVariantByproductCode);
 
 // // PUT /admin/products/:slug Update product with optional image uploads
 // router.put('/:slug', uploadProductImages, rejectSlugSku, productController.updateProduct);
@@ -209,13 +209,13 @@ router.delete('/bulk-hard-delete', productController.bulkHardDelete);
 router.get('/active', productController.getAllActiveProducts);
 
 // =============================================
-// SINGLE PRODUCT ACTIONS (with :slug, :barcode)
+// SINGLE PRODUCT ACTIONS (with :slug, :productCode)
 // =============================================
 router.patch('/restore/:slug', productController.restoreProduct);
 router.delete('/hard/:slug', productController.hardDeleteProduct);
 router.post('/:slug/variants', uploadProductImages, productController.addVariant);
 router.delete('/:slug/variants', productController.deleteVariant);
-router.get('/variant/:barcode', productController.getVariantByBarcode);
+router.get('/variant/:productCode', productController.getVariantByproductCode);
 router.put('/:slug', uploadProductImages, rejectSlugSku, productController.updateProduct);
 router.delete('/:slug', productController.deleteProduct);
 router.get('/:slug', productController.getProductBySlug);

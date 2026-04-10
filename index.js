@@ -12,6 +12,7 @@ const { connectMongoDB, setupMongoDBEventHandlers } = require('./config/database
 const redisManager = require('./config/redis.config');
 const { initCloudinary } = require('./config/cloudinary.config');
 const gracefulShutdown = require('./services/shutdown.service');
+const cleanupService = require('./services/cleanup.service');
 const logger = require('./utils/logger');
 
 // Import middleware
@@ -27,7 +28,7 @@ const wishlistRoutes = require('./routes/wishlist');
 const cartRoutes = require('./routes/Cart');
 const addressRoutes = require('./routes/addressRoutes');
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
-
+const staffRoutes = require('./routes/staffRoutes');
 // =============================================
 // COMMENTED ROUTES (Not active yet)
 // =============================================
@@ -261,7 +262,7 @@ app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
-
+app.use('/api/admin/staff', staffRoutes);
 // =============================================
 // COMMENTED ROUTES (Uncomment when ready)
 // =============================================
@@ -333,6 +334,10 @@ async function startApplication() {
       logger.warn('[Redis] Running without Redis cache - functionality may be limited');
     }
 
+    // ✅ START CLEANUP SERVICE (after DB connection)
+    cleanupService.start();
+
+
     // Create HTTP server
     server = app.listen(PORT, () => {
       logger.info('='.repeat(70));
@@ -356,6 +361,12 @@ async function startApplication() {
 
     gracefulShutdown.registerConnection('Redis', async () => {
       await redisManager.disconnect();
+    });
+
+
+     // ✅ REGISTER CLEANUP SERVICE WITH SHUTDOWN
+    gracefulShutdown.registerConnection('CleanupService', async () => {
+      cleanupService.stop();
     });
 
     // Setup process handlers
