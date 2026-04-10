@@ -70,13 +70,13 @@ const hashToken = (token) => {
 };
 
 const getRefreshCookieOptions = () => {
-  const secure = process.env.NODE_ENV === 'production';
+  // const isProduction = process.env.NODE_ENV === 'production';
   return {
     httpOnly: true,
-    secure,
-    sameSite: secure ? 'none' : 'lax',
-    path: '/api/auth/refresh',
-    maxAge: 7 * 24 * 60 * 60 * 1000
+    secure: true,
+    sameSite: 'none',
+    path: '/',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   };
 };
 
@@ -219,6 +219,13 @@ const verifyOTPAndLogin = async (req, res) => {
 
       res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
+//       res.cookie("refreshToken", refreshToken, {
+//   httpOnly: true,
+//   secure: true,
+//   sameSite: 'none',
+//   path: '/',
+//   maxAge: 7 * 24 * 60 * 60 * 1000
+// });
       return res.status(200).json({
         success: true,
         message: "Already verified. Logged in successfully.",
@@ -368,6 +375,14 @@ const login = async (req, res) => {
 
     res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
+    
+//       res.cookie("refreshToken", refreshToken, {
+//   httpOnly: true,
+//   secure: true,
+//   sameSite: 'none',
+//   path: '/',
+//   maxAge: 7 * 24 * 60 * 60 * 1000
+// });
     return res.status(200).json({
       success: true,
       message: "Login successful",
@@ -656,19 +671,28 @@ const logout = async (req, res) => {
 
 const refreshAccessToken = async (req, res) => {
   try {
+    console.log("🔄 Refresh token request received");
+    console.log("Cookies:", req.cookies);
+    
     const refreshToken = req.cookies?.refreshToken;
 
     if (!refreshToken) {
+      console.log("❌ No refresh token in cookies");
       return res.status(401).json({
         success: false,
-        message: "Refresh token missing"
+        message: "Refresh token missing",
+        code: "REFRESH_TOKEN_MISSING"
       });
     }
+
+    console.log("✅ Refresh token found");
 
     let decoded;
     try {
       decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+      console.log("✅ Token verified, userId:", decoded.id);
     } catch (err) {
+      console.log("❌ Token verification failed:", err.message);
       return res.status(401).json({
         success: false,
         message: "Invalid or expired refresh token"
@@ -676,6 +700,7 @@ const refreshAccessToken = async (req, res) => {
     }
 
     if (decoded.type !== "refresh") {
+      console.log("❌ Invalid token type:", decoded.type);
       return res.status(401).json({
         success: false,
         message: "Invalid token type"
@@ -686,6 +711,7 @@ const refreshAccessToken = async (req, res) => {
     const user = await User.findById(decoded.id).select("+refreshTokens.token");
 
     if (!user) {
+      console.log("❌ User not found:", decoded.id);
       return res.status(401).json({
         success: false,
         message: "User not found"
@@ -696,12 +722,14 @@ const refreshAccessToken = async (req, res) => {
 
     const tokenIndex = user.refreshTokens.findIndex(t => t.token === hashedToken);
     if (tokenIndex === -1) {
+      console.log("❌ Token mismatch - possible reuse");
       return res.status(401).json({
         success: false,
         message: "Refresh token mismatch"
       });
     }
 
+    console.log("✅ Generating new tokens");
     const newAccessToken = generateAccessToken(user._id, user.userType, user.role);
     const newRefreshToken = generateRefreshToken(user._id);
     const newHashedToken = hashToken(newRefreshToken);
@@ -714,7 +742,16 @@ const refreshAccessToken = async (req, res) => {
 
     await user.save();
 
-    res.cookie("refreshToken", newRefreshToken, getRefreshCookieOptions());
+    // ✅ Set new cookie with correct options
+    // res.cookie("refreshToken", newRefreshToken, {
+    //   httpOnly: true,
+    //   secure: true,
+    //   sameSite: 'none',
+    //   path: '/',
+    //   maxAge: 7 * 24 * 60 * 60 * 1000
+    // });
+   res.cookie("refreshToken", newRefreshToken, getRefreshCookieOptions());
+    console.log("✅ New tokens sent successfully");
 
     return res.status(200).json({
       success: true,
@@ -725,7 +762,8 @@ const refreshAccessToken = async (req, res) => {
     console.error("Refresh token error:", error);
     return res.status(500).json({
       success: false,
-      message: "Could not refresh token"
+      message: "Could not refresh token",
+      error: error.message
     });
   }
 };
