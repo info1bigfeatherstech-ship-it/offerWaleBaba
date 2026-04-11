@@ -96,8 +96,7 @@ class CacheConfig {
     
     // Always invalidate lists
     patterns.push(`${this.prefixes.PRODUCT}:*`);
-    patterns.push(`${this.prefixes.SEARCH}:*`);
-    
+    patterns.push(`${this.prefixes.SEARCH}:*`); 
     return patterns;
   }
 }
