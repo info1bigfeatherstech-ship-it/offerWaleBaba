@@ -2,7 +2,7 @@
  * Staff Management Routes
  * All routes are protected with Admin authentication
  * 
- * @version 1.0.0
+ * @version 2.0.0
  * @author OfferWaleBaba Team
  */
 
@@ -20,7 +20,7 @@ router.use(verifyToken);
 router.use(authorizeRoles('admin'));
 
 // =============================================
-// STAFF MANAGEMENT ENDPOINTS
+// STAFF CRUD OPERATIONS
 // =============================================
 
 /**
@@ -87,19 +87,45 @@ router.get('/:id', staffController.getStaffById);
 router.put('/:id', staffController.updateStaff);
 
 /**
- * @route   POST /api/admin/staff/:id/reset-password
- * @desc    Reset staff member's password
- * @access  Admin only
- * @body    none (generates random password)
- */
-router.post('/:id/reset-password', staffController.resetStaffPassword);
-
-/**
  * @route   DELETE /api/admin/staff/:id
  * @desc    Delete staff member
  * @access  Admin only
  */
 router.delete('/:id', staffController.deleteStaff);
+
+// =============================================
+// PASSWORD RESET WITH OTP (New endpoints)
+// =============================================
+
+/**
+ * @route   POST /api/admin/staff/:id/initiate-reset
+ * @desc    Initiate password reset - sends OTP to admin email
+ * @access  Admin only
+ */
+router.post('/:id/initiate-reset', staffController.initiatePasswordReset);
+
+/**
+ * @route   POST /api/admin/staff/:id/verify-reset
+ * @desc    Verify OTP and reset staff password
+ * @access  Admin only
+ * @body    otp, newPassword
+ */
+router.post(
+  '/:id/verify-reset',
+  [
+    body('otp')
+      .notEmpty()
+      .withMessage('OTP is required')
+      .matches(/^\d{6}$/)
+      .withMessage('OTP must be a 6-digit number'),
+    body('newPassword')
+      .notEmpty()
+      .withMessage('New password is required')
+      .isLength({ min: 6 })
+      .withMessage('Password must be at least 6 characters')
+  ],
+  staffController.verifyOTPAndResetPassword
+);
 
 // =============================================
 // ADMIN'S OWN PROFILE ENDPOINTS
