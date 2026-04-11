@@ -16,7 +16,7 @@ const authorizeRoles = (...allowedRoles) => {
       });
     }
 
-    if (role === 'admin' || role === 'superadmin' || allowedRoles.includes(role)) {
+    if (role === 'admin' || allowedRoles.includes(role)) {
       return next();
     }
 

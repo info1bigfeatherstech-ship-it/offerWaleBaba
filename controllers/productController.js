@@ -83,7 +83,7 @@ const createProduct = async (req, res) => {
       variants: variantsRaw,
       // ✅ NEW FIELDS
       hsnCode,
-      taxRate,
+      gstRate,
       isFragile
     } = req.body;
 
@@ -155,31 +155,31 @@ const createProduct = async (req, res) => {
     for (let i = 0; i < variantsInput.length; i++) {
       const v = variantsInput[i];
 
-      // 🔒 BARCODE REQUIRED
-      if (!v.barcode) {
+      // 🔒 productCode REQUIRED
+      if (!v.productCode) {
         return res.status(400).json({
           success: false,
-          message: `Barcode is required for variant ${i}`
+          message: `productCode is required for variant ${i}`
         });
       }
 
-      const barcodeNumber = Number(v.barcode);
-      if (isNaN(barcodeNumber)) {
+      const productCodeNumber = Number(v.productCode);
+      if (isNaN(productCodeNumber)) {
         return res.status(400).json({
           success: false,
-          message: `Barcode must be a valid number for variant ${i}`
+          message: `productCode must be a valid number for variant ${i}`
         });
       }
 
-      // 🔒 CHECK DUPLICATE BARCODE IN DB
-      const existingBarcode = await Product.findOne({
-        "variants.barcode": barcodeNumber
+      // 🔒 CHECK DUPLICATE productCode IN DB
+      const existingproductCode = await Product.findOne({
+        "variants.productCode": productCodeNumber
       });
 
-      if (existingBarcode) {
+      if (existingproductCode) {
         return res.status(400).json({
           success: false,
-          message: `Barcode ${barcodeNumber} already exists`
+          message: `productCode ${productCodeNumber} already exists`
         });
       }
 
@@ -262,7 +262,7 @@ const createProduct = async (req, res) => {
 
       variants.push({
         sku: skuVal,
-        barcode: barcodeNumber,
+        productCode: productCodeNumber,
         wholesale,
         attributes: Array.isArray(v.attributes)
           ? v.attributes.map(a => ({ key: a.key, value: a.value }))
@@ -312,16 +312,16 @@ const createProduct = async (req, res) => {
     // =============================
     // ✅ VALIDATE TAX RATE (Optional - no default)
     // =============================
-    let finalTaxRate = null;
-    if (taxRate !== undefined && taxRate !== null) {
-      const parsedTaxRate = Number(taxRate);
-      if (isNaN(parsedTaxRate) || parsedTaxRate < 0) {
+    let finalgstRate = null;
+    if (gstRate !== undefined && gstRate !== null) {
+      const parsedgstRate = Number(gstRate);
+      if (isNaN(parsedgstRate) || parsedgstRate < 0) {
         return res.status(400).json({
           success: false,
           message: "Tax rate must be a valid number greater than or equal to 0"
         });
       }
-      finalTaxRate = parsedTaxRate;
+      finalgstRate = parsedgstRate;
     }
     // ⚠️ No default value - if not provided, stays null
 
@@ -362,7 +362,7 @@ const createProduct = async (req, res) => {
       
       // ✅ NEW FIELDS (NO DEFAULTS)
       hsnCode: finalHsnCode,
-      taxRate: finalTaxRate,
+      gstRate: finalgstRate,
       isFragile: finalIsFragile
     });
 
@@ -624,35 +624,35 @@ async function processProductWithRollback(productName, productRows, stats) {
     });
     
     const variants = [];
-    const duplicateBarcodes = new Map();
+    const duplicateproductCodes = new Map();
     
-    // FIRST: Validate all barcodes before building anything
+    // FIRST: Validate all productCodes before building anything
     for (const row of productRows) {
-      const barcode = row.barcode?.trim();
-      if (!barcode) continue;
+      const productCode = row.productCode?.trim();
+      if (!productCode) continue;
       
       // Check duplicate in same CSV
-      if (duplicateBarcodes.has(barcode)) {
-        throw new Error(`Duplicate barcode ${barcode} found in same product. Row ${row.rowNumber} and ${duplicateBarcodes.get(barcode)}`);
+      if (duplicateproductCodes.has(productCode)) {
+        throw new Error(`Duplicate productCode ${productCode} found in same product. Row ${row.rowNumber} and ${duplicateproductCodes.get(productCode)}`);
       }
-      duplicateBarcodes.set(barcode, row.rowNumber);
+      duplicateproductCodes.set(productCode, row.rowNumber);
       
-      // Check if barcode already exists in database (across ALL products)
-      const existingProductWithBarcode = await Product.findOne({
-        'variants.barcode': Number(barcode)
+      // Check if productCode already exists in database (across ALL products)
+      const existingProductWithproductCode = await Product.findOne({
+        'variants.productCode': Number(productCode)
       });
       
-      if (existingProductWithBarcode) {
-        // If we're updating the SAME product, check if this barcode is already in it
-        if (existingProduct && existingProduct._id.toString() === existingProductWithBarcode._id.toString()) {
-          // Same product - check if variant with this barcode already exists
-          const barcodeExistsInProduct = existingProduct.variants.some(v => v.barcode === Number(barcode));
-          if (barcodeExistsInProduct) {
-            throw new Error(`Barcode ${barcode} already exists as a variant in product "${productName}". Please use unique barcode.`);
+      if (existingProductWithproductCode) {
+        // If we're updating the SAME product, check if this productCode is already in it
+        if (existingProduct && existingProduct._id.toString() === existingProductWithproductCode._id.toString()) {
+          // Same product - check if variant with this productCode already exists
+          const productCodeExistsInProduct = existingProduct.variants.some(v => v.productCode === Number(productCode));
+          if (productCodeExistsInProduct) {
+            throw new Error(`productCode ${productCode} already exists as a variant in product "${productName}". Please use unique productCode.`);
           }
         } else {
           // Different product - block immediately
-          throw new Error(`Barcode ${barcode} already exists in product "${existingProductWithBarcode.name}". Please use unique barcode.`);
+          throw new Error(`productCode ${productCode} already exists in product "${existingProductWithproductCode.name}". Please use unique productCode.`);
         }
       }
     }
@@ -668,13 +668,13 @@ async function processProductWithRollback(productName, productRows, stats) {
       let addedCount = 0;
       
       for (const variant of variants) {
-        // Final safety check - verify barcode not already in product
-        const barcodeExists = existingProduct.variants.some(v => v.barcode === variant.barcode);
-        if (barcodeExists) {
+        // Final safety check - verify productCode not already in product
+        const productCodeExists = existingProduct.variants.some(v => v.productCode === variant.productCode);
+        if (productCodeExists) {
           stats.skipped.push({
             product: productName,
-            barcode: variant.barcode,
-            reason: "Variant with same barcode already exists in this product"
+            productCode: variant.productCode,
+            reason: "Variant with same productCode already exists in this product"
           });
           continue;
         }
@@ -687,7 +687,7 @@ async function processProductWithRollback(productName, productRows, stats) {
         if (attributeMatch) {
           stats.skipped.push({
             product: productName,
-            barcode: variant.barcode,
+            productCode: variant.productCode,
             attributes: variant.attributes,
             reason: "Variant with same attributes already exists"
           });
@@ -885,13 +885,13 @@ async function buildVariantWithValidation(row, productName) {
     }
   }
   
-  // Generate unique SKU and Barcode
+  // Generate unique SKU and productCode
   const timestamp = Date.now();
   const random = Math.floor(Math.random() * 10000);
   
   return {
-    sku: row.sku || (row.barcode ? `SKU-${row.barcode}` : `SKU-${timestamp}-${random}`),
-    barcode: row.barcode ? Number(row.barcode) : Number(`${timestamp}${random}`.slice(0, 15)),
+    sku: row.sku || (row.productCode ? `SKU-${row.productCode}` : `SKU-${timestamp}-${random}`),
+    productCode: row.productCode ? Number(row.productCode) : Number(`${timestamp}${random}`.slice(0, 15)),
     wholesale,
     attributes: variantAttributes,
     price: {
@@ -941,7 +941,7 @@ async function buildNewProductWithVariants(productName, productRows, variants) {
   
   // HSN, Tax, Fragile
   const finalHsnCode = firstRow.hsnCode?.trim().toUpperCase() || null;
-  const finalTaxRate = firstRow.taxRate ? parseFloat(firstRow.taxRate) : null;
+  const finalgstRate = firstRow.gstRate ? parseFloat(firstRow.gstRate) : null;
  const finalIsFragile = parseBoolean(firstRow.isFragile);
   
   const productObj = {
@@ -955,7 +955,7 @@ async function buildNewProductWithVariants(productName, productRows, variants) {
     isFeatured: parseBoolean(firstRow.isfeatured),
     variants: variants,
     hsnCode: finalHsnCode,
-    taxRate: finalTaxRate,
+    gstRate: finalgstRate,
     isFragile: finalIsFragile,
       shipping: {
       weight: Number(firstRow.weight) || 0,
@@ -1178,14 +1178,14 @@ const downloadErrorReport = async (req, res) => {
 // =============================================
 // HELPER: Upload single image with retry
 // =============================================
-async function uploadSingleImageWithRetry(filePath, productName, barcode, index, maxRetries = 3) {
+async function uploadSingleImageWithRetry(filePath, productName, productCode, index, maxRetries = 3) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const buffer = fs.readFileSync(filePath);
       const upload = await uploadToCloudinary(
         buffer,
         "products",
-        `${productName}-${barcode}-${index}-${Date.now()}`
+        `${productName}-${productCode}-${index}-${Date.now()}`
       );
       return {
         url: upload.url,
@@ -1206,9 +1206,9 @@ async function uploadSingleImageWithRetry(filePath, productName, barcode, index,
 // =============================================
 // HELPER: Upload variant images with concurrency limit
 // =============================================
-async function uploadVariantImages(imageFolder, productName, barcode, concurrencyLimit = 5) {
+async function uploadVariantImages(imageFolder, productName, productCode, concurrencyLimit = 5) {
   if (!fs.existsSync(imageFolder)) {
-    throw new Error(`Image folder not found for barcode ${barcode}`);
+    throw new Error(`Image folder not found for productCode ${productCode}`);
   }
 
   const files = fs.readdirSync(imageFolder).filter(file => 
@@ -1216,7 +1216,7 @@ async function uploadVariantImages(imageFolder, productName, barcode, concurrenc
   );
 
   if (!files.length) {
-    throw new Error(`No valid images found for barcode ${barcode}`);
+    throw new Error(`No valid images found for productCode ${productCode}`);
   }
 
   // Limit to max 10 images per variant
@@ -1234,7 +1234,7 @@ async function uploadVariantImages(imageFolder, productName, barcode, concurrenc
     const batchPromises = batch.map((file, idx) => {
       const filePath = path.join(imageFolder, file);
       const globalIndex = results.length;
-      return uploadSingleImageWithRetry(filePath, productName, barcode, globalIndex);
+      return uploadSingleImageWithRetry(filePath, productName, productCode, globalIndex);
     });
     
     const batchResults = await Promise.all(batchPromises);
@@ -1248,19 +1248,19 @@ async function uploadVariantImages(imageFolder, productName, barcode, concurrenc
 // HELPER: Build variant with complete validation
 // =============================================
 async function buildCompleteVariant(row, productName, images) {
-  // Validate barcode
-  const barcode = Number(row.barcode);
-  if (isNaN(barcode)) {
-    throw new Error(`Invalid barcode: ${row.barcode}`);
+  // Validate productCode
+  const productCode = Number(row.productCode);
+  if (isNaN(productCode)) {
+    throw new Error(`Invalid productCode: ${row.productCode}`);
   }
   
-  // Check for duplicate barcode in database
+  // Check for duplicate productCode in database
   const existingVariant = await Product.findOne({
-    'variants.barcode': barcode
+    'variants.productCode': productCode
   });
   
   if (existingVariant) {
-    throw new Error(`Barcode ${barcode} already exists in product "${existingVariant.name}"`);
+    throw new Error(`productCode ${productCode} already exists in product "${existingVariant.name}"`);
   }
   
   // Parse and validate price
@@ -1286,7 +1286,7 @@ async function buildCompleteVariant(row, productName, images) {
   
   if (wholesale) {
     if (!row.wholesaleBase || row.wholesaleBase.trim() === "") {
-      throw new Error(`wholesaleBase is required when wholesale=true for barcode ${barcode}`);
+      throw new Error(`wholesaleBase is required when wholesale=true for productCode ${productCode}`);
     }
     
     wholesaleBase = Number(row.wholesaleBase);
@@ -1310,7 +1310,7 @@ async function buildCompleteVariant(row, productName, images) {
       : 1;
       
     if (minimumOrderQuantity < 1) {
-      throw new Error(`minimumOrderQuantity must be at least 1 for barcode ${barcode}`);
+      throw new Error(`minimumOrderQuantity must be at least 1 for productCode ${productCode}`);
     }
   }
   
@@ -1328,11 +1328,11 @@ async function buildCompleteVariant(row, productName, images) {
   // Generate SKU
   const timestamp = Date.now();
   const random = Math.floor(Math.random() * 10000);
-  const sku = row.sku?.trim() || `SKU-${barcode}`;
+  const sku = row.sku?.trim() || `SKU-${productCode}`;
   
   return {
     sku,
-    barcode,
+    productCode,
     wholesale,
     attributes: variantAttributes,
     price: {
@@ -1429,10 +1429,10 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
       
       const batchPromises = batch.map(async (row) => {
         try {
-          const barcode = Number(row.barcode);
+          const productCode = Number(row.productCode);
           
-          if (isNaN(barcode)) {
-            throw new Error(`Invalid barcode: ${row.barcode}`);
+          if (isNaN(productCode)) {
+            throw new Error(`Invalid productCode: ${row.productCode}`);
           }
 
           // Validate category
@@ -1444,9 +1444,9 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
             throw new Error(`Category not found: ${row.category}`);
           }
 
-          // Upload images from barcode folder
-          const imageFolder = path.join(rootFolder, String(barcode));
-          const variantImages = await uploadVariantImages(imageFolder, row.name, barcode);
+          // Upload images from productCode folder
+          const imageFolder = path.join(rootFolder, String(productCode));
+          const variantImages = await uploadVariantImages(imageFolder, row.name, productCode);
 
           // Build complete variant with wholesale
           const newVariant = await buildCompleteVariant(row, row.name, variantImages);
@@ -1458,7 +1458,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 
           // Parse product-level fields
           const finalHsnCode = row.hsnCode?.trim().toUpperCase() || null;
-          const finalTaxRate = row.taxRate ? parseFloat(row.taxRate) : null;
+          const finalgstRate = row.gstRate ? parseFloat(row.gstRate) : null;
           const finalIsFragile = parseBoolean(row.isFragile);
           const parseAttributes = (attrString) => {
             if (!attrString) return [];
@@ -1483,7 +1483,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
             
             // Update product-level fields if not set
             if (finalHsnCode && !product.hsnCode) product.hsnCode = finalHsnCode;
-            if (finalTaxRate !== null && !product.taxRate) product.taxRate = finalTaxRate;
+            if (finalgstRate !== null && !product.gstRate) product.gstRate = finalgstRate;
             if (finalIsFragile && !product.isFragile) product.isFragile = finalIsFragile;
             if (productAttributes.length && !product.attributes?.length) {
               product.attributes = productAttributes;
@@ -1491,7 +1491,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
             
             await product.save();
             stats.successful++;
-            stats.products.push({ name: row.name, barcode, action: 'updated' });
+            stats.products.push({ name: row.name, productCode, action: 'updated' });
           } else {
             // Create new product
             const slug = await generateSlug(row.name);
@@ -1518,7 +1518,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
               variants: [newVariant],
               seo: seoData,
               hsnCode: finalHsnCode,
-              taxRate: finalTaxRate,
+              gstRate: finalgstRate,
               isFragile: finalIsFragile,
                 shipping: {
     weight: Number(row.weight) || 0,
@@ -1543,14 +1543,14 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
             
             await product.save();
             stats.successful++;
-            stats.products.push({ name: row.name, barcode, action: 'inserted' });
+            stats.products.push({ name: row.name, productCode, action: 'inserted' });
           }
           
         } catch (err) {
           stats.failed++;
           stats.errors.push({
             row: row.name || "Unknown",
-            barcode: row.barcode,
+            productCode: row.productCode,
             error: err.message
           });
           console.error(`❌ Failed to process ${row.name}:`, err.message);
@@ -1574,7 +1574,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
     
     if (stats.errors.length > 0) {
       const { Parser } = require('json2csv');
-      const parser = new Parser({ fields: ["row", "barcode", "error"] });
+      const parser = new Parser({ fields: ["row", "productCode", "error"] });
       const csvData = parser.parse(stats.errors);
       const fileName = `failed-upload-${Date.now()}.csv`;
       const errorReportPath = path.join(__dirname, "../uploads", fileName);
@@ -1809,28 +1809,28 @@ const previewBulkUpload = async (req, res) => {
       const { name: productName, rows: productRows } = productData;
       const productErrors = [];
       const variants = [];
-      const barcodes = new Set();
+      const productCodes = new Set();
       
       for (const row of productRows) {
         const variantErrors = [];
         const variantWarnings = [];
-        const barcode = row.barcode?.trim();
+        const productCode = row.productCode?.trim();
         
-        // Barcode validation
-        if (!barcode) {
-          variantErrors.push("Barcode is missing");
-        } else if (barcodes.has(barcode)) {
-          variantErrors.push(`Duplicate barcode ${barcode} in same product`);
+        // productCode validation
+        if (!productCode) {
+          variantErrors.push("productCode is missing");
+        } else if (productCodes.has(productCode)) {
+          variantErrors.push(`Duplicate productCode ${productCode} in same product`);
         } else {
-          barcodes.add(barcode);
+          productCodes.add(productCode);
           
-          // Check if barcode already exists in DB (warning only)
-          if (!isNaN(Number(barcode))) {
+          // Check if productCode already exists in DB (warning only)
+          if (!isNaN(Number(productCode))) {
             const existingProduct = await Product.findOne({
-              'variants.barcode': Number(barcode)
+              'variants.productCode': Number(productCode)
             });
             if (existingProduct) {
-              variantWarnings.push(`Barcode ${barcode} already exists in product "${existingProduct.name}"`);
+              variantWarnings.push(`productCode ${productCode} already exists in product "${existingProduct.name}"`);
             }
           }
         }
@@ -1855,8 +1855,8 @@ const previewBulkUpload = async (req, res) => {
         // Image validation (only if ZIP provided)
         let hasImages = false;
         let imageCount = 0;
-        if (hasZip && rootFolder && barcode) {
-          const imageFolder = path.join(rootFolder, String(barcode));
+        if (hasZip && rootFolder && productCode) {
+          const imageFolder = path.join(rootFolder, String(productCode));
           if (fs.existsSync(imageFolder)) {
             const images = fs.readdirSync(imageFolder).filter(file => 
               /\.(jpg|jpeg|png|gif|webp)$/i.test(file)
@@ -1865,11 +1865,11 @@ const previewBulkUpload = async (req, res) => {
             hasImages = imageCount > 0;
             if (hasImages) totalImagesFound++;
             if (!hasImages) {
-              variantWarnings.push(`No images found for barcode ${barcode}`);
+              variantWarnings.push(`No images found for productCode ${productCode}`);
               missingImagesCount++;
             }
           } else {
-            variantWarnings.push(`Image folder not found for barcode ${barcode}`);
+            variantWarnings.push(`Image folder not found for productCode ${productCode}`);
             missingImagesCount++;
           }
         } else if (!hasZip && row.images) {
@@ -1882,7 +1882,7 @@ const previewBulkUpload = async (req, res) => {
         
         variants.push({
           rowNumber: row.rowNumber,
-          barcode: barcode || "N/A",
+          productCode: productCode || "N/A",
           basePrice: basePrice || 0,
           salePrice: salePrice || null,
           wholesale,
@@ -2054,18 +2054,18 @@ const updateProduct = async (req, res) => {
     // =====================================================
     // ✅ NEW: VALIDATE TAX RATE
     // =====================================================
-    if (updates.taxRate !== undefined) {
-      if (updates.taxRate !== null && updates.taxRate !== "") {
-        const parsedTaxRate = Number(updates.taxRate);
-        if (isNaN(parsedTaxRate) || parsedTaxRate < 0) {
+    if (updates.gstRate !== undefined) {
+      if (updates.gstRate !== null && updates.gstRate !== "") {
+        const parsedgstRate = Number(updates.gstRate);
+        if (isNaN(parsedgstRate) || parsedgstRate < 0) {
           return res.status(400).json({
             success: false,
             message: "Tax rate must be a valid number greater than or equal to 0"
           });
         }
-        updates.taxRate = parsedTaxRate;
+        updates.gstRate = parsedgstRate;
       } else {
-        updates.taxRate = null;
+        updates.gstRate = null;
       }
     }
 
@@ -2077,28 +2077,28 @@ const updateProduct = async (req, res) => {
     }
 
     // =====================================================
-    // ✅ VARIANT UPDATE BY BARCODE
+    // ✅ VARIANT UPDATE BY productCode
     // =====================================================
 
-    if (updates.barcode) {
+    if (updates.productCode) {
 
-      const barcodeNumber = Number(updates.barcode);
+      const productCodeNumber = Number(updates.productCode);
 
-      if (isNaN(barcodeNumber)) {
+      if (isNaN(productCodeNumber)) {
         return res.status(400).json({
           success: false,
-          message: "Invalid barcode"
+          message: "Invalid productCode"
         });
       }
 
       const variantIndex = existingProduct.variants.findIndex(
-        v => v.barcode === barcodeNumber
+        v => v.productCode === productCodeNumber
       );
 
       if (variantIndex === -1) {
         return res.status(404).json({
           success: false,
-          message: "No product found with this barcode"
+          message: "No product found with this productCode"
         });
       }
 
@@ -2215,7 +2215,7 @@ const updateProduct = async (req, res) => {
       }
 
       const updatedProduct = await Product.findOneAndUpdate(
-        { slug, "variants.barcode": barcodeNumber },
+        { slug, "variants.productCode": productCodeNumber },
         { $set: updateFields },
         { new: true }
       );
@@ -2340,9 +2340,9 @@ const updateProduct = async (req, res) => {
     }
 
     // =====================================================
-    // ✅ REGENERATE SEO if hsnCode or taxRate changed (optional but good for meta keywords)
+    // ✅ REGENERATE SEO if hsnCode or gstRate changed (optional but good for meta keywords)
     // =====================================================
-    if (updates.hsnCode !== undefined || updates.taxRate !== undefined) {
+    if (updates.hsnCode !== undefined || updates.gstRate !== undefined) {
       const categoryDoc = await Category.findById(existingProduct.category).lean();
       
       const productDataForSEO = {
@@ -2352,7 +2352,7 @@ const updateProduct = async (req, res) => {
         variants: existingProduct.variants,
         // Pass new fields for SEO (can be used in generateSEOData if needed)
         hsnCode: updates.hsnCode !== undefined ? updates.hsnCode : existingProduct.hsnCode,
-        taxRate: updates.taxRate !== undefined ? updates.taxRate : existingProduct.taxRate
+        gstRate: updates.gstRate !== undefined ? updates.gstRate : existingProduct.gstRate
       };
       
       const seoData = generateSEOData(productDataForSEO);
@@ -3110,33 +3110,33 @@ const addVariant = async (req, res) => {
     console.log("Parsed variant data:", JSON.stringify(variant, null, 2));
 
     // =========================
-    // 🔒 BARCODE VALIDATION
+    // 🔒 productCode VALIDATION
     // =========================
-    if (!variant.barcode) {
+    if (!variant.productCode) {
       return res.status(400).json({
         success: false,
-        message: "Barcode is required"
+        message: "productCode is required"
       });
     }
 
-    const barcodeNumber = Number(variant.barcode);
+    const productCodeNumber = Number(variant.productCode);
 
-    if (isNaN(barcodeNumber)) {
+    if (isNaN(productCodeNumber)) {
       return res.status(400).json({
         success: false,
-        message: "Barcode must be a valid number"
+        message: "productCode must be a valid number"
       });
     }
 
     // 🔒 Global duplicate check
-    const barcodeExists = await Product.exists({
-      "variants.barcode": barcodeNumber
+    const productCodeExists = await Product.exists({
+      "variants.productCode": productCodeNumber
     });
 
-    if (barcodeExists) {
+    if (productCodeExists) {
       return res.status(400).json({
         success: false,
-        message: "Variant with this barcode already exists"
+        message: "Variant with this productCode already exists"
       });
     }
 
@@ -3201,7 +3201,7 @@ const addVariant = async (req, res) => {
 
 const newVariant = {
   sku: skuVal,
-  barcode: barcodeNumber,
+  productCode: productCodeNumber,
 
   wholesale: variant.wholesale === "true" || variant.wholesale === true,
 
@@ -3281,21 +3281,21 @@ const newVariant = {
 const deleteVariant = async (req, res) => {
   try {
     const { slug } = req.params;
-    const { barcode } = req.body;
+    const { productCode } = req.body;
 
-    if (!barcode) {
+    if (!productCode) {
       return res.status(400).json({
         success: false,
-        message: "Barcode is required"
+        message: "productCode is required"
       });
     }
 
-    const barcodeNumber = Number(barcode);
+    const productCodeNumber = Number(productCode);
 
-    if (isNaN(barcodeNumber)) {
+    if (isNaN(productCodeNumber)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid barcode"
+        message: "Invalid productCode"
       });
     }
 
@@ -3310,7 +3310,7 @@ const deleteVariant = async (req, res) => {
 
     // 🔒 Check variant exists
     const variantExists = product.variants.some(
-      v => v.barcode === barcodeNumber
+      v => v.productCode === productCodeNumber
     );
 
     if (!variantExists) {
@@ -3330,7 +3330,7 @@ const deleteVariant = async (req, res) => {
 
     // 🔥 REMOVE VARIANT
     product.variants = product.variants.filter(
-      v => v.barcode !== barcodeNumber
+      v => v.productCode !== productCodeNumber
     );
 
     // 🔁 RECALCULATE PRICE RANGE
@@ -3370,31 +3370,31 @@ const deleteVariant = async (req, res) => {
   }
 };
 
-//get variant by barcode
-// Get product + specific variant by barcode
-const getVariantByBarcode = async (req, res) => {
+//get variant by productCode
+// Get product + specific variant by productCode
+const getVariantByproductCode = async (req, res) => {
   try {
-    const { barcode } = req.params;
+    const { productCode } = req.params;
 
-    if (!barcode) {
+    if (!productCode) {
       return res.status(400).json({
         success: false,
-        message: "Barcode is required"
+        message: "productCode is required"
       });
     }
 
-    const barcodeNumber = Number(barcode);
+    const productCodeNumber = Number(productCode);
 
-    if (isNaN(barcodeNumber)) {
+    if (isNaN(productCodeNumber)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid barcode"
+        message: "Invalid productCode"
       });
     }
 
     // 🔍 Optimized query (returns only matched variant)
     const product = await Product.findOne(
-      { "variants.barcode": barcodeNumber },
+      { "variants.productCode": productCodeNumber },
       {
         name: 1,
         slug: 1,
@@ -3403,7 +3403,7 @@ const getVariantByBarcode = async (req, res) => {
         fomo: 1,
         soldInfo: 1,
         hsnCode: 1,
-        taxRate: 1,
+        gstRate: 1,
         isFragile: 1,
         "variants.$": 1
       }
@@ -3412,7 +3412,7 @@ const getVariantByBarcode = async (req, res) => {
     if (!product) {
       return res.status(404).json({
         success: false,
-        message: "No product found for this barcode"
+        message: "No product found for this productCode"
       });
     }
 
@@ -3427,14 +3427,14 @@ const getVariantByBarcode = async (req, res) => {
         fomo: product.fomo,
         soldInfo: product.soldInfo,
         hsnCode: product.hsnCode,
-        taxRate: product.taxRate,
+        gstRate: product.gstRate,
         isFragile: product.isFragile
       },
       variant: product.variants[0] // matched variant
     });
 
   } catch (error) {
-    console.error("Get variant by barcode error:", error);
+    console.error("Get variant by productCode error:", error);
     return res.status(500).json({
       success: false,
       message: "Error fetching variant",
@@ -3515,22 +3515,22 @@ const updateVariant = async (req, res) => {
     // =========================
     // 📦 UPDATE BASIC FIELDS
     // =========================
-    if (req.body.barcode) {
-      const barcodeNumber = Number(req.body.barcode);
+    if (req.body.productCode) {
+      const productCodeNumber = Number(req.body.productCode);
 
       const exists = await Product.exists({
-        "variants.barcode": barcodeNumber,
+        "variants.productCode": productCodeNumber,
         "variants._id": { $ne: variantId }
       });
 
       if (exists) {
         return res.status(400).json({
           success: false,
-          message: "Barcode already exists"
+          message: "productCode already exists"
         });
       }
 
-      variant.barcode = barcodeNumber;
+      variant.productCode = productCodeNumber;
     }
 
     // =========================
@@ -3714,7 +3714,7 @@ module.exports = {
    getAllProductsAdmin , 
    addVariant,
    deleteVariant,
-   getVariantByBarcode,
+   getVariantByproductCode,
    bulkUploadNewProductsWithImages,
    downloadErrorReport,
    previewBulkUpload

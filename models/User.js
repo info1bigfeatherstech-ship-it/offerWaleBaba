@@ -210,7 +210,8 @@ const userSchema = new mongoose.Schema(
           type: Date
         },
         deviceInfo: {
-          type: String
+          type: String,
+             default: 'Unknown'
         }
       }
     ],

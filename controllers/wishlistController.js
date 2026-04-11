@@ -49,7 +49,7 @@ const formatVariantWithVirtuals = (variant, userType) => {
   return {
     _id: variant._id,
     sku: variant.sku,
-    barcode: variant.barcode,
+    productCode: variant.productCode,
     attributes: variant.attributes || [],
     images: variant.images || [],
     inventory: variant.inventory || {},
