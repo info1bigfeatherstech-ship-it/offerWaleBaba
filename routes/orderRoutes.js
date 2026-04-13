@@ -1,48 +1,43 @@
-// // routes/orderRoutes.js
-// const express = require('express');
-// const router = express.Router();
-// const { verifyToken } = require('../middlewares/auth');
-// const { authorizeRoles } = require('../middlewares/authorizeRoles');
-// const {
-//     createOrder,
-//     verifyPayment,
-//     razorpayWebhook,
-//     getOrder,
-//     getUserOrders,
-//     cancelOrder,
-//     updateOrderStatus,
-//     generateInvoice,
-//     trackOrder
-// } = require('../controllers/orderController');
+const express = require('express');
+const router = express.Router();
+const { verifyToken } = require('../middlewares/auth');
+const { authorizeRoles } = require('../middlewares/authorizeRoles');
+const {
+  createOrder,
+  verifyPayment,
+  payOrderBalance,
+  getOrder,
+  getUserOrders,
+  cancelOrder,
+  updateOrderStatus,
+  generateInvoice,
+  trackOrder,
+  refundOrderPayment
+} = require('../controllers/orderController');
 
-// // ========== PUBLIC ROUTES ==========
-// // Razorpay webhook (no auth required)
-// router.post('/payment/webhook', razorpayWebhook);
+// Razorpay webhook is mounted in index.js (raw body) — not here
 
-// // ========== USER ROUTES (Authenticated) ==========
-// // Create order
-// router.post('/items', verifyToken, createOrder);
+router.post('/items', verifyToken, createOrder);
+router.post('/items/verify-payment', verifyToken, verifyPayment);
+router.post('/items/:orderId/pay-balance', verifyToken, payOrderBalance);
+router.get('/items', verifyToken, getUserOrders);
+router.get('/items/:orderId', verifyToken, getOrder);
+router.get('/items/:orderId/track', verifyToken, trackOrder);
+router.get('/items/:orderId/invoice', verifyToken, generateInvoice);
+router.put('/items/:orderId/cancel', verifyToken, cancelOrder);
 
-// // Verify payment after Razorpay success
-// router.post('/items/verify-payment', verifyToken, verifyPayment);
+router.post(
+  '/admin/items/:orderId/refund',
+  verifyToken,
+  authorizeRoles('admin'),
+  refundOrderPayment
+);
 
-// // Get user's all orders
-// router.get('/items', verifyToken, getUserOrders);
+router.put(
+  '/admin/items/:orderId/status',
+  verifyToken,
+  authorizeRoles('admin', 'order_manager'),
+  updateOrderStatus
+);
 
-// // Get single order by ID
-// router.get('/items/:orderId', verifyToken, getOrder);
-
-// // Track order status
-// router.get('/items/:orderId/track', verifyToken, trackOrder);
-
-// // Generate invoice
-// router.get('/items/:orderId/invoice', verifyToken, generateInvoice);
-
-// // Cancel order
-// router.put('/items/:orderId/cancel', verifyToken, cancelOrder);
-
-// // ========== ADMIN ROUTES ==========
-// // Update order status (admin or order_manager)
-// router.put('/admin/items/:orderId/status', verifyToken, authorizeRoles('admin', 'order_manager'), updateOrderStatus);
-
-// module.exports = router;
+module.exports = router;

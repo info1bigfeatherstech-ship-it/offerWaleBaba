@@ -42,8 +42,10 @@ const variantSchema = new mongoose.Schema(
       trim: true
     },
     productCode: {
-      type: Number,
-      required: true
+      type: String,
+      required: true,
+      trim: true,
+      uppercase: true
     },
     attributes: [
       {

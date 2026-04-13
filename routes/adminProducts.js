@@ -192,6 +192,7 @@ router.post(
 // BULK UPLOAD & PREVIEW ROUTES (Specific paths)
 // =============================================
 router.post('/preview-csv', uploadCSVFile, productController.previewBulkUpload);
+router.post('/preview-import-csv', uploadCSVFile, productController.previewImportProductsFromCSV);
 router.post('/import-csv', uploadCSVFile, productController.importProductsFromCSV);
 router.get('/download-error-report/:fileName', productController.downloadErrorReport);
 router.post('/bulk-new-products', uploadBulkNewProductFiles, productController.bulkUploadNewProductsWithImages);

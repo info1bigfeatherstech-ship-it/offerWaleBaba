@@ -99,7 +99,7 @@ const formatCartItem = (item, product, variant, userType) => {
     soldInfo: product.soldInfo,
     fomo: product.fomo,
     hsnCode: product.hsnCode,
-    taxRate: product.taxRate,
+    gstRate: product.gstRate,
     isFragile: product.isFragile,
     shipping: product.shipping,
     attributes: product.attributes,
@@ -138,7 +138,7 @@ const getCart = async (req, res) => {
     const cart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       }).lean();
 
     if (!cart) {
@@ -231,12 +231,12 @@ const addToCart = async (req, res) => {
     // Resolve product
     let product;
     if (productId && mongoose.Types.ObjectId.isValid(productId)) {
-      product = await Product.findById(productId).select('name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants');
+      product = await Product.findById(productId).select('name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants');
     } else if (productSlug) {
       product = await Product.findOne({ 
         slug: String(productSlug).toLowerCase(), 
         status: 'active' 
-      }).select('name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants');
+      }).select('name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants');
     }
 
     if (!product) {
@@ -354,7 +354,7 @@ const addToCart = async (req, res) => {
     const updatedCart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
     // Format response
@@ -460,7 +460,7 @@ const updateCartItem = async (req, res) => {
       const updatedCart = await Cart.findOne({ userId })
         .populate({ 
           path: 'items.productId', 
-          select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+          select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
         });
       
       // Format response
@@ -495,7 +495,7 @@ const updateCartItem = async (req, res) => {
     }
 
     // Re-check live stock and pricing
-    const product = await Product.findById(productId).select('variants name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt');
+    const product = await Product.findById(productId).select('variants name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt');
     const variant = findVariant(product, variantId);
     if (!variant) {
       return res.status(404).json({ 
@@ -545,7 +545,7 @@ const updateCartItem = async (req, res) => {
     const populatedCart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
     // Format response
@@ -662,7 +662,7 @@ const mergeCart = async (req, res) => {
     const populatedCart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
     const formattedItems = [];
@@ -732,7 +732,7 @@ const removeCartItem = async (req, res) => {
     const populatedCart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
     const formattedItems = [];
@@ -805,7 +805,7 @@ const bulkRemove = async (req, res) => {
     const populatedCart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
     const formattedItems = [];
@@ -868,6 +868,7 @@ const clearCart = async (req, res) => {
 
     cart.items = [];
     cart.totalAmount = 0;
+    cart.deliverySnapshot = undefined;
     await cart.save();
 
     return res.json({

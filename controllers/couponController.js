@@ -1,5 +1,7 @@
 // controllers/couponController.js
 const Coupon = require('../models/Coupon');
+const Cart = require('../models/cart');
+const { evaluateCartForCheckout, couponUserEligible } = require('../services/checkoutComputation.service');
 
 // ==================== ADMIN FUNCTIONS ====================
 
@@ -243,14 +245,34 @@ const toggleCouponStatus = async (req, res) => {
 // VALIDATE COUPON (User - before checkout)
 const validateCoupon = async (req, res) => {
     try {
-        const { couponCode, subtotal } = req.body;
+        const { couponCode, subtotal, useServerCart } = req.body;
         const userId = req.userId;
-        const userType = req.userType || 'user';
+        const finalUserType = req.userType === 'wholesaler' ? 'wholesaler' : 'normal';
 
         if (!couponCode) {
             return res.status(400).json({
                 success: false,
                 message: 'Coupon code is required'
+            });
+        }
+
+        let effectiveSubtotal = Number(subtotal);
+        if (useServerCart || subtotal === undefined || subtotal === null) {
+            const cart = await Cart.findOne({ userId });
+            if (!cart?.items?.length) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Cart is empty — add items before applying a coupon'
+                });
+            }
+            const ev = await evaluateCartForCheckout(cart, finalUserType, null);
+            effectiveSubtotal = ev.subtotal;
+        }
+
+        if (!Number.isFinite(effectiveSubtotal) || effectiveSubtotal < 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid cart subtotal'
             });
         }
 
@@ -274,8 +296,8 @@ const validateCoupon = async (req, res) => {
             });
         }
 
-        // Check user eligibility
-        if (!coupon.applicableUsers.includes(userType)) {
+        // Check user eligibility (align with checkout / orders)
+        if (!couponUserEligible(coupon, finalUserType)) {
             return res.status(400).json({
                 success: false,
                 message: 'Coupon not applicable for your account type'
@@ -283,7 +305,7 @@ const validateCoupon = async (req, res) => {
         }
 
         // Check minimum order value
-        if (subtotal < coupon.minOrderValue) {
+        if (effectiveSubtotal < coupon.minOrderValue) {
             return res.status(400).json({
                 success: false,
                 message: `Minimum order value of ₹${coupon.minOrderValue} required to use this coupon`
@@ -304,7 +326,7 @@ const validateCoupon = async (req, res) => {
         // Calculate discount amount
         let discountAmount = 0;
         if (coupon.discountType === 'percentage') {
-            discountAmount = (subtotal * coupon.discountValue) / 100;
+            discountAmount = (effectiveSubtotal * coupon.discountValue) / 100;
             if (coupon.maxDiscountAmount && discountAmount > coupon.maxDiscountAmount) {
                 discountAmount = coupon.maxDiscountAmount;
             }
@@ -312,7 +334,7 @@ const validateCoupon = async (req, res) => {
             discountAmount = coupon.discountValue;
         }
 
-        discountAmount = Math.min(discountAmount, subtotal);
+        discountAmount = Math.min(discountAmount, effectiveSubtotal);
 
         return res.json({
             success: true,
@@ -342,13 +364,18 @@ const validateCoupon = async (req, res) => {
 // GET AVAILABLE COUPONS FOR USER
 const getAvailableCoupons = async (req, res) => {
     try {
-        const userType = req.userType || 'user';
+        const userType = req.userType === 'wholesaler' ? 'wholesaler' : 'user';
         const now = new Date();
+
+        const applicableFilter =
+            userType === 'wholesaler'
+                ? { $in: ['wholesaler'] }
+                : { $in: ['user', 'normal'] };
 
         const coupons = await Coupon.find({
             isActive: true,
             expiryDate: { $gt: now },
-            applicableUsers: { $in: [userType] }
+            applicableUsers: applicableFilter
         }).select('code name description discountType discountValue maxDiscountAmount minOrderValue expiryDate');
 
         return res.json({

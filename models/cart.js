@@ -55,6 +55,28 @@ const cartSchema = new mongoose.Schema(
     totalAmount: {
       type: Number,
       default: 0
+    },
+
+    /** Server-only delivery quote bound to address + cart fingerprint (TTL enforced in controllers) */
+    deliverySnapshot: {
+      addressId: { type: mongoose.Schema.Types.ObjectId, ref: 'Address', default: null },
+      postalCode: { type: String, default: null },
+      quotedAt: { type: Date, default: null },
+      cartFingerprint: { type: String, default: null },
+      isDeliverable: { type: Boolean, default: false },
+      deliveryCharges: { type: Number, default: 0 },
+      estimatedDays: { type: String, default: null },
+      courierName: { type: String, default: null },
+      weightKg: { type: Number, default: null },
+      dims: {
+        lengthCm: Number,
+        widthCm: Number,
+        heightCm: Number
+      },
+      couponCodeUpper: { type: String, default: '' },
+      ttlMs: { type: Number, default: null },
+      /** Public HTML demo: delivery fee was random/mock (no Shiprocket) */
+      mockShipping: { type: Boolean, default: false }
     }
   },
   { timestamps: true }
@@ -79,5 +101,12 @@ cartSchema.methods.calculateTotal = function () {
     return acc + unit * item.quantity;
   }, 0);
 };
+
+// Mongoose 9: sync hooks do not receive `next`; omit it or use async.
+cartSchema.pre('save', function () {
+  if (this.isModified('items')) {
+    this.deliverySnapshot = undefined;
+  }
+});
 
 module.exports = mongoose.model("Cart", cartSchema);

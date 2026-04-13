@@ -29,15 +29,12 @@ const cartRoutes = require('./routes/Cart');
 const addressRoutes = require('./routes/addressRoutes');
 const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
 const staffRoutes = require('./routes/staffRoutes');
-// =============================================
-// COMMENTED ROUTES (Not active yet)
-// =============================================
-// const orderRoutes = require('./routes/orderRoutes');
-// const wholesalerRoutes = require('./routes/wholesalerRoutes');
-// const assistantRoutes = require('./routes/assistant.routes');
-// const analyticsRoutes = require('./routes/seoAnalyticsRoutes');
-// const adminCouponRoutes = require('./routes/adminCouponRoutes');
-// const userCouponRoutes = require('./routes/userCouponRoutes');
+const orderRoutes = require('./routes/orderRoutes');
+const orderController = require('./controllers/orderController');
+const deliveryRoutes = require('./routes/deliveryRoutes');
+const checkoutRoutes = require('./routes/checkoutRoutes');
+const adminCouponRoutes = require('./routes/adminCouponRoutes');
+const userCouponRoutes = require('./routes/userCouponRoutes');
 
 // Configuration
 const PORT = process.env.PORT || 8081;
@@ -49,19 +46,42 @@ let server = null;
 // ============================================================================
 // Security & Middleware Setup
 // ============================================================================
+// Same host as this API (e.g. /checkout-demo.html) — browsers still send Origin on POST; must be allowed.
+const sameServerOrigins = [
+  `http://localhost:${PORT}`,
+  `http://127.0.0.1:${PORT}`
+];
 const allowedOrigins = [
   'https://offerwaalebaba.netlify.app',
   'http://localhost:3000',
-  'http://localhost:5173'
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5173',
+  ...sameServerOrigins
+];
+
+// Razorpay netbanking/card flows POST to bank URLs and embed bank frames — Helmet's default
+// form-action/frame-src are too tight (often only 'self'), which can leave a popup on about:blank.
+const razorpayCspHosts = [
+  'https://api.razorpay.com',
+  'https://checkout.razorpay.com',
+  'https://*.razorpay.com',
+  'https://cdn.razorpay.com'
 ];
 
 app.use(helmet({
+  // Default COOP is `same-origin`, which breaks Razorpay netbanking/card popups
+  // (cross-origin window stays on about:blank / checkout fails). See helmet README.
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", 'https://res.cloudinary.com', 'data:'],
+      scriptSrc: ["'self'", 'https://checkout.razorpay.com', ...razorpayCspHosts],
+      connectSrc: ["'self'", 'wss://*.razorpay.com', ...razorpayCspHosts],
+      frameSrc: ["'self'", ...razorpayCspHosts, 'https:'],
+      formAction: ["'self'", ...razorpayCspHosts, 'https:'],
+      imgSrc: ["'self'", 'https://res.cloudinary.com', 'https://cdn.razorpay.com', 'data:'],
     },
   },
   hsts: {
@@ -77,9 +97,21 @@ app.use(cors({
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'));
     }
+    // Any other same-machine origin on the API port (PORT in .env)
+    try {
+      const u = new URL(origin);
+      const apiPort = String(PORT);
+      if (
+        (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
+        u.port === apiPort
+      ) {
+        return callback(null, true);
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,  // ✅ IMPORTANT - allows cookies
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -88,6 +120,15 @@ app.use(cors({
 
 // Handle preflight requests
 // app.options('*', cors());
+
+
+// Razorpay webhooks must use raw body for signature verification (before express.json)
+app.post(
+  '/api/orders/payment/webhook',
+  express.raw({ type: 'application/json' }),
+  orderController.razorpayWebhook
+);
+
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -120,6 +161,9 @@ app.use('/api/products/search', limiters.search);
 app.use('/api/cart', limiters.write);
 app.use('/api/wishlist', limiters.write);
 app.use('/api/addresses', limiters.write);
+app.use('/api/delivery', limiters.write);
+app.use('/api/checkout', limiters.write);
+app.use('/api/coupons', limiters.write);
 
 // Sensitive operations - VERY LOW limit (auth)
 app.use('/api/auth/login', limiters.sensitive);
@@ -127,6 +171,7 @@ app.use('/api/auth/register', limiters.sensitive);
 app.use('/api/auth/otp-verify-login', limiters.sensitive);
 app.use('/api/auth/forgot-password', limiters.sensitive);
 app.use('/api/auth/change-password', limiters.sensitive);
+app.use('/api/orders', limiters.sensitive);
 
 // Admin operations - MEDIUM limit
 app.use('/api/admin', limiters.admin);
@@ -215,6 +260,18 @@ app.get('/api/cache/stats', async (req, res) => {
   });
 });
 
+/** Public Razorpay key_id for hosted Checkout (never expose key_secret). */
+app.get('/api/public/razorpay-key', (req, res) => {
+  const keyId = String(process.env.RAZORPAY_KEY_ID || '').trim();
+  if (!keyId) {
+    return res.status(503).json({
+      success: false,
+      message: 'RAZORPAY_KEY_ID is not set on the server'
+    });
+  }
+  return res.json({ success: true, keyId: String(keyId).trim() });
+});
+
 // Helper function to get event loop lag
 function getEventLoopLag() {
   return new Promise((resolve) => {
@@ -246,7 +303,12 @@ app.get('/api', (req, res) => {
       wishlist: '/api/wishlist',
       addresses: '/api/addresses',
       adminProducts: '/api/admin/products',
-      adminAnalytics: '/api/admin/analytics'
+      adminAnalytics: '/api/admin/analytics',
+       publicRazorpayKey: '/api/public/razorpay-key',
+      orders: '/api/orders',
+      checkout: '/api/checkout',
+      delivery: '/api/delivery',
+      coupons: '/api/coupons'
     },
     health: '/health',
     cacheStats: '/api/cache/stats'
@@ -263,15 +325,11 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
 app.use('/api/admin/staff', staffRoutes);
-// =============================================
-// COMMENTED ROUTES (Uncomment when ready)
-// =============================================
-// app.use('/api/orders', orderRoutes);
-// app.use('/api/wholesalers', wholesalerRoutes);
-// app.use('/api/assistant', assistantRoutes);
-// app.use('/api/analytics', analyticsRoutes);
-// app.use('/api/admin/coupons', adminCouponRoutes);
-// app.use('/api/coupons', userCouponRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/checkout', checkoutRoutes);
+app.use('/api/delivery', deliveryRoutes);
+app.use('/api/admin/coupons', adminCouponRoutes);
+app.use('/api/coupons', userCouponRoutes);
 
 // ============================================================================
 // Error Handling Middleware
