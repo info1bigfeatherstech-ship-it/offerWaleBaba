@@ -1,280 +1,307 @@
-// // utils/shiprocket.js
-// const axios = require('axios');
-// const DeliveryZone = require('../models/delieveryZone'); // ✅ Fixed spelling
-// const Product = require('../models/Product'); // ✅ Import Product model for dimensions and weight
+/**
+ * Shiprocket v2 API integration + safe mock fallback.
+ * Serviceability drives server-side delivery fee (never trust client).
+ */
 
-// class ShiprocketService {
-//     constructor() {
-//         this.baseURL = process.env.SHIPROCKET_BASE_URL;
-//         this.token = null;
-//         this.tokenExpiry = null;
-//         this.isEnabled = process.env.SHIPROCKET_ENABLED === 'true';
-//     }
+const axios = require('axios');
+const mongoose = require('mongoose');
+const Product = require('../models/Product');
 
-//     // ========== MOCK METHODS (For Testing) ==========
-//     mockDeliveryCharges(pincode, weight = 1) {
-//         const freeDeliveryPincodes = ['560001', '400001', '110001'];
-        
-//         if (freeDeliveryPincodes.includes(pincode)) {
-//             return {
-//                 isDeliverable: true,
-//                 deliveryCharges: 0,
-//                 estimatedDays: "2-3",
-//                 courierName: "Express Delivery",
-//                 message: "Free delivery available"
-//             };
-//         }
-        
-//         if (pincode.startsWith('56')) {
-//             return {
-//                 isDeliverable: true,
-//                 deliveryCharges: 40,
-//                 estimatedDays: "3-4",
-//                 courierName: "Standard Delivery",
-//                 message: "Delivery available"
-//             };
-//         }
-        
-//         if (pincode.startsWith('40')) {
-//             return {
-//                 isDeliverable: true,
-//                 deliveryCharges: 50,
-//                 estimatedDays: "3-4",
-//                 courierName: "Standard Delivery",
-//                 message: "Delivery available"
-//             };
-//         }
-        
-//         if (pincode.startsWith('11')) {
-//             return {
-//                 isDeliverable: true,
-//                 deliveryCharges: 45,
-//                 estimatedDays: "3-4",
-//                 courierName: "Standard Delivery",
-//                 message: "Delivery available"
-//             };
-//         }
-        
-//         return {
-//             isDeliverable: true,
-//             deliveryCharges: 60,
-//             estimatedDays: "5-7",
-//             courierName: "Standard Delivery",
-//             message: "Delivery available with standard charges"
-//         };
-//     }
+const DEFAULT_BASE = 'https://apiv2.shiprocket.in/v1';
 
-//     // ========== REAL API METHODS ==========
-//     async getAuthToken() {
-//         if (!this.isEnabled) return null;
-        
-//         if (this.token && this.tokenExpiry > Date.now()) {
-//             return this.token;
-//         }
+class ShiprocketService {
+  constructor() {
+    this.baseURL = String(process.env.SHIPROCKET_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
+    this.token = null;
+    this.tokenExpiry = 0;
+    this.enabled = String(process.env.SHIPROCKET_ENABLED || '').toLowerCase() === 'true';
+  }
 
-//         try {
-//             const response = await axios.post(`${this.baseURL}/auth/login`, {
-//                 email: process.env.SHIPROCKET_EMAIL,
-//                 password: process.env.SHIPROCKET_PASSWORD
-//             });
+  mockQuote(pincode, weightKg = 0.5) {
+    const pc = String(pincode || '').replace(/\D/g, '').slice(0, 6);
+    if (pc.length !== 6) {
+      return {
+        isDeliverable: false,
+        deliveryCharges: 0,
+        estimatedDays: null,
+        courierName: null,
+        message: 'Invalid pincode',
+        mock: true
+      };
+    }
+    const w = Math.max(0.05, Number(weightKg) || 0.5);
+    const base = 40 + Math.min(120, Math.round(w * 18));
+    return {
+      isDeliverable: true,
+      deliveryCharges: base,
+      estimatedDays: '3–5',
+      courierName: 'Standard (mock)',
+      message: 'Shiprocket disabled — using internal mock tariff',
+      mock: true
+    };
+  }
 
-//             this.token = response.data.token;
-//             this.tokenExpiry = Date.now() + (response.data.expires_in * 1000);
-//             return this.token;
-//         } catch (error) {
-//             console.error('Shiprocket auth failed:', error.message);
-//             this.isEnabled = false;
-//             return null;
-//         }
-//     }
+  async getAuthToken() {
+    if (!this.enabled) return null;
+    if (this.token && this.tokenExpiry > Date.now() + 5000) return this.token;
 
-//     async checkDeliveryAvailability(pincode, weight = 1, codAmount = 0) {
-//         if (!this.isEnabled) {
-//             console.log('Using mock delivery check for pincode:', pincode);
-//             return this.mockDeliveryCharges(pincode, weight);
-//         }
+    const email = String(process.env.SHIPROCKET_EMAIL || '').trim();
+    const password = String(process.env.SHIPROCKET_PASSWORD || '').trim();
+    if (!email || !password) {
+      console.warn('[Shiprocket] Missing SHIPROCKET_EMAIL / SHIPROCKET_PASSWORD');
+      return null;
+    }
 
-//         try {
-//             const token = await this.getAuthToken();
-//             if (!token) {
-//                 return this.mockDeliveryCharges(pincode, weight);
-//             }
-            
-//             const response = await axios.post(`${this.baseURL}/courier/serviceability`, {
-//                 pickup_postcode: process.env.STORE_PINCODE || '560001',
-//                 delivery_postcode: pincode,
-//                 weight: weight,
-//                 cod_amount: codAmount
-//             }, {
-//                 headers: { 'Authorization': `Bearer ${token}` }
-//             });
+    try {
+      const { data } = await axios.post(
+        `${this.baseURL}/external/auth/login`,
+        { email, password },
+        { timeout: 15000 }
+      );
+      this.token = data.token;
+      const ttlSec = Number(data.expires_in) || 9 * 24 * 3600;
+      this.tokenExpiry = Date.now() + ttlSec * 1000;
+      return this.token;
+    } catch (err) {
+      console.error('[Shiprocket] auth failed:', err.response?.data || err.message);
+      return null;
+    }
+  }
 
-//             const availableCouriers = response.data.data?.available_courier_list || [];
-            
-//             if (availableCouriers.length === 0) {
-//                 return {
-//                     isDeliverable: false,
-//                     message: 'No courier service available for this pincode',
-//                     deliveryCharges: 0,
-//                     estimatedDays: null
-//                 };
-//             }
+  /**
+   * @param {string} deliveryPincode
+   * @param {object} opts
+   * @param {number} opts.weightKg
+   * @param {number} opts.lengthCm
+   * @param {number} opts.widthCm
+   * @param {number} opts.heightCm
+   * @param {number} [opts.codAmount] — declared COD value for serviceability
+   */
+  async checkDeliveryAvailability(deliveryPincode, opts = {}) {
+    const pincode = String(deliveryPincode || '').replace(/\D/g, '').slice(0, 6);
+    const weight = Math.max(0.05, Number(opts.weightKg) || 0.5);
+    const length = Math.max(1, Number(opts.lengthCm) || 10);
+    const breadth = Math.max(1, Number(opts.widthCm) || 10);
+    const height = Math.max(1, Number(opts.heightCm) || 10);
+    const codAmount = Math.max(0, Number(opts.codAmount) || 0);
 
-//             const bestCourier = availableCouriers.reduce((best, current) => {
-//                 return (current.rate < best.rate) ? current : best;
-//             });
+    if (pincode.length !== 6) {
+      return {
+        isDeliverable: false,
+        deliveryCharges: 0,
+        estimatedDays: null,
+        courierName: null,
+        message: 'Valid 6-digit pincode required'
+      };
+    }
 
-//             return {
-//                 isDeliverable: true,
-//                 deliveryCharges: bestCourier.rate,
-//                 estimatedDays: bestCourier.estimated_delivery_days || "3-5",
-//                 courierName: bestCourier.courier_name,
-//                 courierId: bestCourier.courier_id,
-//                 message: "Delivery available"
-//             };
+    if (!this.enabled) {
+      return this.mockQuote(pincode, weight);
+    }
 
-//         } catch (error) {
-//             console.error('Shiprocket API failed, using mock:', error.message);
-//             return this.mockDeliveryCharges(pincode, weight);
-//         }
-//     }
+    const token = await this.getAuthToken();
+    if (!token) {
+      return this.mockQuote(pincode, weight);
+    }
 
-//     async getDeliveryCharges(pincode, weight = 1) {
-//         const result = await this.checkDeliveryAvailability(pincode, weight, 0);
-//         return {
-//             deliveryCharges: result.deliveryCharges,
-//             isDeliverable: result.isDeliverable,
-//             estimatedDays: result.estimatedDays,
-//             courierName: result.courierName
-//         };
-//     }
+    const pickup = String(process.env.STORE_PINCODE || process.env.PICKUP_PINCODE || '560001').replace(/\D/g, '').slice(0, 6);
 
-//     // ✅ NEW METHOD: Calculate total weight with product weights
-//     calculateTotalWeight(items) {
-//         let totalWeight = 0;
-//         for (const item of items) {
-//             const itemWeight = item.productId?.shipping?.weight || 0.5;
-//             totalWeight += item.quantity * itemWeight;
-//         }
-//         return totalWeight;
-//     }
+    try {
+      const { data } = await axios.post(
+        `${this.baseURL}/external/courier/serviceability`,
+        {
+          pickup_postcode: pickup,
+          delivery_postcode: pincode,
+          weight,
+          cod: codAmount > 0 ? 1 : 0,
+          cod_amount: codAmount > 0 ? codAmount : undefined,
+          length,
+          breadth,
+          height
+        },
+        {
+          timeout: 20000,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+        }
+      );
 
-//     async createShipment(order) {
-//         if (!this.isEnabled) {
-//             console.log('Shipment service disabled, skipping shipment creation');
-//             return { 
-//                 success: true, 
-//                 mock: true,
-//                 trackingNumber: `MOCK-${order.orderId}`,
-//                 courier: "Mock Courier"
-//             };
-//         }
+      const list = data?.data?.available_courier_companies || data?.data?.available_courier_list || [];
+      if (!Array.isArray(list) || list.length === 0) {
+        return {
+          isDeliverable: false,
+          deliveryCharges: 0,
+          estimatedDays: null,
+          courierName: null,
+          message: 'No courier available for this route',
+          mock: false
+        };
+      }
 
-//         try {
-//             const token = await this.getAuthToken();
-//             if (!token) {
-//                 return { success: false, error: 'No auth token' };
-//             }
+      const best = list.reduce((a, b) => {
+        const ra = Number(a.rate) || Number(a.freight_charge) || Infinity;
+        const rb = Number(b.rate) || Number(b.freight_charge) || Infinity;
+        return rb < ra ? b : a;
+      });
 
-//             // ✅ Get product details with dimensions
-//             const orderItemsWithDetails = await Promise.all(
-//                 order.items.map(async (item) => {
-//                     // Try to get product with dimensions
-//                     let length = 10, breadth = 10, height = 10;
-//                     let weight = 0.5;
-//                     let hsnCode = item.hsnCode || '0';
-//                     let taxRate = item.taxRate || 0;
-//                     let isFragile = item.isFragile || false;
-                    
-//                     if (item.productId) {
-//                         const product = await Product.findById(item.productId).lean();
-//                         if (product) {
-//                             length = product.shipping?.dimensions?.length || 10;
-//                             breadth = product.shipping?.dimensions?.width || 10;
-//                             height = product.shipping?.dimensions?.height || 10;
-//                             weight = product.shipping?.weight || 0.5;
-                            
-//                             // ✅ Use order item's HSN/tax (stored during order creation)
-//                             hsnCode = item.hsnCode || product.hsnCode || '0';
-//                             taxRate = item.taxRate || product.taxRate || 0;
-//                             isFragile = item.isFragile || product.isFragile || false;
-//                         }
-//                     }
-                    
-//                     return {
-//                         name: item.productId?.name || 'Product',
-//                         sku: item.variantId?.sku || `SKU-${item.productId}`,
-//                         units: item.quantity,
-//                         selling_price: item.priceSnapshot?.sale || item.priceSnapshot?.base || 0,
-//                         discount: 0,
-//                         tax: taxRate,
-//                         hsn: hsnCode,
-//                         is_fragile: isFragile,
-//                         length: length,
-//                         breadth: breadth,
-//                         height: height,
-//                         weight: weight
-//                     };
-//                 })
-//             );
+      const rate = Number(best.rate ?? best.freight_charge ?? best.estimated_delivery_days) || 0;
+      const days =
+        best.estimated_delivery_days != null
+          ? String(best.estimated_delivery_days)
+          : best.etd || '3–5';
 
-//             const shipmentData = {
-//                 order_id: order.orderId,
-//                 order_date: order.createdAt,
-//                 pickup_location: process.env.PICKUP_PINCODE || '560001',
-//                 channel_id: 1,
-//                 comment: `Order #${order.orderId}`,
-//                 billing_customer_name: order.addressSnapshot?.fullName || 'Customer',
-//                 billing_last_name: '',
-//                 billing_address: order.addressSnapshot?.addressLine1 || '',
-//                 billing_address_2: order.addressSnapshot?.addressLine2 || '',
-//                 billing_city: order.addressSnapshot?.city || '',
-//                 billing_pincode: order.addressSnapshot?.postalCode || '',
-//                 billing_state: order.addressSnapshot?.state || '',
-//                 billing_country: order.addressSnapshot?.country || 'India',
-//                 billing_email: order.userEmail || '',
-//                 billing_phone: order.addressSnapshot?.phone || '',
-//                 shipping_is_billing: true,
-//                 order_items: orderItemsWithDetails.map(item => ({
-//                     name: item.name,
-//                     sku: item.sku,
-//                     units: item.units,
-//                     selling_price: item.selling_price,
-//                     discount: item.discount,
-//                     tax: item.tax,
-//                     hsn: item.hsn,
-//                     is_fragile: item.is_fragile
-//                 })),
-//                 payment_method: order.paymentInfo?.method === 'cod' ? 'COD' : 'Prepaid',
-//                 sub_total: order.subtotal,
-//                 length: Math.max(...orderItemsWithDetails.map(i => i.length), 10),
-//                 breadth: Math.max(...orderItemsWithDetails.map(i => i.breadth), 10),
-//                 height: Math.max(...orderItemsWithDetails.map(i => i.height), 10),
-//                 weight: this.calculateTotalWeight(order.items)
-//             };
+      return {
+        isDeliverable: true,
+        deliveryCharges: Math.max(0, rate),
+        estimatedDays: days,
+        courierName: best.courier_name || best.airline_name || 'Courier',
+        courierCompanyId: best.courier_company_id,
+        message: 'Delivery available',
+        mock: false
+      };
+    } catch (err) {
+      console.error('[Shiprocket] serviceability failed:', err.response?.data || err.message);
+      return this.mockQuote(pincode, weight);
+    }
+  }
 
-//             const response = await axios.post(`${this.baseURL}/orders/create/adhoc`, shipmentData, {
-//                 headers: { 'Authorization': `Bearer ${token}` }
-//             });
+  async getDeliveryCharges(pincode, weightKg = 1, dimensionOpts = {}) {
+    const r = await this.checkDeliveryAvailability(pincode, {
+      weightKg,
+      lengthCm: dimensionOpts.lengthCm,
+      widthCm: dimensionOpts.widthCm,
+      heightCm: dimensionOpts.heightCm,
+      codAmount: dimensionOpts.codAmount
+    });
+    return {
+      deliveryCharges: r.deliveryCharges,
+      isDeliverable: r.isDeliverable,
+      estimatedDays: r.estimatedDays,
+      courierName: r.courierName,
+      courierCompanyId: r.courierCompanyId,
+      message: r.message,
+      mock: r.mock
+    };
+  }
 
-//             return {
-//                 success: true,
-//                 shipmentId: response.data.shipment_id,
-//                 trackingNumber: response.data.tracking_number,
-//                 courier: response.data.courier_name,
-//                 labelUrl: response.data.label_url
-//             };
+  /**
+   * Create Shiprocket forward shipment after payment (best-effort).
+   */
+  async createShipment(order) {
+    if (!this.enabled) {
+      return {
+        success: true,
+        mock: true,
+        trackingNumber: `MOCK-${order.orderId}`,
+        courier: 'Mock Courier'
+      };
+    }
 
-//         } catch (error) {
-//             console.error('Shipment creation failed:', error.message);
-//             return { success: false, error: error.message };
-//         }
-//     }
+    const token = await this.getAuthToken();
+    if (!token) {
+      return { success: false, error: 'Shiprocket auth failed' };
+    }
 
-//     // Legacy method (keep for compatibility)
-//     calculateTotalWeightLegacy(items) {
-//         return items.reduce((total, item) => total + (item.quantity * 0.5), 0);
-//     }
-// }
+    const pickupLocation = String(process.env.SHIPROCKET_PICKUP_LOCATION || process.env.PICKUP_LOCATION_NICKNAME || 'Primary').trim();
 
-// module.exports = new ShiprocketService();
+    const orderItems = [];
+    for (const item of order.items || []) {
+      let length = 10;
+      let breadth = 10;
+      let height = 10;
+      let weight = 0.5;
+      let name = 'Product';
+      let sku = 'SKU';
+
+      if (item.productId) {
+        const pid = mongoose.Types.ObjectId.isValid(item.productId) ? item.productId : item.productId?._id;
+        if (pid) {
+          const product = await Product.findById(pid).lean();
+          if (product) {
+            name = product.name || name;
+            length = product.shipping?.dimensions?.length || length;
+            breadth = product.shipping?.dimensions?.width || breadth;
+            height = product.shipping?.dimensions?.height || height;
+            weight = product.shipping?.weight || weight;
+            const v = (product.variants || []).find((x) => String(x._id) === String(item.variantId));
+            if (v?.sku) sku = v.sku;
+          }
+        }
+      }
+
+      const unit = Number(item.priceSnapshot?.sale ?? item.priceSnapshot?.base ?? 0);
+      orderItems.push({
+        name,
+        sku,
+        units: item.quantity,
+        selling_price: unit,
+        discount: 0,
+        tax: item.gstRate != null ? item.gstRate : '',
+        hsn: item.hsnCode || '',
+        length,
+        breadth,
+        height,
+        weight
+      });
+    }
+
+    const addr = order.addressSnapshot || {};
+    const billingPhone = String(addr.phone || '').replace(/\D/g, '').slice(-10) || '9999999999';
+
+    const totalWeight = orderItems.reduce((s, it) => s + (Number(it.weight) || 0.5) * (Number(it.units) || 1), 0);
+    const maxL = Math.max(10, ...orderItems.map((i) => Number(i.length) || 0));
+    const maxB = Math.max(10, ...orderItems.map((i) => Number(i.breadth) || 0));
+    const maxH = Math.max(10, ...orderItems.map((i) => Number(i.height) || 0));
+
+    const payload = {
+      order_id: order.orderId,
+      order_date: (order.createdAt || new Date()).toISOString().slice(0, 19).replace('T', ' '),
+      pickup_location: pickupLocation,
+      billing_customer_name: addr.fullName || 'Customer',
+      billing_last_name: '.',
+      billing_address: addr.addressLine1 || 'Address',
+      billing_address_2: addr.addressLine2 || '',
+      billing_city: addr.city || '',
+      billing_pincode: String(addr.postalCode || '').replace(/\D/g, '').slice(0, 6),
+      billing_state: addr.state || '',
+      billing_country: addr.country || 'India',
+      billing_email: process.env.STORE_EMAIL || 'orders@example.com',
+      billing_phone: billingPhone,
+      shipping_is_billing: true,
+      order_items: orderItems.map((it) => ({
+        name: it.name,
+        sku: it.sku,
+        units: it.units,
+        selling_price: it.selling_price,
+        discount: it.discount,
+        tax: it.tax,
+        hsn: it.hsn
+      })),
+      payment_method: order.paymentInfo?.method === 'cod' ? 'COD' : 'Prepaid',
+      sub_total: Number(order.subtotal) || 0,
+      length: maxL,
+      breadth: maxB,
+      height: maxH,
+      weight: Math.max(0.05, totalWeight)
+    };
+
+    try {
+      const { data } = await axios.post(`${this.baseURL}/external/orders/create/adhoc`, payload, {
+        timeout: 30000,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+      });
+      return {
+        success: true,
+        shipmentId: data.shipment_id,
+        trackingNumber: data.awb_code || data.tracking_number,
+        courier: data.courier_name,
+        labelUrl: data.label_url,
+        mock: false
+      };
+    } catch (err) {
+      console.error('[Shiprocket] createShipment failed:', err.response?.data || err.message);
+      return { success: false, error: err.response?.data || err.message };
+    }
+  }
+}
+
+module.exports = new ShiprocketService();

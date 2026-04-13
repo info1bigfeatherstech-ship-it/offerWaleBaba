@@ -1,6 +1,6 @@
 // controllers/deliveryController.js
 const ShiprocketService = require('../utils/shiprocket');
-const DeliveryZone = require('../models/DeliveryZone');
+const DeliveryZone = require('../models/delieveryZone');
 const Cart = require('../models/cart');
 const Product = require('../models/Product');
 
@@ -18,6 +18,7 @@ const calculateCartWeight = async (cartItems) => {
 exports.checkDeliveryAvailability = async (req, res) => {
     try {
         const { pincode, cartId } = req.body;
+        const userId = req.userId;
         
         if (!pincode || !/^\d{6}$/.test(pincode)) {
             return res.status(400).json({
@@ -26,21 +27,36 @@ exports.checkDeliveryAvailability = async (req, res) => {
             });
         }
 
-        // Get cart weight if cartId provided
-        let totalWeight = 1; // Default weight
-        if (cartId) {
-            const cart = await Cart.findById(cartId);
-            if (cart && cart.items.length) {
-                totalWeight = await calculateCartWeight(cart.items);
+        let totalWeight = 1;
+        let dims = { lengthCm: 10, widthCm: 10, heightCm: 10 };
+
+        const cart = cartId
+            ? await Cart.findById(cartId)
+            : userId
+              ? await Cart.findOne({ userId })
+              : null;
+
+        if (cart?.items?.length) {
+            totalWeight = await calculateCartWeight(cart.items);
+            const { aggregateShipping } = require('../services/checkoutComputation.service');
+            const lines = [];
+            for (const it of cart.items) {
+                const p = await Product.findById(it.productId).select('shipping').lean();
+                if (p) lines.push({ product: p, quantity: it.quantity });
             }
+            if (lines.length) dims = aggregateShipping(lines);
         }
 
-        const result = await ShiprocketService.checkDeliveryAvailability(pincode, totalWeight);
+        const result = await ShiprocketService.checkDeliveryAvailability(pincode, {
+            weightKg: totalWeight,
+            lengthCm: dims.lengthCm,
+            widthCm: dims.widthCm,
+            heightCm: dims.heightCm
+        });
         
         return res.status(200).json({
             success: true,
             isDeliverable: result.isDeliverable,
-            deliveryCharges: result.deliveryCharges,
             estimatedDays: result.estimatedDays,
             courierName: result.courierName,
             message: result.message,

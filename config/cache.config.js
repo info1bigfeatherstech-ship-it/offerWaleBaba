@@ -70,7 +70,9 @@ class CacheConfig {
     const cacheKey = `${this.prefixes[prefix] || 'x'}:${hash}`;
     
     if (process.env.NODE_ENV !== 'production') {
-      console.log(`🔑 Cache Key: ${cacheKey} (from: ${paramsString.substring(0, 50)}...)`);
+      console.log('Cache Key:');
+  
+      // console.log(`🔑 Cache Key: ${cacheKey} (from: ${paramsString.substring(0, 50)}...)`);
     }
     
     return cacheKey;
@@ -96,8 +98,7 @@ class CacheConfig {
     
     // Always invalidate lists
     patterns.push(`${this.prefixes.PRODUCT}:*`);
-    patterns.push(`${this.prefixes.SEARCH}:*`);
-    
+    patterns.push(`${this.prefixes.SEARCH}:*`); 
     return patterns;
   }
 }

@@ -120,7 +120,7 @@ const getWishlist = async (req, res) => {
     const wishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+        select: 'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt'
       });
 
     if (!wishlist) {
@@ -176,7 +176,7 @@ const addToWishlist = async (req, res) => {
     const product = await Product.findOne({ 
       slug: productSlug.toLowerCase(), 
       status: 'active' 
-    }).select('name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt');
+    }).select('name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt');
 
     if (!product) {
       return res.status(404).json({ 
@@ -239,7 +239,7 @@ const addToWishlist = async (req, res) => {
     const updatedWishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+        select: 'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt'
       });
 
     const formattedProducts = updatedWishlist.products
@@ -305,7 +305,7 @@ const removeFromWishlist = async (req, res) => {
     const updatedWishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+        select: 'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt'
       });
 
     if (!updatedWishlist) {
@@ -629,7 +629,7 @@ const removeBulkFromWishlist = async (req, res) => {
     const updatedWishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants images brand category seo soldInfo fomo hsnCode taxRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+        select: 'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt'
       });
 
     if (!updatedWishlist) {

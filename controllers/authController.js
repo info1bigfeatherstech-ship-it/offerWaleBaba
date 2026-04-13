@@ -190,10 +190,9 @@ const register = async (req, res) => {
 
 // ========== 2️⃣ VERIFY OTP & LOGIN ==========
 
-// Verify OTP on Phone and Auto-Login
 const verifyOTPAndLogin = async (req, res) => {
   try {
-    const { phone, otp } = req.body;
+    let { phone, otp } = req.body;
 
     if (!phone || !otp) {
       return res.status(400).json({
@@ -202,8 +201,21 @@ const verifyOTPAndLogin = async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ phone })
-      .select("+phoneVerificationOTP +phoneVerificationOTPExpires +refreshTokens");
+    // Convert both to strings
+    phone = String(phone).trim();
+    const otpString = String(otp).trim();
+
+    if (!/^\d{10}$/.test(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format. Must be 10 digits."
+      });
+    }
+
+    // ✅ FIX: Added all required fields to select
+    const user = await User.findOne({ phone }).select(
+      "+phoneVerificationOTP +phoneVerificationOTPExpires +refreshTokens phone name email userType role isPhoneVerified status isEmailVerified isProfileComplete"
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -228,13 +240,6 @@ const verifyOTPAndLogin = async (req, res) => {
 
       res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
-//       res.cookie("refreshToken", refreshToken, {
-//   httpOnly: true,
-//   secure: true,
-//   sameSite: 'none',
-//   path: '/',
-//   maxAge: 7 * 24 * 60 * 60 * 1000
-// });
       return res.status(200).json({
         success: true,
         message: "Already verified. Logged in successfully.",
@@ -246,7 +251,7 @@ const verifyOTPAndLogin = async (req, res) => {
           phone: user.phone,
           userType: user.userType,
           isPhoneVerified: user.isPhoneVerified,
-          isEmailVerified: user.isEmailVerified  // ✅ Keep as is
+          isEmailVerified: user.isEmailVerified
         }
       });
     }
@@ -259,43 +264,38 @@ const verifyOTPAndLogin = async (req, res) => {
       });
     }
 
-    // Check OTP match
-    if (user.phoneVerificationOTP !== otp) {
+    // Compare OTP
+    if (user.phoneVerificationOTP !== otpString) {
       return res.status(400).json({
         success: false,
         message: "Invalid OTP"
       });
     }
-
-    // ✅ FIX: Only verify phone, NOT email
+      
+    // Activate user
     user.isPhoneVerified = true;
-    // user.isEmailVerified = true;  // ❌ REMOVE THIS LINE - Email should be verified separately
     user.status = "active";
-    user.isProfileComplete = true;  // ✅ Mark profile as complete
+    user.isProfileComplete = true;
     user.phoneVerificationOTP = undefined;
     user.phoneVerificationOTPExpires = undefined;
-
+      
     // Generate tokens
-   const accessToken = generateAccessToken(user._id, user.userType, user.role);
-const refreshToken = generateRefreshToken(user._id);
-const hashedRefreshToken = hashToken(refreshToken);
+    const accessToken = generateAccessToken(user._id, user.userType, user.role);
+    const refreshToken = generateRefreshToken(user._id);
+    const hashedRefreshToken = hashToken(refreshToken);
 
-// Get device info from request headers
-const deviceInfo = req.headers['user-agent'] || req.body.deviceInfo || 'Unknown';
+    const deviceInfo = req.headers['user-agent'] || req.body.deviceInfo || 'Unknown';
 
-// Remove expired tokens
-user.refreshTokens = user.refreshTokens || [];
-user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
+    user.refreshTokens = user.refreshTokens || [];
+    user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
+    user.refreshTokens.push({
+      token: hashedRefreshToken,
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+      createdAt: new Date(),
+      deviceInfo: deviceInfo
+    });
 
-// Add new token
-user.refreshTokens.push({
-  token: hashedRefreshToken,
-  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-  createdAt: new Date(),
-  deviceInfo: deviceInfo
-});
-
-await user.save();
+    await user.save();
 
     res.cookie("refreshToken", refreshToken, getRefreshCookieOptions());
 
@@ -311,8 +311,8 @@ await user.save();
         userType: user.userType,
         role: user.role,
         isPhoneVerified: user.isPhoneVerified,
-        isEmailVerified: user.isEmailVerified,  // ✅ Will be false until email verified
-        isProfileComplete: user.isProfileComplete  // ✅ Will be true now
+        isEmailVerified: user.isEmailVerified,
+        isProfileComplete: user.isProfileComplete
       }
     });
 
@@ -634,7 +634,6 @@ const resetPasswordWithOTP = async (req, res) => {
 };
 
 // ========== 7️⃣ LOGOUT ==========
-
 const logout = async (req, res) => {
   try {
     const token = getTokenFromHeader(req);
@@ -690,12 +689,12 @@ const logout = async (req, res) => {
 // ========== 8️⃣ REFRESH ACCESS TOKEN ==========
 const refreshAccessToken = async (req, res) => {
   try {
-    console.log("🔄 Refresh token request received");
+    // console.log("🔄 Refresh token request received");
     
     const refreshToken = req.cookies?.refreshToken;
 
     if (!refreshToken) {
-      console.log("❌ No refresh token in cookies");
+    //   console.log("❌ No refresh token in cookies");
       return res.status(401).json({
         success: false,
         message: "Refresh token missing",
@@ -703,14 +702,14 @@ const refreshAccessToken = async (req, res) => {
       });
     }
 
-    console.log("✅ Refresh token found");
+    // console.log("✅ Refresh token found");
 
     let decoded;
     try {
       decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-      console.log("✅ Token verified, userId:", decoded.id);
+    //   console.log("✅ Token verified, userId:", decoded.id);
     } catch (err) {
-      console.log("❌ Token verification failed:", err.message);
+    //   console.log("❌ Token verification failed:", err.message);
       return res.status(401).json({
         success: false,
         message: "Invalid or expired refresh token"
@@ -718,7 +717,7 @@ const refreshAccessToken = async (req, res) => {
     }
 
     if (decoded.type !== "refresh") {
-      console.log("❌ Invalid token type:", decoded.type);
+    //   console.log("❌ Invalid token type:", decoded.type);
       return res.status(401).json({
         success: false,
         message: "Invalid token type"
@@ -729,7 +728,7 @@ const refreshAccessToken = async (req, res) => {
     const user = await User.findById(decoded.id).select("+refreshTokens.token");
 
     if (!user) {
-      console.log("❌ User not found:", decoded.id);
+    //   console.log("❌ User not found:", decoded.id);
       return res.status(401).json({
         success: false,
         message: "User not found"
@@ -743,7 +742,7 @@ const refreshAccessToken = async (req, res) => {
     const tokenIndex = user.refreshTokens.findIndex(t => t.token === hashedToken);
     
     if (tokenIndex === -1) {
-      console.log("❌ Token mismatch - session expired");
+    //   console.log("❌ Token mismatch - session expired");
       return res.status(401).json({
         success: false,
         message: "Session expired. Please login again.",
@@ -751,7 +750,7 @@ const refreshAccessToken = async (req, res) => {
       });
     }
 
-    console.log("✅ Token matched, generating new tokens");
+    // console.log("✅ Token matched, generating new tokens");
 
     // Generate new tokens
     const newAccessToken = generateAccessToken(user._id, user.userType, user.role);
@@ -770,16 +769,10 @@ const refreshAccessToken = async (req, res) => {
 
     await user.save();
 
-    // Set new cookie
-    res.cookie("refreshToken", newRefreshToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none',
-      path: '/',
-      maxAge: 7 * 24 * 60 * 60 * 1000
-    });
+    //  Use getRefreshCookieOptions() for consistent cookie settings
+    res.cookie("refreshToken", newRefreshToken, getRefreshCookieOptions());
 
-    console.log("✅ New tokens sent successfully");
+    // console.log("✅ New tokens sent successfully");
 
     return res.status(200).json({
       success: true,

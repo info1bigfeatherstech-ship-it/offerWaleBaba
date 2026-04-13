@@ -18,7 +18,7 @@ const orderItemSchema = new mongoose.Schema(
     
     // ✅ NEW FIELDS FOR AGGREGATOR
     hsnCode: { type: String, trim: true, uppercase: true, default: null },
-    taxRate: { type: Number, min: 0, default: null },
+    gstRate: { type: Number, min: 0, default: null },
     isFragile: { type: Boolean, default: false }
   },
   { _id: false }
@@ -44,24 +44,37 @@ const orderSchema = new mongoose.Schema(
     
     orderStatus: { 
       type: String, 
-      enum: ['pending', 'confirmed', 'processing', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'return_requested'], 
+      enum: ['pending', 'confirmed', 'processing', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'return_requested', 'payment_failed'], 
       default: 'pending' 
     },
     
     paymentStatus: { 
       type: String, 
-      enum: ['pending', 'initiated', 'paid', 'failed', 'refunded'], 
+      enum: ['pending', 'initiated', 'paid', 'failed', 'refunded', 'partially_paid', 'partially_refunded'], 
       default: 'pending' 
     },
+
+    /** Paid so far (INR) when using advance / multi-capture flows */
+    amountPaidInr: { type: Number, default: 0 },
+    balanceDueInr: { type: Number, default: 0 },
     
     paymentInfo: { 
-      razorpayOrderId: String,
-      razorpayPaymentId: String,
-      razorpaySignature: String,
-      amount: Number,
-      method: String,
-      status: String,
-      paidAt: Date
+      type: mongoose.Schema.Types.Mixed,
+      default: {}
+    },
+
+    refundHistory: {
+      type: [
+        {
+          refundId: String,
+          amountInr: Number,
+          amountPaise: Number,
+          status: String,
+          reason: String,
+          createdAt: Date
+        }
+      ],
+      default: []
     },
     
     // For shipment (future use)

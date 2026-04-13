@@ -63,6 +63,91 @@ function parseBoolean(value) {
   return false;
 }
 
+const PRODUCT_CODE_REGEX = /^([A-Z0-9]+)-(\d{2})$/;
+
+function normalizeProductCode(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function escapeRegex(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const BARE_PRODUCT_CODE_REGEX = /^[A-Z0-9]+$/;
+
+function parseProductCodeParts(productCode, contextLabel = 'productCode', { requireSuffix = false } = {}) {
+  const normalized = normalizeProductCode(productCode);
+  const match = normalized.match(PRODUCT_CODE_REGEX);
+  if (match) {
+    return {
+      normalized,
+      base: match[1],
+      sequence: Number(match[2])
+    };
+  }
+
+  if (BARE_PRODUCT_CODE_REGEX.test(normalized)) {
+    if (requireSuffix) {
+      throw new Error(`${contextLabel}: "${normalized}" must use BASE-XX format (example: 4321-01)`);
+    }
+    return {
+      normalized,
+      base: normalized,
+      sequence: null
+    };
+  }
+
+  throw new Error(
+    `${contextLabel}: invalid productCode "${normalized}". Use BASE (single variant) or BASE-XX (multi-variant).`
+  );
+}
+
+function assertVariantCodeSeries(codes, contextLabel = 'variants') {
+  if (!Array.isArray(codes) || codes.length === 0) return;
+  if (codes.length === 1) {
+    parseProductCodeParts(codes[0], `${contextLabel}[0] productCode`);
+    return;
+  }
+
+  const parsed = codes.map((c, idx) =>
+    parseProductCodeParts(c, `${contextLabel}[${idx}] productCode`, { requireSuffix: true })
+  );
+  const base = parsed[0].base;
+  const seen = new Set();
+  const sequences = [];
+
+  for (const p of parsed) {
+    if (p.base !== base) {
+      throw new Error(`All ${contextLabel} productCodes must share same base. Expected ${base}-XX, got ${p.normalized}`);
+    }
+    if (seen.has(p.normalized)) {
+      throw new Error(`Duplicate productCode in ${contextLabel}: ${p.normalized}`);
+    }
+    seen.add(p.normalized);
+    sequences.push(p.sequence);
+  }
+
+  sequences.sort((a, b) => a - b);
+  for (let i = 0; i < sequences.length; i++) {
+    const expected = i + 1;
+    if (sequences[i] !== expected) {
+      throw new Error(
+        `productCode sequence must be continuous from 01 to ${String(codes.length).padStart(2, '0')} for ${contextLabel}`
+      );
+    }
+  }
+}
+
+/** CSV bulk: normalize and keep user-entered productCodes as-is (no forced suffix). */
+function normalizeBareProductCodesForBulkGroup(productRows) {
+  if (!Array.isArray(productRows)) return;
+  for (const row of productRows) {
+    if (row.productCode != null) {
+      row.productCode = normalizeProductCode(row.productCode);
+    }
+  }
+}
+
 
 // Create new product
 // Create new product
@@ -109,6 +194,24 @@ const createProduct = async (req, res) => {
       });
     }
 
+    // If product already exists (same name), do not create duplicate; return existing variant codes.
+    const existingProductByName = await Product.findOne({
+      name: { $regex: new RegExp(`^${escapeRegex(String(name).trim())}$`, 'i') }
+    }).select('name slug variants.productCode');
+    if (existingProductByName) {
+      return res.status(409).json({
+        success: false,
+        message: "Product already exists with these variants",
+        product: {
+          name: existingProductByName.name,
+          slug: existingProductByName.slug
+        },
+        existingVariantProductCodes: (existingProductByName.variants || [])
+          .map((v) => normalizeProductCode(v.productCode))
+          .filter(Boolean)
+      });
+    }
+
     let variantsInput = variantsRaw;
     if (typeof variantsRaw === "string") {
       variantsInput = JSON.parse(variantsRaw);
@@ -119,6 +222,48 @@ const createProduct = async (req, res) => {
         success: false,
         message: "At least one variant is required"
       });
+    }
+
+    // Validate productCode format + series at form level before heavy processing (uploads etc.)
+    const normalizedCodes = [];
+    for (let i = 0; i < variantsInput.length; i++) {
+      const codeRaw = variantsInput[i]?.productCode;
+      if (!codeRaw) {
+        return res.status(400).json({
+          success: false,
+          message: `productCode is required for variant ${i}`
+        });
+      }
+      try {
+        const parsed = parseProductCodeParts(codeRaw, `variant ${i}`);
+        normalizedCodes.push(parsed.normalized);
+        variantsInput[i].productCode = parsed.normalized;
+      } catch (err) {
+        return res.status(400).json({
+          success: false,
+          message: err.message
+        });
+      }
+    }
+
+    try {
+      assertVariantCodeSeries(normalizedCodes, 'createProduct variants');
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: err.message
+      });
+    }
+
+    // Global uniqueness: no two variants across products can share productCode
+    for (const code of normalizedCodes) {
+      const existingproductCode = await Product.findOne({ "variants.productCode": code }).select('_id name');
+      if (existingproductCode) {
+        return res.status(400).json({
+          success: false,
+          message: `productCode ${code} already exists in product "${existingproductCode.name}"`
+        });
+      }
     }
 
     const slug = await generateSlug(name);
@@ -155,33 +300,7 @@ const createProduct = async (req, res) => {
     for (let i = 0; i < variantsInput.length; i++) {
       const v = variantsInput[i];
 
-      // 🔒 productCode REQUIRED
-      if (!v.productCode) {
-        return res.status(400).json({
-          success: false,
-          message: `productCode is required for variant ${i}`
-        });
-      }
-
-      const productCodeNumber = Number(v.productCode);
-      if (isNaN(productCodeNumber)) {
-        return res.status(400).json({
-          success: false,
-          message: `productCode must be a valid number for variant ${i}`
-        });
-      }
-
-      // 🔒 CHECK DUPLICATE productCode IN DB
-      const existingproductCode = await Product.findOne({
-        "variants.productCode": productCodeNumber
-      });
-
-      if (existingproductCode) {
-        return res.status(400).json({
-          success: false,
-          message: `productCode ${productCodeNumber} already exists`
-        });
-      }
+      const productCode = normalizeProductCode(v.productCode);
 
       // AUTO GENERATE SKU
       const skuVal = await generateSku();
@@ -262,7 +381,7 @@ const createProduct = async (req, res) => {
 
       variants.push({
         sku: skuVal,
-        productCode: productCodeNumber,
+        productCode,
         wholesale,
         attributes: Array.isArray(v.attributes)
           ? v.attributes.map(a => ({ key: a.key, value: a.value }))
@@ -612,6 +731,303 @@ const importProductsFromCSV = async (req, res) => {
     });
   }
 };
+
+// =============================================
+// PREVIEW: CSV import (image URLs) — same rules as import-csv, no DB writes / no uploads
+// =============================================
+function collectImportCsvRowFieldErrors(row, productName) {
+  const errors = [];
+  const warnings = [];
+  const cleanBasePrice = parseFloat(String(row.basePrice || '').replace(/[^0-9.]/g, '') || 0);
+  if (isNaN(cleanBasePrice) || cleanBasePrice <= 0) {
+    errors.push(`Invalid basePrice: ${row.basePrice}`);
+  }
+  const cleanSalePrice = row.salePrice
+    ? parseFloat(String(row.salePrice).replace(/[^0-9.]/g, ''))
+    : null;
+  if (cleanSalePrice !== null && (isNaN(cleanSalePrice) || cleanSalePrice <= 0)) {
+    errors.push(`Invalid salePrice: ${row.salePrice}`);
+  }
+  if (
+    cleanSalePrice != null &&
+    !isNaN(cleanBasePrice) &&
+    !isNaN(cleanSalePrice) &&
+    cleanSalePrice >= cleanBasePrice
+  ) {
+    errors.push(`Sale price (${cleanSalePrice}) must be less than base price (${cleanBasePrice})`);
+  }
+
+  const wholesale = parseBoolean(row.wholesale);
+  if (wholesale) {
+    if (!row.wholesaleBase || !String(row.wholesaleBase).trim()) {
+      errors.push('wholesaleBase is required when wholesale=true');
+    } else {
+      const wholesaleBase = Number(String(row.wholesaleBase).replace(/[^0-9.]/g, ''));
+      if (isNaN(wholesaleBase) || wholesaleBase <= 0) {
+        errors.push(`Invalid wholesaleBase: ${row.wholesaleBase}`);
+      }
+      if (row.wholesaleSale && String(row.wholesaleSale).trim() !== '') {
+        const wholesaleSale = Number(String(row.wholesaleSale).replace(/[^0-9.]/g, ''));
+        if (isNaN(wholesaleSale) || wholesaleSale <= 0) {
+          errors.push(`Invalid wholesaleSale: ${row.wholesaleSale}`);
+        } else if (!isNaN(wholesaleBase) && wholesaleSale >= wholesaleBase) {
+          errors.push(`wholesaleSale (${wholesaleSale}) must be less than wholesaleBase (${wholesaleBase})`);
+        }
+      }
+      const moq =
+        row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0
+          ? Number(row.minimumOrderQuantity)
+          : 1;
+      if (moq < 1) {
+        errors.push('minimumOrderQuantity must be at least 1');
+      }
+    }
+  }
+
+  if (row.productCode != null && String(row.productCode).trim()) {
+    try {
+      parseProductCodeParts(row.productCode, `Row ${row.rowNumber || '?'}`);
+    } catch (e) {
+      errors.push(e.message);
+    }
+  }
+
+  if (row.images && String(row.images).trim()) {
+    const urls = row.images.split(',').map((u) => u.trim()).filter(Boolean);
+    for (const url of urls) {
+      if (!url.startsWith('http') && !url.startsWith('data:image')) {
+        warnings.push(`Image entry may be invalid (use http(s) or data:image): ${url.slice(0, 80)}`);
+      }
+    }
+  } else {
+    warnings.push('No image URLs in images column (variant will have no images on import)');
+  }
+
+  return { errors, warnings };
+}
+
+async function validateImportCsvProductGroupPreview(productName, productRows) {
+  const productErrors = [];
+  const variants = [];
+
+  const existingProduct = await Product.findOne({
+    name: { $regex: new RegExp(`^${escapeRegex(String(productName).trim())}$`, 'i') }
+  }).select('name slug category variants.productCode');
+
+  const firstRow = productRows[0];
+  const categoryDoc = await Category.findOne({
+    name: { $regex: new RegExp(`^${escapeRegex(String(firstRow.category || '').trim())}$`, 'i') }
+  });
+  if (!categoryDoc) {
+    productErrors.push(`Category not found: ${firstRow.category}`);
+  } else if (
+    existingProduct &&
+    String(existingProduct.category) !== String(categoryDoc._id)
+  ) {
+    productErrors.push(
+      `Category mismatch: CSV has "${firstRow.category}" but this product exists under a different category in DB`
+    );
+  }
+
+  normalizeBareProductCodesForBulkGroup(productRows);
+
+  const seriesCodes = productRows.map((r) => normalizeProductCode(r.productCode));
+  if (seriesCodes.some((c) => !c)) {
+    productErrors.push('productCode is required on every variant row');
+  } else {
+    try {
+      assertVariantCodeSeries(seriesCodes, `CSV import product "${productName}"`);
+    } catch (e) {
+      productErrors.push(e.message);
+    }
+  }
+
+  const duplicateproductCodes = new Map();
+  for (const row of productRows) {
+    const variantErrors = [];
+    const variantWarnings = [];
+    const productCode = normalizeProductCode(row.productCode);
+    row.productCode = productCode;
+
+    if (!productCode) {
+      variantErrors.push('productCode is missing');
+    } else if (duplicateproductCodes.has(productCode)) {
+      variantErrors.push(
+        `Duplicate productCode ${productCode} in same product (row ${duplicateproductCodes.get(productCode)})`
+      );
+    } else {
+      duplicateproductCodes.set(productCode, row.rowNumber);
+      try {
+        const existingProductWithCode = await Product.findOne({
+          'variants.productCode': productCode
+        }).select('name');
+        if (existingProductWithCode) {
+          if (
+            existingProduct &&
+            existingProduct._id.toString() === existingProductWithCode._id.toString()
+          ) {
+            const existsInProduct = existingProduct.variants.some(
+              (v) => normalizeProductCode(v.productCode) === productCode
+            );
+            if (existsInProduct) {
+              variantWarnings.push(
+                `productCode ${productCode} already exists on this product — import will skip duplicate`
+              );
+            }
+          } else {
+            variantErrors.push(
+              `productCode ${productCode} already exists on product "${existingProductWithCode.name}"`
+            );
+          }
+        }
+      } catch (_) {
+        /* ignore */
+      }
+    }
+
+    const field = collectImportCsvRowFieldErrors(row, productName);
+    variantErrors.push(...field.errors);
+    variantWarnings.push(...field.warnings);
+
+    const blockedByProduct = productErrors.length > 0;
+    const isValid = !blockedByProduct && variantErrors.length === 0;
+
+    variants.push({
+      rowNumber: row.rowNumber,
+      productCode: productCode || 'N/A',
+      errors: variantErrors,
+      warnings: variantWarnings,
+      isValid
+    });
+  }
+
+  const hasErrors =
+    productErrors.length > 0 || variants.some((v) => !v.isValid);
+  return {
+    name: productName,
+    category: firstRow?.category,
+    brand: firstRow?.brand || 'Generic',
+    productErrors,
+    variants,
+    hasErrors,
+    existingInDb: Boolean(existingProduct),
+    existingSlug: existingProduct?.slug || null
+  };
+}
+
+const previewImportProductsFromCSV = async (req, res) => {
+  let filePath = null;
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        message: 'CSV file is required'
+      });
+    }
+
+    filePath = path.resolve(req.file.path);
+    if (!fs.existsSync(filePath)) {
+      return res.status(400).json({ success: false, message: 'Uploaded file not found' });
+    }
+
+    const rows = [];
+    await new Promise((resolve, reject) => {
+      fs.createReadStream(filePath)
+        .pipe(csv({ mapHeaders: ({ header }) => header.trim() }))
+        .on('data', (row) => rows.push(row))
+        .on('end', resolve)
+        .on('error', reject);
+    });
+
+    if (!rows.length) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (_) {}
+      return res.status(422).json({ success: false, message: 'CSV file is empty' });
+    }
+
+    const requiredColumns = ['name', 'category', 'basePrice'];
+    const firstRow = rows[0];
+    const missingColumns = requiredColumns.filter((col) => !firstRow.hasOwnProperty(col));
+    if (missingColumns.length > 0) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (_) {}
+      return res.status(422).json({
+        success: false,
+        message: `Missing required columns: ${missingColumns.join(', ')}`,
+        missingColumns,
+        foundColumns: Object.keys(firstRow)
+      });
+    }
+
+    const productMap = new Map();
+    for (let idx = 0; idx < rows.length; idx++) {
+      const row = rows[idx];
+      Object.keys(row).forEach((key) => {
+        if (typeof row[key] === 'string') row[key] = row[key].trim();
+      });
+      const productName = row.name;
+      if (!productName) continue;
+      const key = productName.toLowerCase();
+      if (!productMap.has(key)) {
+        productMap.set(key, { name: productName, rows: [] });
+      }
+      productMap.get(key).rows.push({ ...row, rowNumber: idx + 2 });
+    }
+
+    const products = [];
+    let validProducts = 0;
+    let invalidProducts = 0;
+
+    for (const [, productData] of productMap) {
+      const preview = await validateImportCsvProductGroupPreview(
+        productData.name,
+        productData.rows
+      );
+      products.push({
+        ...preview,
+        variantCount: preview.variants.length,
+        validVariants: preview.variants.filter((v) => v.isValid).length,
+        invalidVariants: preview.variants.filter((v) => !v.isValid).length
+      });
+      if (preview.hasErrors) invalidProducts++;
+      else validProducts++;
+    }
+
+    try {
+      fs.unlinkSync(filePath);
+    } catch (_) {}
+
+    return res.status(200).json({
+      success: true,
+      message: 'Import preview (URL images CSV) — no changes saved',
+      uploadType: 'CSV import (image URLs)',
+      summary: {
+        totalRows: rows.length,
+        totalProducts: products.length,
+        validProducts,
+        invalidProducts,
+        hasValidationErrors: invalidProducts > 0
+      },
+      products,
+      hint: 'Fix errors then call POST /api/admin/products/import-csv with the same file.'
+    });
+  } catch (error) {
+    if (filePath && fs.existsSync(filePath)) {
+      try {
+        fs.unlinkSync(filePath);
+      } catch (_) {}
+    }
+    console.error('previewImportProductsFromCSV:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Preview failed',
+      error: error.message
+    });
+  }
+};
+
 // =============================================
 // HELPER: Process single product with rollback
 // =============================================
@@ -620,38 +1036,56 @@ async function processProductWithRollback(productName, productRows, stats) {
   
   try {
     let existingProduct = await Product.findOne({ 
-      name: { $regex: new RegExp(`^${productName}$`, 'i') }
+      name: { $regex: new RegExp(`^${escapeRegex(String(productName).trim())}$`, 'i') }
     });
+
+    // Category must exist (same rule as ZIP bulk — fail whole product, not silent create)
+    const categoryDoc = await Category.findOne({
+      name: { $regex: new RegExp(`^${escapeRegex(String(firstRow.category || '').trim())}$`, 'i') }
+    });
+    if (!categoryDoc) {
+      throw new Error(`Category not found: ${firstRow.category}`);
+    }
+    if (existingProduct && String(existingProduct.category) !== String(categoryDoc._id)) {
+      throw new Error(
+        `Category mismatch for "${productName}": CSV has "${firstRow.category}" but this product is under a different category in DB`
+      );
+    }
+
+    normalizeBareProductCodesForBulkGroup(productRows);
+
+    const seriesCodes = productRows.map((r) => normalizeProductCode(r.productCode));
+    if (seriesCodes.some((c) => !c)) {
+      throw new Error('productCode is required on every variant row');
+    }
+    assertVariantCodeSeries(seriesCodes, `CSV import product "${productName}"`);
     
     const variants = [];
     const duplicateproductCodes = new Map();
     
-    // FIRST: Validate all productCodes before building anything
+    // FIRST: Validate all productCodes before building anything (same uniqueness rules as ZIP bulk)
     for (const row of productRows) {
-      const productCode = row.productCode?.trim();
-      if (!productCode) continue;
+      const productCode = normalizeProductCode(row.productCode);
+      row.productCode = productCode;
       
-      // Check duplicate in same CSV
       if (duplicateproductCodes.has(productCode)) {
         throw new Error(`Duplicate productCode ${productCode} found in same product. Row ${row.rowNumber} and ${duplicateproductCodes.get(productCode)}`);
       }
       duplicateproductCodes.set(productCode, row.rowNumber);
       
-      // Check if productCode already exists in database (across ALL products)
       const existingProductWithproductCode = await Product.findOne({
-        'variants.productCode': Number(productCode)
+        'variants.productCode': productCode
       });
       
       if (existingProductWithproductCode) {
-        // If we're updating the SAME product, check if this productCode is already in it
         if (existingProduct && existingProduct._id.toString() === existingProductWithproductCode._id.toString()) {
-          // Same product - check if variant with this productCode already exists
-          const productCodeExistsInProduct = existingProduct.variants.some(v => v.productCode === Number(productCode));
+          const productCodeExistsInProduct = existingProduct.variants.some(
+            (v) => normalizeProductCode(v.productCode) === productCode
+          );
           if (productCodeExistsInProduct) {
             throw new Error(`productCode ${productCode} already exists as a variant in product "${productName}". Please use unique productCode.`);
           }
         } else {
-          // Different product - block immediately
           throw new Error(`productCode ${productCode} already exists in product "${existingProductWithproductCode.name}". Please use unique productCode.`);
         }
       }
@@ -669,7 +1103,9 @@ async function processProductWithRollback(productName, productRows, stats) {
       
       for (const variant of variants) {
         // Final safety check - verify productCode not already in product
-        const productCodeExists = existingProduct.variants.some(v => v.productCode === variant.productCode);
+        const productCodeExists = existingProduct.variants.some(
+          (v) => normalizeProductCode(v.productCode) === normalizeProductCode(variant.productCode)
+        );
         if (productCodeExists) {
           stats.skipped.push({
             product: productName,
@@ -885,13 +1321,13 @@ async function buildVariantWithValidation(row, productName) {
     }
   }
   
-  // Generate unique SKU and productCode
-  const timestamp = Date.now();
-  const random = Math.floor(Math.random() * 10000);
+  // productCode must come from input CSV (never backend-generated)
+  const parsedCode = parseProductCodeParts(row.productCode, `CSV row for ${productName}`);
+  const productCode = parsedCode.normalized;
   
   return {
-    sku: row.sku || (row.productCode ? `SKU-${row.productCode}` : `SKU-${timestamp}-${random}`),
-    productCode: row.productCode ? Number(row.productCode) : Number(`${timestamp}${random}`.slice(0, 15)),
+    sku: row.sku || `SKU-${productCode}`,
+    productCode,
     wholesale,
     attributes: variantAttributes,
     price: {
@@ -927,16 +1363,12 @@ async function buildNewProductWithVariants(productName, productRows, variants) {
     counter++;
   }
   
-  // Find or create category
-  const categorySlug = slugify(firstRow.category, { lower: true, strict: true });
-  let category = await Category.findOne({ slug: categorySlug });
+  // Category must already exist — match by name (same as ZIP bulk + preview)
+  const category = await Category.findOne({
+    name: { $regex: new RegExp(`^${escapeRegex(String(firstRow.category || '').trim())}$`, 'i') }
+  });
   if (!category) {
-    category = await Category.create({
-      name: firstRow.category,
-      slug: categorySlug,
-      status: "active",
-      level: 0,
-    });
+    throw new Error(`Category not found: ${firstRow.category}`);
   }
   
   // HSN, Tax, Fragile
@@ -1248,11 +1680,9 @@ async function uploadVariantImages(imageFolder, productName, productCode, concur
 // HELPER: Build variant with complete validation
 // =============================================
 async function buildCompleteVariant(row, productName, images) {
-  // Validate productCode
-  const productCode = Number(row.productCode);
-  if (isNaN(productCode)) {
-    throw new Error(`Invalid productCode: ${row.productCode}`);
-  }
+  // Validate productCode format (BASE-XX)
+  const parsedCode = parseProductCodeParts(row.productCode, `CSV row for ${productName}`);
+  const productCode = parsedCode.normalized;
   
   // Check for duplicate productCode in database
   const existingVariant = await Product.findOne({
@@ -1407,6 +1837,27 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
 
     console.log(`📊 Total rows in CSV: ${rows.length}`);
 
+    // Normalize and validate productCode series per product upfront.
+    // Example for 3 variants: 4321-01, 4321-02, 4321-03
+    const rowsByProductName = new Map();
+    for (const row of rows) {
+      row.productCode = normalizeProductCode(row.productCode);
+      const key = String(row.name || '').trim().toLowerCase();
+      if (!key) continue;
+      if (!rowsByProductName.has(key)) rowsByProductName.set(key, []);
+      rowsByProductName.get(key).push(row);
+    }
+    for (const [nameKey, productRows] of rowsByProductName.entries()) {
+      normalizeBareProductCodesForBulkGroup(productRows);
+      const codes = productRows.map((r) => r.productCode).filter(Boolean);
+      if (codes.length === 0) continue;
+      try {
+        assertVariantCodeSeries(codes, `bulk product "${nameKey}"`);
+      } catch (err) {
+        throw new Error(err.message);
+      }
+    }
+
     const stats = {
       total: rows.length,
       successful: 0,
@@ -1429,11 +1880,8 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
       
       const batchPromises = batch.map(async (row) => {
         try {
-          const productCode = Number(row.productCode);
-          
-          if (isNaN(productCode)) {
-            throw new Error(`Invalid productCode: ${row.productCode}`);
-          }
+          const parsedCode = parseProductCodeParts(row.productCode, `row "${row.name || 'Unknown'}"`);
+          const productCode = parsedCode.normalized;
 
           // Validate category
           const categoryDoc = await Category.findOne({ 
@@ -1445,7 +1893,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
           }
 
           // Upload images from productCode folder
-          const imageFolder = path.join(rootFolder, String(productCode));
+          const imageFolder = path.join(rootFolder, productCode);
           const variantImages = await uploadVariantImages(imageFolder, row.name, productCode);
 
           // Build complete variant with wholesale
@@ -1470,6 +1918,23 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
           const productAttributes = parseAttributes(row.productAttributes);
 
           if (product) {
+            // If product already has variants, incoming productCode base must match existing base.
+            if (Array.isArray(product.variants) && product.variants.length > 0) {
+              const existingCode = normalizeProductCode(product.variants[0].productCode);
+              if (existingCode) {
+                try {
+                  const existingParts = parseProductCodeParts(existingCode, `existing variant of ${product.name}`);
+                  if (parsedCode.base !== existingParts.base) {
+                    throw new Error(
+                      `productCode base mismatch for "${row.name}". Expected ${existingParts.base}-XX, got ${productCode}`
+                    );
+                  }
+                } catch (_) {
+                  // Legacy productCode format found on existing product; skip base-series enforcement for backward compatibility.
+                }
+              }
+            }
+
             // Check for duplicate variant attributes
             const variantExists = product.variants.some(v => 
               JSON.stringify(v.attributes) === JSON.stringify(newVariant.attributes)
@@ -1477,6 +1942,13 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
             
             if (variantExists) {
               throw new Error(`Variant with same attributes already exists for product ${row.name}`);
+            }
+
+            const duplicateCodeInSameProduct = product.variants.some(
+              (v) => normalizeProductCode(v.productCode) === productCode
+            );
+            if (duplicateCodeInSameProduct) {
+              throw new Error(`productCode ${productCode} already exists in product "${row.name}"`);
             }
             
             product.variants.push(newVariant);
@@ -1807,6 +2279,10 @@ const previewBulkUpload = async (req, res) => {
     
     for (const [_, productData] of productMap) {
       const { name: productName, rows: productRows } = productData;
+      for (const row of productRows) {
+        if (row.productCode != null) row.productCode = normalizeProductCode(row.productCode);
+      }
+      normalizeBareProductCodesForBulkGroup(productRows);
       const productErrors = [];
       const variants = [];
       const productCodes = new Set();
@@ -1814,7 +2290,7 @@ const previewBulkUpload = async (req, res) => {
       for (const row of productRows) {
         const variantErrors = [];
         const variantWarnings = [];
-        const productCode = row.productCode?.trim();
+        const productCode = row.productCode;
         
         // productCode validation
         if (!productCode) {
@@ -1823,11 +2299,18 @@ const previewBulkUpload = async (req, res) => {
           variantErrors.push(`Duplicate productCode ${productCode} in same product`);
         } else {
           productCodes.add(productCode);
+          try {
+            parseProductCodeParts(productCode, 'productCode');
+          } catch (e) {
+            variantErrors.push(
+              `Invalid productCode "${productCode}". Single variant: plain BASE (e.g. 87856) or BASE-01. Multiple variants: BASE-01, BASE-02, … same base.`
+            );
+          }
           
           // Check if productCode already exists in DB (warning only)
-          if (!isNaN(Number(productCode))) {
+          if (productCode) {
             const existingProduct = await Product.findOne({
-              'variants.productCode': Number(productCode)
+              'variants.productCode': productCode
             });
             if (existingProduct) {
               variantWarnings.push(`productCode ${productCode} already exists in product "${existingProduct.name}"`);
@@ -1895,6 +2378,21 @@ const previewBulkUpload = async (req, res) => {
         });
         
         if (variantErrors.length === 0) totalVariants++;
+      }
+
+      // Same rules as bulk upload: multi-variant rows must form a valid BASE-01..BASE-NN series
+      if (productRows.length > 1) {
+        try {
+          const seriesCodes = productRows
+            .map((r) => normalizeProductCode(r.productCode))
+            .filter(Boolean);
+          assertVariantCodeSeries(seriesCodes, `product "${productName}"`);
+        } catch (e) {
+          productErrors.push(e.message);
+          for (const v of variants) {
+            v.isValid = false;
+          }
+        }
       }
       
       // Category validation
@@ -3711,6 +4209,7 @@ module.exports = {
   getProductBySlug ,
    bulkRestore  , 
    importProductsFromCSV ,
+   previewImportProductsFromCSV,
    getAllProductsAdmin , 
    addVariant,
    deleteVariant,

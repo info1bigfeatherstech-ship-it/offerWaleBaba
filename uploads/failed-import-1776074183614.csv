@@ -1,0 +1,4 @@
+"product","reason","rows","timestamp"
+"Motorola m5","CSV row for Motorola m5 must be in format BASE-XX (example: 4321-01)","2","2026-04-13T09:56:23.614Z"
+"Adidas Shoes","CSV row for Adidas Shoes must be in format BASE-XX (example: 4321-01)","3","2026-04-13T09:56:23.614Z"
+"E-Print","CSV row for E-Print must be in format BASE-XX (example: 4321-01)","4","2026-04-13T09:56:23.614Z"
