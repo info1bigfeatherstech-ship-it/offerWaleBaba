@@ -196,6 +196,7 @@ router.post('/preview-import-csv', uploadCSVFile, productController.previewImpor
 router.post('/import-csv', uploadCSVFile, productController.importProductsFromCSV);
 router.get('/download-error-report/:fileName', productController.downloadErrorReport);
 router.post('/bulk-new-products', uploadBulkNewProductFiles, productController.bulkUploadNewProductsWithImages);
+router.patch('/bulk-status', productController.bulkUpdateProductStatus);
 
 // =============================================
 // LIST & FILTER ROUTES (Specific paths)
@@ -208,7 +209,7 @@ router.get('/drafts', productController.getDraftProducts);
 router.get('/all', productController.getAllProductsAdmin);
 router.delete('/bulk-hard-delete', productController.bulkHardDelete);
 router.get('/active', productController.getAllActiveProducts);
-
+            
 // =============================================
 // SINGLE PRODUCT ACTIONS (with :slug, :productCode)
 // =============================================

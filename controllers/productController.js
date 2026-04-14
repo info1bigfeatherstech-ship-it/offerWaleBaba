@@ -3097,8 +3097,93 @@ const bulkRestore = async (req, res) => {
   }
 };
 
+const ALLOWED_PRODUCT_STATUSES = ['draft', 'active', 'archived'];
 
+/**
+ * Bulk set lifecycle status for many products (admin list multi-select).
+ * - active: visible on storefront (same as restore flow)
+ * - draft: hidden, not deleted
+ * - archived: soft-delete (sets archivedAt like bulk archive)
+ */
+const bulkUpdateProductStatus = async (req, res) => {
+  try {
+    const { status, slugs: rawSlugs } = req.body || {};
 
+    if (!ALLOWED_PRODUCT_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: `status is required and must be one of: ${ALLOWED_PRODUCT_STATUSES.join(', ')}`
+      });
+    }
+
+    if (!Array.isArray(rawSlugs) || rawSlugs.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'slugs must be a non-empty array of product slugs'
+      });
+    }
+
+    const slugs = rawSlugs
+      .filter((s) => typeof s === 'string' && s.trim() !== '')
+      .map((s) => s.trim());
+
+    if (slugs.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid slugs provided'
+      });
+    }
+
+    if (slugs.length > 500) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum 500 products per request'
+      });
+    }
+
+    const existing = await Product.find({ slug: { $in: slugs } })
+      .select('slug')
+      .lean();
+    const foundSet = new Set(existing.map((p) => p.slug));
+    const notFoundSlugs = slugs.filter((s) => !foundSet.has(s));
+
+    const updatePipeline =
+      status === 'archived'
+        ? {
+            $set: {
+              status: 'archived',
+              archivedAt: new Date()
+            }
+          }
+        : {
+            $set: { status },
+            $unset: { archivedAt: '' }
+          };
+
+    const result = await Product.updateMany({ slug: { $in: slugs } }, updatePipeline);
+
+    await invalidateAllProductCaches();
+
+    return res.status(200).json({
+      success: true,
+      message: `Bulk status update to "${status}" completed`,
+      status,
+      requested: slugs.length,
+      matched: result.matchedCount,
+      modified: result.modifiedCount,
+      unchanged: result.matchedCount - result.modifiedCount,
+      notFoundSlugs,
+      notFoundCount: notFoundSlugs.length
+    });
+  } catch (error) {
+    console.error('bulkUpdateProductStatus:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error updating product statuses',
+      error: error.message
+    });
+  }
+};
 
 // Get low stock products
 // Get low stock products
@@ -4199,6 +4284,7 @@ module.exports = {
   updateProduct,
   deleteProduct,
   bulkDelete,
+  bulkUpdateProductStatus,
   hardDeleteProduct,
   bulkHardDelete,
   restoreProduct,
