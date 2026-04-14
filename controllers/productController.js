@@ -2472,10 +2472,19 @@ const MAX_VARIANT_IMAGES = 5;
 
 /**
  * Variant images on update:
- * - keptImages === null → key not sent: new files replace entire set; no files → no image change.
+ * - keptImages === null → neither variantKeptImages nor existingImages sent: new files replace entire set; no files → no image change.
  * - keptImages === []  → explicit clear (optional new files append after, still max 5).
  * - keptImages non-empty → ordered retain by publicId (must exist on variant) + append new uploads.
+ * Admin FE sends kept list as `existingImages` (JSON) or `variantKeptImages` (parsed in parseVariantKeptArrayFromBody).
+ *
+ * Example: variant had 3 images; user keeps 1 in `existingImages` + uploads 3 new `variantImages`
+ * → final list length = 1 + 3 = 4 (two removed DB images get Cloudinary cleanup after save).
  */
+function normalizeImagePublicId(pid) {
+  if (pid == null) return "";
+  return String(pid).trim();
+}
+
 async function resolveVariantImagesForUpdate({
   existingImages,
   keptImages,
@@ -2484,16 +2493,20 @@ async function resolveVariantImagesForUpdate({
   productName
 }) {
   const existing = Array.isArray(existingImages) ? existingImages : [];
-  const existingByPid = new Map(
-    existing.filter((img) => img?.publicId).map((img) => [img.publicId, img])
-  );
+  const existingByPid = new Map();
+  for (const img of existing) {
+    const pid = normalizeImagePublicId(img?.publicId ?? img?.public_id);
+    if (pid) existingByPid.set(pid, img);
+  }
   const newBuffers = (Array.isArray(newFiles) ? newFiles : []).filter((f) => f?.buffer);
 
   if (keptImages === null) {
     if (newBuffers.length === 0) {
       return { nextImages: null, removedPublicIds: [] };
     }
-    const removedPublicIds = existing.map((img) => img.publicId).filter(Boolean);
+    const removedPublicIds = existing
+      .map((img) => normalizeImagePublicId(img?.publicId ?? img?.public_id))
+      .filter(Boolean);
     const nextImages = [];
     for (let i = 0; i < newBuffers.length; i++) {
       if (nextImages.length >= MAX_VARIANT_IMAGES) {
@@ -2521,10 +2534,10 @@ async function resolveVariantImagesForUpdate({
 
   const nextImages = [];
   for (const item of keptImages) {
-    const pid = item?.publicId;
+    const pid = normalizeImagePublicId(item?.publicId ?? item?.public_id);
     if (!pid || !existingByPid.has(pid)) {
       throw new Error(
-        `variantKeptImages: publicId not found on this variant (${pid || "missing"})`
+        `existingImages/variantKeptImages: publicId not found on this variant (${pid || "missing"})`
       );
     }
     if (nextImages.length >= MAX_VARIANT_IMAGES) {
@@ -2557,9 +2570,13 @@ async function resolveVariantImagesForUpdate({
     });
   }
 
-  const keepSet = new Set(nextImages.map((x) => x.publicId));
+  const keepSet = new Set(
+    nextImages
+      .map((x) => normalizeImagePublicId(x?.publicId ?? x?.public_id))
+      .filter(Boolean)
+  );
   const removedPublicIds = existing
-    .map((img) => img.publicId)
+    .map((img) => normalizeImagePublicId(img?.publicId ?? img?.public_id))
     .filter((pid) => pid && !keepSet.has(pid));
 
   return { nextImages, removedPublicIds };
@@ -2581,6 +2598,65 @@ function recomputeProductAggregates(doc) {
     (sum, v) => sum + (v.inventory?.quantity || 0),
     0
   );
+}
+
+/**
+ * Admin FE (adminEditProductSlice) sends:
+ * - `existingImages` — JSON array of { url, publicId, altText?, order? } to KEEP (in order)
+ * - `variantKeptImages` — same shape, preferred if both are sent
+ * Returns hasKey=false when neither field is present → image merge defers to "new files only" behaviour.
+ */
+function parseVariantKeptArrayFromBody(updates) {
+  const strictParseArray = (raw, label) => {
+    if (raw === "" || raw == null) {
+      return { ok: true, value: [] };
+    }
+    if (Array.isArray(raw)) {
+      return { ok: true, value: raw };
+    }
+    if (typeof raw === "string") {
+      const s = raw.trim();
+      if (!s) {
+        return { ok: true, value: [] };
+      }
+      try {
+        const parsed = JSON.parse(s);
+        if (!Array.isArray(parsed)) {
+          return { ok: false, message: `${label} must be a JSON array` };
+        }
+        return { ok: true, value: parsed };
+      } catch {
+        return { ok: false, message: `${label} must be valid JSON` };
+      }
+    }
+    return { ok: false, message: `${label} must be a JSON array or stringified JSON array` };
+  };
+
+  const toKeptEntries = (items) =>
+    [...items]
+      .sort((a, b) => (Number(a?.order) || 0) - (Number(b?.order) || 0))
+      .map((item) => ({
+        publicId: item?.publicId || item?.public_id,
+        altText: item?.altText
+      }));
+
+  if (Object.prototype.hasOwnProperty.call(updates, "variantKeptImages")) {
+    const r = strictParseArray(updates.variantKeptImages, "variantKeptImages");
+    if (!r.ok) {
+      return { ok: false, message: r.message };
+    }
+    return { ok: true, hasKey: true, keptArray: toKeptEntries(r.value) };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, "existingImages")) {
+    const r = strictParseArray(updates.existingImages, "existingImages");
+    if (!r.ok) {
+      return { ok: false, message: r.message };
+    }
+    return { ok: true, hasKey: true, keptArray: toKeptEntries(r.value) };
+  }
+
+  return { ok: true, hasKey: false, keptArray: null };
 }
 
 //update product or variant (single save: product + variant + partial images)
@@ -2612,12 +2688,12 @@ const updateProduct = async (req, res) => {
       return value;
     };
 
-    const targetProductCodeRaw =
+    const targetCodeRaw =
       updates.productCode != null && String(updates.productCode).trim() !== ""
         ? updates.productCode
         : null;
-    const targetProductCode = targetProductCodeRaw
-      ? normalizeProductCode(targetProductCodeRaw)
+    const targetProductCode = targetCodeRaw
+      ? normalizeProductCode(String(targetCodeRaw))
       : null;
 
     let variantIndex = -1;
@@ -2888,45 +2964,23 @@ const updateProduct = async (req, res) => {
         }
       }
 
-      const hasKeptKey = Object.prototype.hasOwnProperty.call(updates, "variantKeptImages");
-      let keptArray = null;
-      if (hasKeptKey) {
-        const raw = updates.variantKeptImages;
-        if (raw === "" || raw == null) {
-          keptArray = [];
-        } else if (Array.isArray(raw)) {
-          keptArray = raw;
-        } else if (typeof raw === "string") {
-          const s = raw.trim();
-          if (!s) {
-            keptArray = [];
-          } else {
-            let parsed;
-            try {
-              parsed = JSON.parse(s);
-            } catch {
-              return res.status(400).json({
-                success: false,
-                message: "variantKeptImages must be valid JSON (array of { publicId, altText? })"
-              });
-            }
-            if (!Array.isArray(parsed)) {
-              return res.status(400).json({
-                success: false,
-                message: "variantKeptImages must be a JSON array of { publicId, altText? }"
-              });
-            }
-            keptArray = parsed;
-          }
-        } else {
-          return res.status(400).json({
-            success: false,
-            message: "variantKeptImages must be a JSON array or stringified JSON array"
-          });
-        }
+      const keptRes = parseVariantKeptArrayFromBody(updates);
+      if (!keptRes.ok) {
+        return res.status(400).json({
+          success: false,
+          message: keptRes.message
+        });
       }
+      const hasKeptKey = keptRes.hasKey;
+      const keptArray = keptRes.keptArray;
 
-      const files = Array.isArray(req.files) ? req.files : [];
+      const files = (Array.isArray(req.files) ? req.files : []).filter(
+        (f) =>
+          f?.buffer &&
+          (!f.fieldname ||
+            f.fieldname === "variantImages" ||
+            /^variantImages_/i.test(String(f.fieldname)))
+      );
       try {
         const { nextImages, removedPublicIds } = await resolveVariantImagesForUpdate({
           existingImages: variant.images,
@@ -3982,9 +4036,9 @@ const newVariant = {
 const deleteVariant = async (req, res) => {
   try {
     const { slug } = req.params;
-    const { productCode } = req.body;
+    const rawCode = req.body.productCode;
 
-    if (!productCode) {
+    if (rawCode === undefined || rawCode === null || String(rawCode).trim() === "") {
       return res.status(400).json({
         success: false,
         message: "productCode is required"
@@ -3993,7 +4047,7 @@ const deleteVariant = async (req, res) => {
 
     let productCodeNormalized;
     try {
-      productCodeNormalized = normalizeProductCode(productCode);
+      productCodeNormalized = normalizeProductCode(String(rawCode));
       parseProductCodeParts(productCodeNormalized, "productCode");
     } catch (e) {
       return res.status(400).json({
