@@ -1,10 +1,46 @@
 const Category = require('../models/Category');
 const Product = require('../models/Product');
-const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinaryHelper');
+const slugify = require('slugify');
+const {
+  uploadToCloudinary,
+  deleteFromCloudinary,
+  optimizeProductImageBuffer
+} = require('../utils/cloudinaryHelper');
 
 // ✅ ADD THESE 2 LINES AT THE TOP
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
+
+/** Category tiles / headers: slightly tighter cap than product gallery (override via env). */
+const CATEGORY_IMAGE_MAX_WIDTH = Math.min(
+  2048,
+  Math.max(400, Number(process.env.CATEGORY_IMAGE_MAX_WIDTH) || 1200)
+);
+
+function getCategoryImageOptimizeOptions() {
+  const opts = { maxWidth: CATEGORY_IMAGE_MAX_WIDTH };
+  const q = process.env.CATEGORY_IMAGE_WEBP_QUALITY;
+  if (q !== undefined && q !== '' && !Number.isNaN(Number(q))) {
+    opts.quality = Math.min(100, Math.max(50, Number(q)));
+  }
+  return opts;
+}
+
+/**
+ * EXIF-safe resize, WebP encode, upload to Cloudinary `categories` folder with a stable public_id.
+ * @param {Buffer} buffer — multer memory buffer
+ * @param {{ nameHint: string, uniqueSuffix: string }} meta
+ */
+async function processAndUploadCategoryImage(buffer, { nameHint, uniqueSuffix }) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error('Invalid or empty image buffer');
+  }
+  const optimized = await optimizeProductImageBuffer(buffer, getCategoryImageOptimizeOptions());
+  const base = slugify(String(nameHint || 'category'), { lower: true, strict: true }).slice(0, 72);
+  const suffix = String(uniqueSuffix || Date.now()).replace(/[^a-zA-Z0-9_-]/g, '');
+  const publicId = `${base}-${suffix}`.slice(0, 120);
+  return uploadToCloudinary(optimized, 'categories', publicId);
+}
 
 // =============================================
 // GET /categories - WITH CACHE
@@ -181,13 +217,18 @@ const createCategory = async (req, res) => {
 
     if (req.file && req.file.buffer) {
       try {
-        const { url, publicId } = await uploadToCloudinary(
-          req.file.buffer,
-          'categories'
-        );
+        const { url, publicId } = await processAndUploadCategoryImage(req.file.buffer, {
+          nameHint: name,
+          uniqueSuffix: `${Date.now()}`
+        });
         category.image = { url, publicId };
       } catch (err) {
         console.error('Category image upload failed:', err.message);
+        return res.status(400).json({
+          success: false,
+          message: 'Category image could not be processed or uploaded',
+          error: err.message
+        });
       }
     }
 
@@ -236,11 +277,23 @@ const updateCategory = async (req, res) => {
 
     if (req.file && req.file.buffer) {
       try {
-        if (category.image && category.image.publicId) await deleteFromCloudinary(category.image.publicId);
-        const { url, publicId } = await uploadToCloudinary(req.file.buffer, 'categories');
+        const displayName = name || category.name;
+        const { url, publicId } = await processAndUploadCategoryImage(req.file.buffer, {
+          nameHint: displayName,
+          uniqueSuffix: `${String(id)}-${Date.now()}`
+        });
+        const previousPublicId = category.image?.publicId;
         category.image = { url, publicId };
+        if (previousPublicId && previousPublicId !== publicId) {
+          await deleteFromCloudinary(previousPublicId);
+        }
       } catch (err) {
         console.error('Category image upload failed:', err.message);
+        return res.status(400).json({
+          success: false,
+          message: 'Category image could not be processed or uploaded',
+          error: err.message
+        });
       }
     }
 
