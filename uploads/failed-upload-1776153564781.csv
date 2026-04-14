@@ -1,0 +1,5 @@
+"row","productCode","error"
+"Motorola G57 (row 2)","85756-03","productCode 85756-03 already exists on this product. Variants exist till 85756-04. To add a new variant, use 85756-05."
+"Motorola G57 (row 3)","85756-04","productCode 85756-04 already exists on this product. Variants exist till 85756-04. To add a new variant, use 85756-05."
+"E-Print (row 5)","83478-01","You entered 83478. This maps to existing code 83478-01. Variants exist till 83478-01. To add a new variant, use 83478-02."
+"Adidas Shoes (row 4)","87856","productCode 87856 already exists on this product. Variants exist till 87856-01. To add a new variant, use 87856-02."
