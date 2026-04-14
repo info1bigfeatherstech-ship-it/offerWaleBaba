@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const Cart = require('../models/cart');
+const cart = require('../models/cart');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Address = require('../models/Address');
@@ -44,7 +44,7 @@ const calculateDiscountPercentage = (base, sale) => {
 };
 
 // ✅ HELPER: Format cart item with FULL variant data (including virtuals)
-const formatCartItem = (item, product, variant, userType) => {
+const formatcartItem = (item, product, variant, userType) => {
   if (!product || !variant) return null;
   
   const price = getUserSpecificPrice(variant, userType);
@@ -130,12 +130,12 @@ const formatCartItem = (item, product, variant, userType) => {
 // =============================================
 // GET CART
 // =============================================
-const getCart = async (req, res) => {
+const getcart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
 
   try {
-    const cart = await Cart.findOne({ userId })
+    const cart = await cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -167,7 +167,7 @@ const getCart = async (req, res) => {
       
       if (!variant) continue;
       
-      const formattedItem = formatCartItem(item, product, variant, userType);
+      const formattedItem = formatcartItem(item, product, variant, userType);
       if (formattedItem) {
         itemsWithFullData.push(formattedItem);
       }
@@ -204,7 +204,7 @@ const getCart = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('getCart:', err);
+    console.error('getcart:', err);
     return res.status(500).json({ 
       success: false, 
       message: 'Server error' 
@@ -215,7 +215,7 @@ const getCart = async (req, res) => {
 // =============================================
 // ADD TO CART
 // =============================================
-const addToCart = async (req, res) => {
+const addTocart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
   const { productId, productSlug, variantId, quantity = 1 } = req.body;
@@ -313,9 +313,9 @@ const addToCart = async (req, res) => {
     }));
 
     // Upsert cart and item
-    let cart = await Cart.findOne({ userId });
+    let cart = await cart.findOne({ userId });
     if (!cart) {
-      cart = new Cart({ userId, items: [] });
+      cart = new cart({ userId, items: [] });
     }
 
     // Check existing same item
@@ -351,7 +351,7 @@ const addToCart = async (req, res) => {
     await cart.save();
 
     // Return cart with full data
-    const updatedCart = await Cart.findOne({ userId })
+    const updatedcart = await cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -359,7 +359,7 @@ const addToCart = async (req, res) => {
 
     // Format response
     const formattedItems = [];
-    for (const item of updatedCart.items) {
+    for (const item of updatedcart.items) {
       const prod = item.productId;
       if (!prod) continue;
       
@@ -372,7 +372,7 @@ const addToCart = async (req, res) => {
       }
       if (!varObj) continue;
       
-      const formatted = formatCartItem(item, prod, varObj, userType);
+      const formatted = formatcartItem(item, prod, varObj, userType);
       if (formatted) formattedItems.push(formatted);
     }
     
@@ -384,21 +384,21 @@ const addToCart = async (req, res) => {
     return res.json({ 
       success: true, 
       cart: {
-        _id: updatedCart._id,
-        userId: updatedCart.userId,
+        _id: updatedcart._id,
+        userId: updatedcart.userId,
         items: formattedItems,
         totalAmount: totalAmt,
         totalOriginalAmount: totalOriginalAmt,
         totalDiscount: totalDisc,
         totalDiscountPercentage: totalDiscPerc,
-        createdAt: updatedCart.createdAt,
-        updatedAt: updatedCart.updatedAt
+        createdAt: updatedcart.createdAt,
+        updatedAt: updatedcart.updatedAt
       },
       userType: userType
     });
     
   } catch (err) {
-    console.error('addToCart:', err);
+    console.error('addTocart:', err);
     return res.status(500).json({ 
       success: false, 
       message: 'Server error' 
@@ -409,7 +409,7 @@ const addToCart = async (req, res) => {
 // =============================================
 // UPDATE CART ITEM
 // =============================================
-const updateCartItem = async (req, res) => {
+const updatecartItem = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
   const { productId, variantId, quantity } = req.body;
@@ -429,11 +429,11 @@ const updateCartItem = async (req, res) => {
   }
 
   try {
-    const cart = await Cart.findOne({ userId });
+    const cart = await cart.findOne({ userId });
     if (!cart) {
       return res.status(404).json({ 
         success: false, 
-        message: 'Cart not found' 
+        message: 'cart not found' 
       });
     }
 
@@ -457,7 +457,7 @@ const updateCartItem = async (req, res) => {
       cart.calculateTotal();
       await cart.save();
       
-      const updatedCart = await Cart.findOne({ userId })
+      const updatedcart = await cart.findOne({ userId })
         .populate({ 
           path: 'items.productId', 
           select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -465,13 +465,13 @@ const updateCartItem = async (req, res) => {
       
       // Format response
       const formattedItems = [];
-      for (const it of updatedCart.items) {
+      for (const it of updatedcart.items) {
         const prod = it.productId;
         if (!prod) continue;
         let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
         if (!varObj) varObj = prod.variants?.find(v => v.isActive);
         if (!varObj) continue;
-        const formatted = formatCartItem(it, prod, varObj, userType);
+        const formatted = formatcartItem(it, prod, varObj, userType);
         if (formatted) formattedItems.push(formatted);
       }
       
@@ -483,7 +483,7 @@ const updateCartItem = async (req, res) => {
       return res.json({ 
         success: true, 
         cart: {
-          ...updatedCart.toObject(),
+          ...updatedcart.toObject(),
           items: formattedItems,
           totalAmount: totalAmt,
           totalOriginalAmount: totalOriginalAmt,
@@ -542,7 +542,7 @@ const updateCartItem = async (req, res) => {
     await cart.save();
 
     // Populate for response
-    const populatedCart = await Cart.findOne({ userId })
+    const populatedcart = await cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -550,13 +550,13 @@ const updateCartItem = async (req, res) => {
 
     // Format response
     const formattedItems = [];
-    for (const it of populatedCart.items) {
+    for (const it of populatedcart.items) {
       const prod = it.productId;
       if (!prod) continue;
       let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
       if (!varObj) varObj = prod.variants?.find(v => v.isActive);
       if (!varObj) continue;
-      const formatted = formatCartItem(it, prod, varObj, userType);
+      const formatted = formatcartItem(it, prod, varObj, userType);
       if (formatted) formattedItems.push(formatted);
     }
     
@@ -568,7 +568,7 @@ const updateCartItem = async (req, res) => {
     return res.json({ 
       success: true, 
       cart: {
-        ...populatedCart.toObject(),
+        ...populatedcart.toObject(),
         items: formattedItems,
         totalAmount: totalAmt,
         totalOriginalAmount: totalOriginalAmt,
@@ -579,7 +579,7 @@ const updateCartItem = async (req, res) => {
     });
     
   } catch (err) {
-    console.error('updateCartItem:', err);
+    console.error('updatecartItem:', err);
     return res.status(500).json({ 
       success: false, 
       message: 'Server error' 
@@ -590,7 +590,7 @@ const updateCartItem = async (req, res) => {
 // =============================================
 // MERGE CART (Guest cart after login) - Simplified version
 // =============================================
-const mergeCart = async (req, res) => {
+const mergecart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
   const { items } = req.body;
@@ -610,8 +610,8 @@ const mergeCart = async (req, res) => {
   }
 
   try {
-    let cart = await Cart.findOne({ userId });
-    if (!cart) cart = new Cart({ userId, items: [] });
+    let cart = await cart.findOne({ userId });
+    if (!cart) cart = new cart({ userId, items: [] });
 
     for (const incoming of items) {
       const { productId, variantId, quantity } = incoming;
@@ -659,20 +659,20 @@ const mergeCart = async (req, res) => {
     await cart.save();
 
     // Return updated cart
-    const populatedCart = await Cart.findOne({ userId })
+    const populatedcart = await cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
     const formattedItems = [];
-    for (const it of populatedCart?.items || []) {
+    for (const it of populatedcart?.items || []) {
       const prod = it.productId;
       if (!prod) continue;
       let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
       if (!varObj) varObj = prod.variants?.find(v => v.isActive);
       if (!varObj) continue;
-      const formatted = formatCartItem(it, prod, varObj, userType);
+      const formatted = formatcartItem(it, prod, varObj, userType);
       if (formatted) formattedItems.push(formatted);
     }
 
@@ -683,8 +683,8 @@ const mergeCart = async (req, res) => {
 
     return res.json({ 
       success: true, 
-      cart: populatedCart ? {
-        ...populatedCart.toObject(),
+      cart: populatedcart ? {
+        ...populatedcart.toObject(),
         items: formattedItems,
         totalAmount: totalAmt,
         totalOriginalAmount: totalOriginalAmt,
@@ -695,7 +695,7 @@ const mergeCart = async (req, res) => {
     });
 
   } catch (err) {
-    console.error("mergeCart error:", err);
+    console.error("mergecart error:", err);
     return res.status(500).json({ 
       success: false, 
       message: "Merge failed",
@@ -707,17 +707,17 @@ const mergeCart = async (req, res) => {
 // =============================================
 // REMOVE SINGLE ITEM FROM CART
 // =============================================
-const removeCartItem = async (req, res) => {
+const removecartItem = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
   const { productId, variantId } = req.body;
 
   try {
-    const cart = await Cart.findOne({ userId });
+    const cart = await cart.findOne({ userId });
     if (!cart) {
       return res.status(404).json({ 
         success: false, 
-        message: 'Cart not found' 
+        message: 'cart not found' 
       });
     }
 
@@ -729,21 +729,21 @@ const removeCartItem = async (req, res) => {
     cart.calculateTotal();
     await cart.save();
 
-    const populatedCart = await Cart.findOne({ userId })
+    const populatedcart = await cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
     const formattedItems = [];
-    if (populatedCart) {
-      for (const it of populatedCart.items) {
+    if (populatedcart) {
+      for (const it of populatedcart.items) {
         const prod = it.productId;
         if (!prod) continue;
         let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
         if (!varObj) varObj = prod.variants?.find(v => v.isActive);
         if (!varObj) continue;
-        const formatted = formatCartItem(it, prod, varObj, userType);
+        const formatted = formatcartItem(it, prod, varObj, userType);
         if (formatted) formattedItems.push(formatted);
       }
     }
@@ -755,8 +755,8 @@ const removeCartItem = async (req, res) => {
 
     res.json({ 
       success: true, 
-      cart: populatedCart ? {
-        ...populatedCart.toObject(),
+      cart: populatedcart ? {
+        ...populatedcart.toObject(),
         items: formattedItems,
         totalAmount: totalAmt,
         totalOriginalAmount: totalOriginalAmt,
@@ -767,7 +767,7 @@ const removeCartItem = async (req, res) => {
     });
     
   } catch (err) {
-    console.error('removeCartItem:', err);
+    console.error('removecartItem:', err);
     return res.status(500).json({ 
       success: false, 
       message: 'Server error' 
@@ -784,11 +784,11 @@ const bulkRemove = async (req, res) => {
   const { items } = req.body;
 
   try {
-    const cart = await Cart.findOne({ userId });
+    const cart = await cart.findOne({ userId });
     if (!cart) {
       return res.status(404).json({ 
         success: false, 
-        message: 'Cart not found' 
+        message: 'cart not found' 
       });
     }
 
@@ -802,21 +802,21 @@ const bulkRemove = async (req, res) => {
     cart.calculateTotal();
     await cart.save();
 
-    const populatedCart = await Cart.findOne({ userId })
+    const populatedcart = await cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
       });
 
     const formattedItems = [];
-    if (populatedCart) {
-      for (const it of populatedCart.items) {
+    if (populatedcart) {
+      for (const it of populatedcart.items) {
         const prod = it.productId;
         if (!prod) continue;
         let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
         if (!varObj) varObj = prod.variants?.find(v => v.isActive);
         if (!varObj) continue;
-        const formatted = formatCartItem(it, prod, varObj, userType);
+        const formatted = formatcartItem(it, prod, varObj, userType);
         if (formatted) formattedItems.push(formatted);
       }
     }
@@ -828,8 +828,8 @@ const bulkRemove = async (req, res) => {
 
     res.json({ 
       success: true, 
-      cart: populatedCart ? {
-        ...populatedCart.toObject(),
+      cart: populatedcart ? {
+        ...populatedcart.toObject(),
         items: formattedItems,
         totalAmount: totalAmt,
         totalOriginalAmount: totalOriginalAmt,
@@ -851,16 +851,16 @@ const bulkRemove = async (req, res) => {
 // =============================================
 // CLEAR CART
 // =============================================
-const clearCart = async (req, res) => {
+const clearcart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
 
   try {
-    const cart = await Cart.findOne({ userId });
+    const cart = await cart.findOne({ userId });
     if (!cart) {
       return res.json({ 
         success: true, 
-        message: 'Cart already empty',
+        message: 'cart already empty',
         cart: { items: [], totalAmount: 0 },
         userType: userType
       });
@@ -873,13 +873,13 @@ const clearCart = async (req, res) => {
 
     return res.json({
       success: true,
-      message: 'Cart cleared successfully',
+      message: 'cart cleared successfully',
       cart: { items: [], totalAmount: 0 },
       userType: userType
     });
 
   } catch (err) {
-    console.error('clearCart:', err);
+    console.error('clearcart:', err);
     return res.status(500).json({ 
       success: false, 
       message: 'Server error' 
@@ -887,12 +887,12 @@ const clearCart = async (req, res) => {
   }
 };
 
-module.exports = { 
-  addToCart, 
-  updateCartItem, 
-  mergeCart, 
-  getCart, 
-  removeCartItem, 
+module.exports = {
+  addToCart: addTocart,
+  updateCartItem: updatecartItem,
+  mergeCart: mergecart,
+  getCart: getcart,
+  removeCartItem: removecartItem,
   bulkRemove,
-  clearCart
+  clearCart: clearcart
 };

@@ -1,6 +1,0 @@
-"row","productCode","error"
-"Adidas Shoes (row 4)","87856-02","bulk product ""adidas shoes"": 87856 exists as a bare productCode, but suffixed variants are being added without 87856-01. Use 87856-01 before 87856-02."
-"Oppo reno (row 6)","81756-06","productCode sequence for bulk product ""oppo reno"" must be continuous when combined with existing variants. Missing 81756-01. This looks like a new product; start from 81756 or 81756-01."
-"E-Print (row 5)","83478-01","productCode 83478-01 already exists on this product. Variants already exist till 83478-01."
-"Motorola G57 (row 3)","85756-05","productCode 85756-05 already exists on this product. Variants already exist till 85756-06."
-"Motorola G57 (row 2)","85756-06","productCode 85756-06 already exists on this product. Variants already exist till 85756-06."
