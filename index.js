@@ -16,25 +16,25 @@ const cleanupService = require('./services/cleanup.service');
 const logger = require('./utils/logger');
 
 // Import middleware
-const { optionalAuth } = require('./middlewares/userTypeOptional');
-const { limiters } = require('./middlewares/rateLimiter');
+const { optionalAuth } = require('./middlewares/user-type-optional.middleware');
+const { limiters } = require('./middlewares/rate-limiter.middleware');
 
 // Import routes (ACTIVE ONLY)
-const authRoutes = require('./routes/authRoutes');
-const adminProductsRoutes = require('./routes/adminProducts');
-const categoriesRoutes = require('./routes/categories');
-const productsRoutes = require('./routes/products');
-const wishlistRoutes = require('./routes/wishlist');
-const cartRoutes = require('./routes/Cart');
-const addressRoutes = require('./routes/addressRoutes');
-const adminAnalyticsRoutes = require('./routes/adminAnalyticsRoutes');
-const staffRoutes = require('./routes/staffRoutes');
-const orderRoutes = require('./routes/orderRoutes');
-const orderController = require('./controllers/orderController');
-const deliveryRoutes = require('./routes/deliveryRoutes');
-const checkoutRoutes = require('./routes/checkoutRoutes');
-const adminCouponRoutes = require('./routes/adminCouponRoutes');
-const userCouponRoutes = require('./routes/userCouponRoutes');
+const authRoutes = require('./routes/auth.route');
+const adminProductsRoutes = require('./routes/admin-products.route');
+const categoriesRoutes = require('./routes/categories.route');
+const productsRoutes = require('./routes/products.route');
+const wishlistRoutes = require('./routes/wishlist.route');
+const cartRoutes = require('./routes/cart.route');
+const addressRoutes = require('./routes/address.route');
+const adminAnalyticsRoutes = require('./routes/admin-analytics.route');
+const staffRoutes = require('./routes/staff.route');
+const orderRoutes = require('./routes/orders.route');
+const orderController = require('./controllers/order.controller');
+const deliveryRoutes = require('./routes/delivery.route');
+const checkoutRoutes = require('./routes/checkout.route');
+const adminCouponRoutes = require('./routes/admin-coupons.route');
+const userCouponRoutes = require('./routes/user-coupons.route');
 
 // Configuration
 const PORT = process.env.PORT || 8081;

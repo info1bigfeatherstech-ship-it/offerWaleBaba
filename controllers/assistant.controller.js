@@ -1,5 +1,5 @@
 // controllers/chat.controller.js
-const processUserMessage=require("../services/ai.services.js");
+const processUserMessage=require("../services/ai.service.js");
 
  const handleChat = async (req, res, next) => {
   try {

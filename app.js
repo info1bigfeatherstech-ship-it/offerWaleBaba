@@ -29,7 +29,7 @@
 // // IMPORT ROUTES
 // // ============================================================================
 
-// const authRoutes = require('./routes/authRoutes');
+// const auth.middleware.route = require('./routes/auth.middleware.route');
 
 // // ============================================================================
 // // CONFIGURATION & CONSTANTS
@@ -234,11 +234,11 @@
 // });
 
 // // Auth Routes
-// app.use('/api/auth', authRoutes);
+// app.use('/api/auth.middleware', auth.middleware.route);
 
 // // Admin Product Routes
-// const adminProductsRoutes = require('./routes/adminProducts');
-// app.use('/api/admin/products', adminProductsRoutes);
+// const admin-products.routeRoutes = require('./routes/admin-products.route');
+// app.use('/api/admin/products', admin-products.routeRoutes);
 
 // // ============================================================================
 // // ERROR HANDLING MIDDLEWARE
