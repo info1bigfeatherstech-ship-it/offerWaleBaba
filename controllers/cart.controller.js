@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const cart = require('../models/cart');
+const Cart = require('../models/cart');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Address = require('../models/Address');
@@ -135,7 +135,7 @@ const getcart = async (req, res) => {
   const userType = req.userType || 'user';
 
   try {
-    const cart = await cart.findOne({ userId })
+    const cart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -313,9 +313,9 @@ const addTocart = async (req, res) => {
     }));
 
     // Upsert cart and item
-    let cart = await cart.findOne({ userId });
+    let cart = await Cart.findOne({ userId });
     if (!cart) {
-      cart = new cart({ userId, items: [] });
+      cart = new Cart({ userId, items: [] });
     }
 
     // Check existing same item
@@ -351,7 +351,7 @@ const addTocart = async (req, res) => {
     await cart.save();
 
     // Return cart with full data
-    const updatedcart = await cart.findOne({ userId })
+    const updatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -429,7 +429,7 @@ const updatecartItem = async (req, res) => {
   }
 
   try {
-    const cart = await cart.findOne({ userId });
+    const cart = await Cart.findOne({ userId });
     if (!cart) {
       return res.status(404).json({ 
         success: false, 
@@ -457,7 +457,7 @@ const updatecartItem = async (req, res) => {
       cart.calculateTotal();
       await cart.save();
       
-      const updatedcart = await cart.findOne({ userId })
+      const updatedcart = await Cart.findOne({ userId })
         .populate({ 
           path: 'items.productId', 
           select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -542,7 +542,7 @@ const updatecartItem = async (req, res) => {
     await cart.save();
 
     // Populate for response
-    const populatedcart = await cart.findOne({ userId })
+    const populatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -610,8 +610,8 @@ const mergecart = async (req, res) => {
   }
 
   try {
-    let cart = await cart.findOne({ userId });
-    if (!cart) cart = new cart({ userId, items: [] });
+    let cart = await Cart.findOne({ userId });
+    if (!cart) cart = new Cart({ userId, items: [] });
 
     for (const incoming of items) {
       const { productId, variantId, quantity } = incoming;
@@ -659,7 +659,7 @@ const mergecart = async (req, res) => {
     await cart.save();
 
     // Return updated cart
-    const populatedcart = await cart.findOne({ userId })
+    const populatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -713,7 +713,7 @@ const removecartItem = async (req, res) => {
   const { productId, variantId } = req.body;
 
   try {
-    const cart = await cart.findOne({ userId });
+    const cart = await Cart.findOne({ userId });
     if (!cart) {
       return res.status(404).json({ 
         success: false, 
@@ -729,7 +729,7 @@ const removecartItem = async (req, res) => {
     cart.calculateTotal();
     await cart.save();
 
-    const populatedcart = await cart.findOne({ userId })
+    const populatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -784,7 +784,7 @@ const bulkRemove = async (req, res) => {
   const { items } = req.body;
 
   try {
-    const cart = await cart.findOne({ userId });
+    const cart = await Cart.findOne({ userId });
     if (!cart) {
       return res.status(404).json({ 
         success: false, 
@@ -802,7 +802,7 @@ const bulkRemove = async (req, res) => {
     cart.calculateTotal();
     await cart.save();
 
-    const populatedcart = await cart.findOne({ userId })
+    const populatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
         select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
@@ -856,7 +856,7 @@ const clearcart = async (req, res) => {
   const userType = req.userType || 'user';
 
   try {
-    const cart = await cart.findOne({ userId });
+    const cart = await Cart.findOne({ userId });
     if (!cart) {
       return res.json({ 
         success: true, 

@@ -1,7 +1,8 @@
 // controllers/order.controller.js
 const Order = require('../models/Order');
 const Address = require('../models/Address');
-const cart = require('../models/cart');
+const Cart = require('../models/cart');
+const CheckoutQuote = require('../models/CheckoutQuote');
 const Product = require('../models/Product');
 const Coupon = require('../models/Coupon');
 const Razorpay = require('razorpay');
@@ -122,9 +123,20 @@ exports.createOrder = async (req, res) => {
 
     try {
         // Never trust client totals — only address, payment channel, user type, coupon code, Razorpay split mode
-        const { addressId, paymentMethod, userType = 'normal', couponCode, onlinePaymentMode = 'full' } = req.body || {};
+        const { addressId, paymentMethod, userType = 'normal', couponCode, onlinePaymentMode = 'full', quoteId } = req.body || {};
         const userId = req.userId;
         const finalUserType = userType === 'wholesaler' ? 'wholesaler' : 'normal';
+        const normalizedPaymentMethod = String(paymentMethod || '').toLowerCase() === 'prepaid' ? 'online' : paymentMethod;
+        const normalizedOnlinePaymentMode =
+            String(onlinePaymentMode || '').toLowerCase() === 'partial' ? 'advance' : onlinePaymentMode;
+
+        if (!quoteId) {
+            await session.abortTransaction();
+            return res.status(400).json({
+                success: false,
+                message: 'quoteId is required. Generate and confirm checkout quote before placing order.'
+            });
+        }
 
         // 1. Validate address
         const address = await Address.findById(addressId).session(session);
@@ -145,8 +157,8 @@ exports.createOrder = async (req, res) => {
         }
 
         // 2. Get user's cart
-        const cart = await cart.findOne({ userId }).session(session);
-        if (!cart || !cart.items || cart.items.length === 0) {
+        const cartDoc = await Cart.findOne({ userId }).session(session);
+        if (!cartDoc || !cartDoc.items || cartDoc.items.length === 0) {
             await session.abortTransaction();
             return res.status(400).json({
                 success: false,
@@ -164,41 +176,80 @@ exports.createOrder = async (req, res) => {
             });
         }
 
-        const QUOTE_TTL_MS = 48 * 60 * 60 * 1000;
-        const snap = cart.deliverySnapshot;
-        const fp = cartFingerprintFromItems(cart.items);
-        const snapBaseFresh =
-            snap &&
-            snap.quotedAt &&
-            snap.addressId &&
-            String(snap.addressId) === String(addressId) &&
-            normalizePin(snap.postalCode) === pin &&
-            String(snap.cartFingerprint || '') === String(fp) &&
-            String(snap.couponCodeUpper || '') === String((couponCode || '')).toUpperCase().trim() &&
-            Date.now() - new Date(snap.quotedAt).getTime() < QUOTE_TTL_MS &&
-            snap.isDeliverable;
+        const fp = cartFingerprintFromItems(cartDoc.items);
+        const quote = await CheckoutQuote.findOne({ _id: quoteId, userId }).session(session);
+        if (!quote) {
+            await session.abortTransaction();
+            return res.status(404).json({
+                success: false,
+                message: 'Checkout quote not found'
+            });
+        }
+        if (quote.status !== 'confirmed') {
+            await session.abortTransaction();
+            return res.status(409).json({
+                success: false,
+                message: 'Checkout quote is not confirmed. Please confirm quote before placing order.'
+            });
+        }
+        if (quote.quoteExpiresAt.getTime() <= Date.now()) {
+            await session.abortTransaction();
+            return res.status(409).json({
+                success: false,
+                message: 'Checkout quote expired. Please generate quote again.'
+            });
+        }
+        if (String(quote.addressId) !== String(addressId)) {
+            await session.abortTransaction();
+            return res.status(409).json({
+                success: false,
+                message: 'Address changed after quote confirmation. Regenerate quote.'
+            });
+        }
+        if (normalizePin(quote.postalCode) !== pin) {
+            await session.abortTransaction();
+            return res.status(409).json({
+                success: false,
+                message: 'Pincode changed after quote confirmation. Regenerate quote.'
+            });
+        }
+        if (String(quote.cartFingerprint) !== String(fp)) {
+            await session.abortTransaction();
+            return res.status(409).json({
+                success: false,
+                message: 'Cart changed after quote confirmation. Regenerate quote.'
+            });
+        }
+        if (String(quote.couponCodeUpper || '') !== String((couponCode || '')).toUpperCase().trim()) {
+            await session.abortTransaction();
+            return res.status(409).json({
+                success: false,
+                message: 'Coupon changed after quote confirmation. Regenerate quote.'
+            });
+        }
+        if (normalizedPaymentMethod === 'cod' && quote.shippingMeta?.codAvailable === false) {
+            await session.abortTransaction();
+            return res.status(400).json({
+                success: false,
+                code: 'COD_NOT_AVAILABLE',
+                message: 'COD is not available for this quote'
+            });
+        }
 
-        const snapFreshOnline = paymentMethod === 'online' && snapBaseFresh;
-        const snapFreshCodWithDemo =
-            paymentMethod === 'cod' && snapBaseFresh && snap.mockShipping === true;
-
-        const useDeliverySnap = snapFreshOnline || snapFreshCodWithDemo;
-
-        const deliveryOverride = useDeliverySnap
-            ? {
-                  charges: Number(snap.deliveryCharges) || 0,
-                  meta: {
-                      estimatedDays: snap.estimatedDays,
-                      courierName: snap.courierName,
-                      isDeliverable: true,
-                      mock: Boolean(snap.mockShipping)
-                  }
-              }
-            : null;
+        const deliveryOverride = {
+            charges: Number(quote.deliveryCharges) || 0,
+            meta: {
+                estimatedDays: quote.shippingMeta?.estimatedDays || null,
+                courierName: quote.shippingMeta?.courierName || null,
+                isDeliverable: true,
+                codAvailable: quote.shippingMeta?.codAvailable !== false,
+                mock: Boolean(quote.shippingMeta?.mock)
+            }
+        };
 
         const buildTotals = async (consumeCoupon, codAmt) =>
             computeCheckoutTotals({
-                cart,
+                cart: cartDoc,
                 postalCode: pin,
                 finalUserType,
                 couponCode,
@@ -212,7 +263,7 @@ exports.createOrder = async (req, res) => {
         let last;
         let priced;
         try {
-            if (paymentMethod === 'cod') {
+            if (normalizedPaymentMethod === 'cod') {
                 last = await buildTotals(false, 0);
                 for (let i = 0; i < 2; i++) {
                     const codVal = roundMoney2(last.subtotal + last.tax - last.discount + last.deliveryCharges);
@@ -224,7 +275,7 @@ exports.createOrder = async (req, res) => {
 
             priced = await buildTotals(
                 true,
-                paymentMethod === 'cod'
+                normalizedPaymentMethod === 'cod'
                     ? roundMoney2(last.subtotal + last.tax - last.discount + last.deliveryCharges)
                     : 0
             );
@@ -261,7 +312,7 @@ exports.createOrder = async (req, res) => {
         let balanceDueInr = 0;
         let amountPaidInr = 0;
 
-        if (paymentMethod === 'online' && String(onlinePaymentMode).toLowerCase() === 'advance') {
+        if (normalizedPaymentMethod === 'online' && String(normalizedOnlinePaymentMode).toLowerCase() === 'advance') {
             const totalInr = roundMoney2(totalAmount);
             const advInrRaw = roundMoney2((totalInr * advancePercent) / 100);
             const advInr = Math.max(1, Math.min(roundMoney2(totalInr - 0.01), advInrRaw));
@@ -285,19 +336,20 @@ exports.createOrder = async (req, res) => {
             address: addressId,
             addressSnapshot: address.toObject(),
             userType: finalUserType,
-            orderStatus: paymentMethod === 'cod' ? 'confirmed' : 'pending',
-            paymentStatus: paymentMethod === 'cod' ? 'pending' : 'pending',
+            orderStatus: normalizedPaymentMethod === 'cod' ? 'confirmed' : 'pending',
+            paymentStatus: normalizedPaymentMethod === 'cod' ? 'pending' : 'pending',
             amountPaidInr,
             balanceDueInr,
             appliedCoupon: appliedCouponCode
                 ? { code: appliedCouponCode, discount }
                 : { code: null, discount: 0 },
             paymentInfo: {
-                method: paymentMethod,
+                method: normalizedPaymentMethod,
                 status: 'initiated',
                 amountPaise: razorpayChargePaise,
                 splitMode,
                 fullOrderAmountPaise: Math.round(roundMoney2(totalAmount) * 100),
+                quoteId: String(quote._id),
                 sessions: []
             }
         });
@@ -305,17 +357,21 @@ exports.createOrder = async (req, res) => {
         await order.save({ session });
 
         // 10. Clear cart
-        cart.items = [];
-        cart.totalAmount = 0;
-        cart.deliverySnapshot = null;
-        await cart.save({ session });
+        cartDoc.items = [];
+        cartDoc.totalAmount = 0;
+        cartDoc.deliverySnapshot = null;
+        await cartDoc.save({ session });
+
+        quote.status = 'consumed';
+        quote.lastValidatedAt = new Date();
+        await quote.save({ session });
 
         await session.commitTransaction();
         session.endSession();
 
         // 11. If online payment, create Razorpay order (amount in paise must match verify/webhook logic)
         let razorpayOrder = null;
-        if (paymentMethod === 'online') {
+        if (normalizedPaymentMethod === 'online') {
             const amountPaise = razorpayChargePaise;
             if (!String(process.env.RAZORPAY_KEY_ID || '').trim() || !String(process.env.RAZORPAY_KEY_SECRET || '').trim()) {
                 console.error('Razorpay: RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET missing in env');
@@ -395,7 +451,7 @@ exports.createOrder = async (req, res) => {
         
         return res.status(201).json({
             success: true,
-            message: paymentMethod === 'cod' ? 'Order placed successfully' : 'Order created. Complete payment to confirm.',
+            message: normalizedPaymentMethod === 'cod' ? 'Order placed successfully' : 'Order created. Complete payment to confirm.',
             order: {
                 orderId: order.orderId,
                 totalAmount: order.totalAmount,
@@ -413,7 +469,7 @@ exports.createOrder = async (req, res) => {
                 amount: razorpayOrder.amount,
                 currency: razorpayOrder.currency
             } : null,
-            paymentMethod: paymentMethod
+            paymentMethod: normalizedPaymentMethod
         });
 
     } catch (error) {

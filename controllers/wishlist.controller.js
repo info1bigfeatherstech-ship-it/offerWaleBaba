@@ -1,6 +1,6 @@
 const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
-const cart = require('../models/cart');
+const Cart = require('../models/cart');
 
 // ✅ HELPER: Calculate discount percentage
 const calculateDiscountPercentage = (base, sale) => {
@@ -383,8 +383,8 @@ const moveToCart = async (req, res) => {
       productMap.set(String(product._id), product);
     });
 
-    let cart = await cart.findOne({ userId });
-    if (!cart) cart = new cart({ userId, items: [] });
+    let cartDoc = await Cart.findOne({ userId });
+    if (!cartDoc) cartDoc = new Cart({ userId, items: [] });
 
     for (const item of itemsToMove) {
       const product = productMap.get(String(item.productId));
@@ -414,7 +414,7 @@ const moveToCart = async (req, res) => {
         discountPercentage = isSaleActive ? calculateDiscountPercentage(basePrice, salePrice) : 0;
       }
 
-      const existing = cart.items.find(it =>
+      const existing = cartDoc.items.find(it =>
         String(it.productId) === String(product._id) &&
         String(it.variantId) === String(variant._id)
       );
@@ -422,7 +422,7 @@ const moveToCart = async (req, res) => {
       if (existing) {
         existing.quantity += 1;
       } else {
-        cart.items.push({
+        cartDoc.items.push({
           productId: product._id,
           variantId: variant._id,
           quantity: 1,
@@ -443,8 +443,8 @@ const moveToCart = async (req, res) => {
       }
     }
 
-    cart.calculateTotal();
-    await cart.save();
+    cartDoc.calculateTotal();
+    await cartDoc.save();
 
     // Remove moved items from wishlist
     if (moveAll) {
@@ -460,7 +460,7 @@ const moveToCart = async (req, res) => {
     return res.json({
       success: true,
       message: 'Wishlist items moved to cart',
-      cart,
+      cart: cartDoc,
       userType: userType
     });
 

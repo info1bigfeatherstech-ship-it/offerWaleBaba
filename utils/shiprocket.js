@@ -14,7 +14,21 @@ class ShiprocketService {
     this.baseURL = String(process.env.SHIPROCKET_BASE_URL || DEFAULT_BASE).replace(/\/$/, '');
     this.token = null;
     this.tokenExpiry = 0;
+    this.authPromise = null;
     this.enabled = String(process.env.SHIPROCKET_ENABLED || '').toLowerCase() === 'true';
+  }
+
+  static decodeJwtExpMs(token) {
+    try {
+      const payloadPart = token.split('.')[1];
+      if (!payloadPart) return 0;
+      const payloadJson = Buffer.from(payloadPart, 'base64').toString('utf8');
+      const payload = JSON.parse(payloadJson);
+      if (!payload.exp) return 0;
+      return Number(payload.exp) * 1000;
+    } catch (_) {
+      return 0;
+    }
   }
 
   mockQuote(pincode, weightKg = 0.5) {
@@ -41,9 +55,16 @@ class ShiprocketService {
     };
   }
 
-  async getAuthToken() {
+  async getAuthToken({ forceRefresh = false } = {}) {
     if (!this.enabled) return null;
-    if (this.token && this.tokenExpiry > Date.now() + 5000) return this.token;
+    const expiryBufferMs = 30 * 1000;
+    if (!forceRefresh && this.token && this.tokenExpiry > Date.now() + expiryBufferMs) {
+      return this.token;
+    }
+
+    if (this.authPromise) {
+      return this.authPromise;
+    }
 
     const email = String(process.env.SHIPROCKET_EMAIL || '').trim();
     const password = String(process.env.SHIPROCKET_PASSWORD || '').trim();
@@ -52,19 +73,75 @@ class ShiprocketService {
       return null;
     }
 
+    this.authPromise = (async () => {
+      try {
+        const { data } = await axios.post(
+          `${this.baseURL}/external/auth/login`,
+          { email, password },
+          { timeout: 15000 }
+        );
+
+        const token = data?.token || null;
+        if (!token) {
+          this.token = null;
+          this.tokenExpiry = 0;
+          console.error('[Shiprocket] auth failed: token missing in login response');
+          return null;
+        }
+
+        this.token = token;
+        const ttlSec = Number(data?.expires_in) || 0;
+        const jwtExpiryMs = ShiprocketService.decodeJwtExpMs(token);
+        const expiryFromTtl = ttlSec > 0 ? Date.now() + ttlSec * 1000 : 0;
+        this.tokenExpiry = Math.max(expiryFromTtl, jwtExpiryMs, Date.now() + 24 * 60 * 60 * 1000);
+        return this.token;
+      } catch (err) {
+        this.token = null;
+        this.tokenExpiry = 0;
+        console.error('[Shiprocket] auth failed:', err.response?.data || err.message);
+        return null;
+      } finally {
+        this.authPromise = null;
+      }
+    })();
+
+    return this.authPromise;
+  }
+
+  async requestWithAuth(config, { retryOn401 = true } = {}) {
+    const token = await this.getAuthToken();
+    if (!token) return null;
+
     try {
-      const { data } = await axios.post(
-        `${this.baseURL}/external/auth/login`,
-        { email, password },
-        { timeout: 15000 }
-      );
-      this.token = data.token;
-      const ttlSec = Number(data.expires_in) || 9 * 24 * 3600;
-      this.tokenExpiry = Date.now() + ttlSec * 1000;
-      return this.token;
+      const { data } = await axios({
+        ...config,
+        timeout: config.timeout || 20000,
+        headers: {
+          ...(config.headers || {}),
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      return data;
     } catch (err) {
-      console.error('[Shiprocket] auth failed:', err.response?.data || err.message);
-      return null;
+      const status = err?.response?.status;
+      if (retryOn401 && status === 401) {
+        const refreshedToken = await this.getAuthToken({ forceRefresh: true });
+        if (!refreshedToken) {
+          return null;
+        }
+        const { data } = await axios({
+          ...config,
+          timeout: config.timeout || 20000,
+          headers: {
+            ...(config.headers || {}),
+            Authorization: `Bearer ${refreshedToken}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        return data;
+      }
+      throw err;
     }
   }
 
@@ -99,17 +176,13 @@ class ShiprocketService {
       return this.mockQuote(pincode, weight);
     }
 
-    const token = await this.getAuthToken();
-    if (!token) {
-      return this.mockQuote(pincode, weight);
-    }
-
     const pickup = String(process.env.STORE_PINCODE || process.env.PICKUP_PINCODE || '560001').replace(/\D/g, '').slice(0, 6);
 
     try {
-      const { data } = await axios.post(
-        `${this.baseURL}/external/courier/serviceability`,
-        {
+      const data = await this.requestWithAuth({
+        method: 'get',
+        url: `${this.baseURL}/external/courier/serviceability`,
+        params: {
           pickup_postcode: pickup,
           delivery_postcode: pincode,
           weight,
@@ -119,11 +192,12 @@ class ShiprocketService {
           breadth,
           height
         },
-        {
-          timeout: 20000,
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
-        }
-      );
+        timeout: 20000
+      });
+      if (!data) {
+        // Auth flow failed or credentials missing; keep API stable via mock fallback.
+        return this.mockQuote(pincode, weight);
+      }
 
       const list = data?.data?.available_courier_companies || data?.data?.available_courier_list || [];
       if (!Array.isArray(list) || list.length === 0) {
@@ -155,6 +229,11 @@ class ShiprocketService {
         estimatedDays: days,
         courierName: best.courier_name || best.airline_name || 'Courier',
         courierCompanyId: best.courier_company_id,
+        codAvailable:
+          best.cod === 1 ||
+          best.cod === true ||
+          best.is_cod_available === 1 ||
+          best.is_cod_available === true,
         message: 'Delivery available',
         mock: false
       };
@@ -178,6 +257,7 @@ class ShiprocketService {
       estimatedDays: r.estimatedDays,
       courierName: r.courierName,
       courierCompanyId: r.courierCompanyId,
+      codAvailable: r.codAvailable,
       message: r.message,
       mock: r.mock
     };
@@ -194,11 +274,6 @@ class ShiprocketService {
         trackingNumber: `MOCK-${order.orderId}`,
         courier: 'Mock Courier'
       };
-    }
-
-    const token = await this.getAuthToken();
-    if (!token) {
-      return { success: false, error: 'Shiprocket auth failed' };
     }
 
     const pickupLocation = String(process.env.SHIPROCKET_PICKUP_LOCATION || process.env.PICKUP_LOCATION_NICKNAME || 'Primary').trim();
@@ -285,10 +360,15 @@ class ShiprocketService {
     };
 
     try {
-      const { data } = await axios.post(`${this.baseURL}/external/orders/create/adhoc`, payload, {
-        timeout: 30000,
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+      const data = await this.requestWithAuth({
+        method: 'post',
+        url: `${this.baseURL}/external/orders/create/adhoc`,
+        data: payload,
+        timeout: 30000
       });
+      if (!data) {
+        return { success: false, error: 'Shiprocket auth failed' };
+      }
       return {
         success: true,
         shipmentId: data.shipment_id,

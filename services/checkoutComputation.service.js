@@ -48,7 +48,21 @@ const couponUserEligible = (coupon, finalUserType) => {
   return coupon.applicableUsers.includes(finalUserType);
 };
 
-const calculateTax = (subtotal) => roundMoney2(subtotal * 0.18);
+const calculateTax = (linesOrSubtotal) => {
+  if (Array.isArray(linesOrSubtotal)) {
+    const totalTax = linesOrSubtotal.reduce((sum, line) => {
+      const gstRate = Number(line?.product?.gstRate);
+      if (!Number.isFinite(gstRate) || gstRate <= 0) return sum;
+      const itemTotal = Number(line?.itemTotal) || 0;
+      return sum + (itemTotal * gstRate) / 100;
+    }, 0);
+    return roundMoney2(totalTax);
+  }
+
+  // Fallback for legacy callers still passing subtotal only.
+  const subtotal = Number(linesOrSubtotal) || 0;
+  return roundMoney2(subtotal * 0.18);
+};
 
 function cartFingerprintFromItems(items) {
   const key = (items || [])
@@ -249,6 +263,7 @@ async function computeCheckoutTotals({
       estimatedDays: null,
       courierName: null,
       isDeliverable: true,
+      codAvailable: true,
       mock: false
     };
   } else {
@@ -272,11 +287,12 @@ async function computeCheckoutTotals({
       estimatedDays: ship.estimatedDays,
       courierName: ship.courierName,
       isDeliverable: ship.isDeliverable,
+      codAvailable: ship.codAvailable !== false,
       mock: ship.mock
     };
   }
 
-  const tax = calculateTax(evaluated.subtotal);
+  const tax = calculateTax(evaluated.lines);
   const totalAmount = roundMoney2(evaluated.subtotal + deliveryCharges + tax - discount);
 
   return {

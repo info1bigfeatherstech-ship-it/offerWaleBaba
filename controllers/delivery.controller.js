@@ -1,7 +1,7 @@
 // controllers/delivery.controller.js
 const ShiprocketService = require('../utils/shiprocket');
 const DeliveryZone = require('../models/delieveryZone');
-const cart = require('../models/cart');
+const Cart = require('../models/cart');
 const Product = require('../models/Product');
 
 // Calculate total weight of cart items
@@ -17,7 +17,7 @@ const calculatecartWeight = async (cartItems) => {
 // ========== PRODUCTION VERSION ==========
 exports.checkDeliveryAvailability = async (req, res) => {
     try {
-        const { pincode, cartId } = req.body;
+        const { pincode, cartId } = req.body || {};
         const userId = req.userId;
         
         if (!pincode || !/^\d{6}$/.test(pincode)) {
@@ -30,17 +30,17 @@ exports.checkDeliveryAvailability = async (req, res) => {
         let totalWeight = 1;
         let dims = { lengthCm: 10, widthCm: 10, heightCm: 10 };
 
-        const cart = cartId
-            ? await cart.findById(cartId)
+        const cartDoc = cartId
+            ? await Cart.findById(cartId)
             : userId
-              ? await cart.findOne({ userId })
+              ? await Cart.findOne({ userId })
               : null;
 
-        if (cart?.items?.length) {
-            totalWeight = await calculatecartWeight(cart.items);
+        if (cartDoc?.items?.length) {
+            totalWeight = await calculatecartWeight(cartDoc.items);
             const { aggregateShipping } = require('../services/checkoutComputation.service');
             const lines = [];
-            for (const it of cart.items) {
+            for (const it of cartDoc.items) {
                 const p = await Product.findById(it.productId).select('shipping').lean();
                 if (p) lines.push({ product: p, quantity: it.quantity });
             }
