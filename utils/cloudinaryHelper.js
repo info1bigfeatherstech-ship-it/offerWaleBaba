@@ -14,12 +14,68 @@ const DEFAULT_WEBP_EFFORT = Math.min(
   Math.max(0, Number(process.env.PRODUCT_IMAGE_WEBP_EFFORT) || 4)
 );
 
+/** Longest side ≤ this and input bytes ≤ GENTLE_MAX_BYTES → gentle tier (no resize, high WebP quality). */
+const GENTLE_MAX_EDGE = Math.min(
+  4096,
+  Math.max(256, Number(process.env.PRODUCT_IMAGE_GENTLE_MAX_EDGE) || 1280)
+);
+const GENTLE_MAX_BYTES = Math.min(
+  20 * 1024 * 1024,
+  Math.max(1024, Number(process.env.PRODUCT_IMAGE_GENTLE_MAX_BYTES) || 524288)
+);
+const GENTLE_WEBP_QUALITY = Math.min(
+  100,
+  Math.max(70, Number(process.env.PRODUCT_IMAGE_GENTLE_WEBP_QUALITY) || 93)
+);
+const GENTLE_WEBP_EFFORT = Math.min(
+  6,
+  Math.max(0, Number(process.env.PRODUCT_IMAGE_GENTLE_WEBP_EFFORT) || 2)
+);
+
 /**
- * Production pipeline: EXIF-aware rotate, cap width, encode WebP before Cloudinary.
- * Keeps responses and stored assets consistently compressed.
+ * Whether caller supplied an explicit encode profile (bypass auto tiering).
+ * Category tiles pass maxWidth / quality; those must not use "gentle" auto.
+ */
+function hasExplicitPipelineOptions(options) {
+  return (
+    options.maxWidth != null ||
+    options.quality != null ||
+    options.effort != null ||
+    options.pipeline === 'full' ||
+    options.pipeline === 'gentle'
+  );
+}
+
+function resolvePipelineMode(options) {
+  if (options.pipeline === 'full' || options.pipeline === 'gentle') {
+    return options.pipeline;
+  }
+  const env = (process.env.PRODUCT_IMAGE_PIPELINE_MODE || 'auto').toLowerCase();
+  if (env === 'full' || env === 'gentle') return env;
+  return 'auto';
+}
+
+/**
+ * Production pipeline: EXIF-aware rotate, optional width cap, WebP before Cloudinary.
+ *
+ * **Auto tiering (default for products):** small catalog-style assets (both longest edge and
+ * byte size below thresholds) use a *gentle* path (no resize, higher WebP quality) to avoid
+ * double-crushing supplier thumbnails (e.g. 500×500 WebP). Larger or heavier files use the
+ * *full* path (resize + standard WebP). Callers that pass `maxWidth` / `quality` / `effort` or
+ * `pipeline: 'full'|'gentle'` always get deterministic behaviour (no auto).
+ *
+ * Env: `PRODUCT_IMAGE_MAX_WIDTH`, `PRODUCT_IMAGE_WEBP_QUALITY`, `PRODUCT_IMAGE_WEBP_EFFORT`,
+ * `PRODUCT_IMAGE_PIPELINE_MODE` (`auto`|`full`|`gentle`),
+ * `PRODUCT_IMAGE_GENTLE_MAX_EDGE`, `PRODUCT_IMAGE_GENTLE_MAX_BYTES`,
+ * `PRODUCT_IMAGE_GENTLE_WEBP_QUALITY`, `PRODUCT_IMAGE_GENTLE_WEBP_EFFORT`.
  *
  * @param {Buffer|ArrayBuffer|Uint8Array} input
- * @param {{ maxWidth?: number, quality?: number, effort?: number }} [options]
+ * @param {{
+ *   maxWidth?: number,
+ *   quality?: number,
+ *   effort?: number,
+ *   pipeline?: 'auto' | 'full' | 'gentle'
+ * }} [options]
  * @returns {Promise<Buffer>}
  */
 async function optimizeProductImageBuffer(input, options = {}) {
@@ -42,12 +98,74 @@ async function optimizeProductImageBuffer(input, options = {}) {
   const quality = options.quality ?? DEFAULT_WEBP_QUALITY;
   const effort = options.effort ?? DEFAULT_WEBP_EFFORT;
 
-  try {
-    return await sharp(buf, { animated: true, limitInputPixels: 268_402_689 })
+  const sharpInput = { animated: true, limitInputPixels: 268_402_689 };
+
+  const runGentle = () =>
+    sharp(buf, sharpInput)
+      .rotate()
+      .webp({
+        quality: options.quality ?? GENTLE_WEBP_QUALITY,
+        effort: options.effort ?? GENTLE_WEBP_EFFORT,
+        smartSubsample: true
+      })
+      .toBuffer();
+
+  const runFull = () =>
+    sharp(buf, sharpInput)
       .rotate()
       .resize({ width: maxWidth, withoutEnlargement: true })
       .webp({ quality, effort, smartSubsample: true })
       .toBuffer();
+
+  try {
+    const mode = resolvePipelineMode(options);
+
+    if (hasExplicitPipelineOptions(options)) {
+      if (options.pipeline === 'gentle') {
+        return await runGentle();
+      }
+      return await runFull();
+    }
+
+    if (mode === 'gentle') {
+      return await runGentle();
+    }
+    if (mode === 'full') {
+      return await runFull();
+    }
+
+    // auto (default): choose tier from metadata + size
+    let metadata;
+    try {
+      metadata = await sharp(buf, sharpInput).metadata();
+    } catch {
+      return await runFull();
+    }
+
+    const w = metadata.width || 0;
+    const h = metadata.height || 0;
+    const longest = Math.max(w, h);
+    const pages = metadata.pages || 1;
+
+    const isMultiFrame = pages > 1;
+    const fitsGentlePixel = longest > 0 && longest <= GENTLE_MAX_EDGE;
+    const fitsGentleBytes = buf.length <= GENTLE_MAX_BYTES;
+
+    const useGentle =
+      !isMultiFrame && fitsGentlePixel && fitsGentleBytes;
+
+    if (useGentle) {
+      return await sharp(buf, sharpInput)
+        .rotate()
+        .webp({
+          quality: GENTLE_WEBP_QUALITY,
+          effort: GENTLE_WEBP_EFFORT,
+          smartSubsample: true
+        })
+        .toBuffer();
+    }
+
+    return await runFull();
   } catch (err) {
     const wrapped = new Error(`Image optimization failed: ${err.message}`);
     wrapped.cause = err;
