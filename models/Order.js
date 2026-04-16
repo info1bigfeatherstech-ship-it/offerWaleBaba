@@ -109,6 +109,5 @@ orderSchema.pre('save', function() {
 });
 
 orderSchema.index({ userId: 1, createdAt: -1 });
-orderSchema.index({ orderId: 1 }, { unique: true });
 
 module.exports = mongoose.model('Order', orderSchema);

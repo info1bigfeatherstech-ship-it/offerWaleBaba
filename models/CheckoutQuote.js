@@ -39,7 +39,7 @@ const checkoutQuoteSchema = new mongoose.Schema(
       default: 'active',
       index: true
     },
-    quoteExpiresAt: { type: Date, required: true, index: true },
+    quoteExpiresAt: { type: Date, required: true },
     confirmedAt: { type: Date, default: null },
     lastValidatedAt: { type: Date, default: null }
   },
