@@ -19,7 +19,7 @@ const {generateSEOData}=require("../utils/seoUtils");
 
 
 // =============================================
-// ✅ CACHE INVALIDATION HELPERS (SINGLE DEFINITION)
+//  CACHE INVALIDATION HELPERS (SINGLE DEFINITION)
 // =============================================
 const invalidateProductCaches = async (productSlug = null) => {
   try {
@@ -518,7 +518,7 @@ async function findExistingProductByProductCode(rawCode) {
 }
 
 
-// Create new product
+
 // Create new product
 const createProduct = async (req, res) => {
   try {
@@ -535,7 +535,6 @@ const createProduct = async (req, res) => {
       shipping,
       attributes,
       variants: variantsRaw,
-      // ✅ NEW FIELDS
       hsnCode,
       gstRate,
       isFragile
@@ -781,7 +780,7 @@ const createProduct = async (req, res) => {
     }
 
     // =============================
-    // ✅ VALIDATE HSN CODE (Optional)
+    //  VALIDATE HSN CODE (Optional)
     // =============================
     let finalHsnCode = null;
     if (hsnCode && hsnCode.trim()) {
@@ -795,7 +794,7 @@ const createProduct = async (req, res) => {
     }
 
     // =============================
-    // ✅ VALIDATE TAX RATE (Optional - no default)
+    //  VALIDATE TAX RATE (Optional - no default)
     // =============================
     let finalgstRate = null;
     if (gstRate !== undefined && gstRate !== null) {
@@ -808,15 +807,15 @@ const createProduct = async (req, res) => {
       }
       finalgstRate = parsedgstRate;
     }
-    // ⚠️ No default value - if not provided, stays null
+    //  No default value - if not provided, stays null
 
     // =============================
-    // ✅ FRAGILE FLAG (Boolean)
+    //  FRAGILE FLAG (Boolean)
     // =============================
     const finalIsFragile = isFragile === true || isFragile === "true";
 
     // =============================
-    // ✅ CREATE PRODUCT
+    //  CREATE PRODUCT
     // =============================
     const product = new Product({
       name,
@@ -845,14 +844,14 @@ const createProduct = async (req, res) => {
       isVisibleToRetail: req.body.isVisibleToRetail || false,
       isVisibleToWholesale: req.body.isVisibleToWholesale || false,
       
-      // ✅ NEW FIELDS (NO DEFAULTS)
+      //  NEW FIELDS (NO DEFAULTS)
       hsnCode: finalHsnCode,
       gstRate: finalgstRate,
       isFragile: finalIsFragile
     });
 
     // =============================
-    // ✅ AUTO-GENERATE SEO DATA
+    //  AUTO-GENERATE SEO DATA
     // =============================
     const categoryForSEO = existingCategory ? { name: existingCategory.name } : null;
 

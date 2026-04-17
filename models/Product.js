@@ -158,7 +158,7 @@ const productSchema = new mongoose.Schema(
       default: []
     },
 
-    // ✅ NEW: SEO Field (Add this here)
+    //  NEW: SEO Field (Add this here)
     seo: {
       type: seoSchema,
       default: () => ({})

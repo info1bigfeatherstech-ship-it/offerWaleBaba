@@ -7,7 +7,7 @@ const {
   optimizeProductImageBuffer
 } = require('../utils/cloudinaryHelper');
 
-// ✅ ADD THESE 2 LINES AT THE TOP
+//  ADD THESE 2 LINES AT THE TOP
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
 
@@ -48,10 +48,10 @@ async function processAndUploadCategoryImage(buffer, { nameHint, uniqueSuffix })
 // =============================================
 const getAllCategories = async (req, res) => {
   try {
-    // ✅ GENERATE CACHE KEY
+    //  GENERATE CACHE KEY
     const cacheKey = cacheConfig.generateKey('CATEGORY', { all: true });
 
-    // ✅ CHECK CACHE FIRST
+    //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
@@ -87,7 +87,7 @@ const getAllCategories = async (req, res) => {
       categories: roots
     };
 
-    // ✅ STORE IN CACHE (30 minutes)
+    //  STORE IN CACHE (30 minutes)
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.CATEGORY_LIST);
 
     res.setHeader('X-Cache', 'MISS');
@@ -112,10 +112,10 @@ const getCategoryById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // ✅ GENERATE CACHE KEY
+    //  GENERATE CACHE KEY
     const cacheKey = cacheConfig.generateKey('CATEGORY', { id });
 
-    // ✅ CHECK CACHE FIRST
+    //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
@@ -140,7 +140,7 @@ const getCategoryById = async (req, res) => {
       category
     };
 
-    // ✅ STORE IN CACHE
+    //  STORE IN CACHE
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.CATEGORY_DETAIL);
 
     res.setHeader('X-Cache', 'MISS');
@@ -236,7 +236,7 @@ const createCategory = async (req, res) => {
 
     await category.save();
 
-    // ✅ INVALIDATE CATEGORY CACHE AFTER CREATE
+    //  INVALIDATE CATEGORY CACHE AFTER CREATE
     await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
 
     return res.status(201).json({
@@ -301,7 +301,7 @@ const updateCategory = async (req, res) => {
 
     await category.save();
 
-    // ✅ INVALIDATE CATEGORY CACHE AFTER UPDATE
+    //  INVALIDATE CATEGORY CACHE AFTER UPDATE
     await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
 
     return res.status(200).json({ success: true, message: 'Category updated', category });
@@ -357,7 +357,7 @@ const deleteCategory = async (req, res) => {
     category.showInMenu = false;
     await category.save();
 
-    // ✅ INVALIDATE CATEGORY CACHE AFTER DELETE
+    //  INVALIDATE CATEGORY CACHE AFTER DELETE
     await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
 
     return res.status(200).json({
@@ -396,7 +396,7 @@ const reorderCategories = async (req, res) => {
 
     await Category.bulkWrite(bulkOps);
 
-    // ✅ INVALIDATE CATEGORY CACHE AFTER REORDER
+    //  INVALIDATE CATEGORY CACHE AFTER REORDER
     await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
 
     const updatedCategories = await Category.find()
@@ -434,7 +434,7 @@ const toggleCategoryVisibility = async (req, res) => {
     category.status = isHidden ? 'inactive' : 'active';
     await category.save();
 
-    // ✅ INVALIDATE CATEGORY CACHE AFTER TOGGLE
+    //  INVALIDATE CATEGORY CACHE AFTER TOGGLE
     await cacheService.forget(`${cacheConfig.prefixes.CATEGORY}:*`);
 
     return res.status(200).json({

@@ -44,8 +44,8 @@ const getAllUsers = async (req, res) => {
     // Get additional stats for each user
     const usersWithStats = await Promise.all(users.map(async (user) => {
       // Get cart count
-      const cart = await cart.findOne({ userId: user._id });
-      const cartItemsCount = cart?.items?.length || 0;
+      const cartt = await cart.findOne({ userId: user._id });
+      const cartItemsCount = cartt?.items?.length || 0;
       
       // Get wishlist count
       const wishlist = await Wishlist.findOne({ userId: user._id });

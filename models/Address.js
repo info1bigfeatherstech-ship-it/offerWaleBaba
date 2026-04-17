@@ -19,21 +19,21 @@ const addressSchema = new mongoose.Schema({
     required: true,
   },
 
-  // 🏠 House / Flat / Building
+  //  House / Flat / Building
   houseNumber: {
     type: String,
     required: true,
     trim: true
   },
 
-  // 🛣 Street / Area / Locality
+  // Street / Area / Locality
   area: {
     type: String,
     required: true,
     trim: true
   },
 
-  // 🧭 Landmark (VERY useful)
+  //  Landmark (VERY useful)
   landmark: {
     type: String,
     trim: true
@@ -74,26 +74,26 @@ const addressSchema = new mongoose.Schema({
     default: 'India'
   },
 
-  // 🏠 Address type
+  //  Address type
   addressType: {
     type: String,
     enum: ['home', 'work', 'other'],
     default: 'home'
   },
 
-  // 🎁 Gift case support
+  //  Gift case support
   isGift: {
     type: Boolean,
     default: false
   },
 
-  // 🚚 Delivery instructions
+  //  Delivery instructions
   deliveryInstructions: {
     type: String,
     trim: true
   },
 
-  // 📍 Future (DO NOT USE NOW, but keep)
+  //  Future (DO NOT USE NOW, but keep)
   location: {
     lat: { type: Number },
     lng: { type: Number }

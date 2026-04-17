@@ -8,7 +8,7 @@ const tokenStore = require('../config/tokenBlacklist');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 
-// ✅ Import from OTP service
+// Import from OTP service
 const { sendOTP, generateOTP } = require("../services/otp.service");
 
 // ========== HELPERS ==========
@@ -17,10 +17,10 @@ const { sendOTP, generateOTP } = require("../services/otp.service");
 const sendPhoneOTP = async (phone, otp) => {
   try {
     await sendOTP(phone, otp);
-    console.log(`✅ OTP sent to ${phone}`);
+    console.log(` OTP sent to ${phone}`);
     return true;
   } catch (error) {
-    console.error(`❌ Failed to send OTP to ${phone}:`, error.message);
+    console.error(` Failed to send OTP to ${phone}:`, error.message);
     throw error;
   }
 };
@@ -94,7 +94,7 @@ const googleClient = new OAuth2Client(
   process.env.GOOGLE_CLIENT_ID || 'NO_CLIENT_ID_SET'
 );
 
-// ========== 1️⃣ REGISTER CONTROLLER ==========
+// ========== 1️ REGISTER CONTROLLER ==========
 
 const register = async (req, res) => {
   try {
@@ -188,7 +188,7 @@ const register = async (req, res) => {
 
 
 
-// ========== 2️⃣ VERIFY OTP & LOGIN ==========
+// ========== 2️ VERIFY OTP & LOGIN ==========
 
 const verifyOTPAndLogin = async (req, res) => {
   try {
@@ -212,7 +212,7 @@ const verifyOTPAndLogin = async (req, res) => {
       });
     }
 
-    // ✅ FIX: Added all required fields to select
+    //  FIX: Added all required fields to select
     const user = await User.findOne({ phone }).select(
       "+phoneVerificationOTP +phoneVerificationOTPExpires +refreshTokens phone name email userType role isPhoneVerified status isEmailVerified isProfileComplete"
     );
@@ -326,7 +326,7 @@ const verifyOTPAndLogin = async (req, res) => {
   }
 };
 
-// ========== 3️⃣ LOGIN CONTROLLER (Email/Phone + Password) ==========
+// ========== 3️ LOGIN CONTROLLER (Email/Phone + Password) ==========
 
 const login = async (req, res) => {
   try {
@@ -427,7 +427,7 @@ user.refreshTokens.push({
   }
 };
 
-// ========== 4️⃣ FORGOT PASSWORD - REQUEST OTP ==========
+// ========== 4️ FORGOT PASSWORD - REQUEST OTP ==========
 
 const sendPasswordResetOTP = async (req, res) => {
   try {
@@ -493,7 +493,7 @@ const sendPasswordResetOTP = async (req, res) => {
   }
 };
 
-// ========== 5️⃣ VERIFY PASSWORD RESET OTP ==========
+// ========== 5️ VERIFY PASSWORD RESET OTP ==========
 
 const verifyPasswordResetOTP = async (req, res) => {
   try {
@@ -557,7 +557,7 @@ const verifyPasswordResetOTP = async (req, res) => {
   }
 };
 
-// ========== 6️⃣ RESET PASSWORD WITH OTP ==========
+// ========== 6️ RESET PASSWORD WITH OTP ==========
 
 const resetPasswordWithOTP = async (req, res) => {
   try {
@@ -633,7 +633,7 @@ const resetPasswordWithOTP = async (req, res) => {
   }
 };
 
-// ========== 7️⃣ LOGOUT ==========
+// ========== 7️ LOGOUT ==========
 const logout = async (req, res) => {
   try {
     const token = getTokenFromHeader(req);
@@ -684,9 +684,8 @@ const logout = async (req, res) => {
   }
 };
 
-// ========== 8️⃣ REFRESH ACCESS TOKEN ==========
 
-// ========== 8️⃣ REFRESH ACCESS TOKEN ==========
+// ========== 8️ REFRESH ACCESS TOKEN ==========
 const refreshAccessToken = async (req, res) => {
   try {
     // console.log("🔄 Refresh token request received");
@@ -694,7 +693,7 @@ const refreshAccessToken = async (req, res) => {
     const refreshToken = req.cookies?.refreshToken;
 
     if (!refreshToken) {
-    //   console.log("❌ No refresh token in cookies");
+    //   console.log(" No refresh token in cookies");
       return res.status(401).json({
         success: false,
         message: "Refresh token missing",
@@ -702,14 +701,14 @@ const refreshAccessToken = async (req, res) => {
       });
     }
 
-    // console.log("✅ Refresh token found");
+    // console.log(" Refresh token found");
 
     let decoded;
     try {
       decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-    //   console.log("✅ Token verified, userId:", decoded.id);
+    //   console.log(" Token verified, userId:", decoded.id);
     } catch (err) {
-    //   console.log("❌ Token verification failed:", err.message);
+    //   console.log(" Token verification failed:", err.message);
       return res.status(401).json({
         success: false,
         message: "Invalid or expired refresh token"
@@ -717,7 +716,7 @@ const refreshAccessToken = async (req, res) => {
     }
 
     if (decoded.type !== "refresh") {
-    //   console.log("❌ Invalid token type:", decoded.type);
+    //   console.log(" Invalid token type:", decoded.type);
       return res.status(401).json({
         success: false,
         message: "Invalid token type"
@@ -728,7 +727,7 @@ const refreshAccessToken = async (req, res) => {
     const user = await User.findById(decoded.id).select("+refreshTokens.token");
 
     if (!user) {
-    //   console.log("❌ User not found:", decoded.id);
+    //   console.log(" User not found:", decoded.id);
       return res.status(401).json({
         success: false,
         message: "User not found"
@@ -738,11 +737,11 @@ const refreshAccessToken = async (req, res) => {
     // Remove expired tokens
     user.refreshTokens = user.refreshTokens.filter(t => t.expiresAt > new Date());
 
-    // ✅ Find matching token (supports multiple devices)
+    //  Find matching token (supports multiple devices)
     const tokenIndex = user.refreshTokens.findIndex(t => t.token === hashedToken);
     
     if (tokenIndex === -1) {
-    //   console.log("❌ Token mismatch - session expired");
+    //   console.log(" Token mismatch - session expired");
       return res.status(401).json({
         success: false,
         message: "Session expired. Please login again.",
@@ -750,14 +749,14 @@ const refreshAccessToken = async (req, res) => {
       });
     }
 
-    // console.log("✅ Token matched, generating new tokens");
+    // console.log(" Token matched, generating new tokens");
 
     // Generate new tokens
     const newAccessToken = generateAccessToken(user._id, user.userType, user.role);
     const newRefreshToken = generateRefreshToken(user._id);
     const newHashedToken = hashToken(newRefreshToken);
 
-    // ✅ Replace the specific token (preserve device info)
+    //  Replace the specific token (preserve device info)
     const deviceInfo = user.refreshTokens[tokenIndex].deviceInfo || 'Unknown';
     
     user.refreshTokens[tokenIndex] = {
@@ -772,7 +771,7 @@ const refreshAccessToken = async (req, res) => {
     //  Use getRefreshCookieOptions() for consistent cookie settings
     res.cookie("refreshToken", newRefreshToken, getRefreshCookieOptions());
 
-    // console.log("✅ New tokens sent successfully");
+    // console.log(" New tokens sent successfully");
 
     return res.status(200).json({
       success: true,
@@ -788,7 +787,7 @@ const refreshAccessToken = async (req, res) => {
     });
   }
 };
-// ========== 9️⃣ GET CURRENT USER ==========
+// ========== 9️ GET CURRENT USER ==========
 
 const me = async (req, res) => {
   try {
@@ -822,7 +821,7 @@ const me = async (req, res) => {
   }
 };
 
-// ========== 🔟 UPDATE PROFILE ==========
+// ========== 10 UPDATE PROFILE ==========
 
 const updateProfile = async (req, res) => {
   try {
@@ -856,7 +855,7 @@ const updateProfile = async (req, res) => {
   }
 };
 
-// ========== 1️⃣1️⃣ CHANGE PASSWORD ==========
+// ========== 11 CHANGE PASSWORD ==========
 
 const changePassword = async (req, res) => {
   try {
@@ -904,7 +903,7 @@ const changePassword = async (req, res) => {
   }
 };
 
-// ========== 1️⃣2️⃣ GOOGLE AUTH ==========
+// ========== 1️2 GOOGLE AUTH ==========
 
 const googleAuth = async (req, res) => {
   try {

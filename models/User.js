@@ -1,156 +1,3 @@
-// const mongoose = require("mongoose");
-// const bcrypt = require("bcrypt");
-
-// const userSchema = new mongoose.Schema(
-//   {
-//     // ===== BASIC PROFILE =====
-//     name: {
-//       type: String,
-//       trim: true
-//     },
-    
-//     email: {
-//       type: String,
-//       lowercase: true,
-//       trim: true,
-//       index: true,
-//       unique: true,
-//       sparse: true
-//     },
-
-//     phone: {
-//       type: String,
-//       trim: true,
-//       index: true,
-//       unique: true,
-//       sparse: true
-//     },
-
-//     // ===== PASSWORD =====
-//     password: {
-//       type: String,
-//       minlength: 6,
-//       select: false
-//     },
-
-//     // ===== GOOGLE AUTH =====
-//     googleId: {
-//       type: String,
-//       index: true,
-//       sparse: true
-//     },
-
-//     // ===== 🔐 REFRESH TOKEN STORAGE =====
-//     refreshTokens: [
-//       {
-//         token: {
-//           type: String,
-//           required: true,
-//           select: false
-//         },
-//         createdAt: {
-//           type: Date,
-//           default: Date.now
-//         },
-//         expiresAt: {
-//           type: Date
-//         },
-//         deviceInfo: {
-//           type: String
-//         }
-//       }
-//     ],
-
-//     // ===== VERIFICATION FLAGS =====
-//     isEmailVerified: {
-//       type: Boolean,
-//       default: false
-//     },
-
-//     isPhoneVerified: {
-//       type: Boolean,
-//       default: false
-//     },
-
-//     // ===== OTP STORAGE =====
-//     emailVerificationOTP: {
-//       type: String,
-//       select: false
-//     },
-
-//     emailVerificationOTPExpires: {
-//       type: Date,
-//       select: false
-//     },
-
-//     phoneVerificationOTP: {
-//       type: String,
-//       select: false
-//     },
-
-//     phoneVerificationOTPExpires: {
-//       type: Date,
-//       select: false
-//     },
-
-//     // ===== ✅ ADD THESE FIELDS FOR PASSWORD RESET =====
-//     passwordResetOTP: {
-//       type: String,
-//       select: false
-//     },
-
-//     passwordResetOTPExpires: {
-//       type: Date,
-//       select: false
-//     },
-
-//     status: {
-//       type: String,
-//       enum: ["active", "inactive"],
-//       default: "active"
-//     },
-
-//     userType: {
-//       type: String,
-//       enum: ["user", "wholesaler", "admin"],
-//       default: "user"
-//     },
-
-//     role: {
-//       type: String,
-//       enum: [
-//         "user",
-//         "admin",
-//         "product_manager",
-//         "order_manager",
-//         "marketing_manager",
-//         "wholesaler"
-//       ],
-//       default: "user"
-//     }
-//   },
-//   { timestamps: true }
-// );
-
-// // ================= PASSWORD HASH =================
-// userSchema.pre("save", async function () {
-//   if (!this.isModified("password") || !this.password) return;
-//   if (this.password.startsWith("$2b$")) return; // already hashed
-
-//   const salt = await bcrypt.genSalt(12);
-//   this.password = await bcrypt.hash(this.password, salt);
-// });
-
-// // ================= PASSWORD COMPARE =================
-// userSchema.methods.comparePassword = async function (enteredPassword) {
-//   if (!this.password) throw new Error("No password set for this user");
-//   return await bcrypt.compare(enteredPassword, this.password);
-// };
-
-// module.exports = mongoose.model("User", userSchema);
-
-
-
 
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
@@ -194,7 +41,7 @@ const userSchema = new mongoose.Schema(
       sparse: true
     },
 
-    // ===== 🔐 REFRESH TOKEN STORAGE =====
+    // =====  REFRESH TOKEN STORAGE =====
     refreshTokens: [
       {
         token: {
@@ -259,20 +106,20 @@ const userSchema = new mongoose.Schema(
       select: false
     },
 
-    // ✅ NEW FIELD: Which method user used to register (phone/email/google)
+    // NEW FIELD: Which method user used to register (phone/email/google)
     registrationMethod: {
       type: String,
       enum: ['phone', 'email', 'google'],
       default: null
     },
 
-    // ✅ NEW FIELD: Track if user completed full registration
+    //  NEW FIELD: Track if user completed full registration
     isProfileComplete: {
       type: Boolean,
       default: false
     },
 
-    // ✅ NEW FIELD: Last login method
+    //  NEW FIELD: Last login method
     lastLoginMethod: {
       type: String,
       enum: ['phone', 'email', 'google', 'otp'],

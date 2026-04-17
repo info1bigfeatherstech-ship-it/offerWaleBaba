@@ -869,7 +869,7 @@ exports.getOrder = async (req, res) => {
     try {
         const { orderId } = req.params;
         
-        // ✅ Populate product with variants (to get variant images)
+        // Populate product with variants (to get variant images)
         const order = await Order.findOne({ orderId: orderId })
             .populate('items.productId', 'name slug variants')  // ✅ variants included
             .populate('address');
@@ -888,7 +888,7 @@ exports.getOrder = async (req, res) => {
             });
         }
 
-        // ✅ Transform items to include correct variant images
+        //  Transform items to include correct variant images
         const transformedOrder = order.toObject();
         transformedOrder.items = transformedOrder.items.map(item => {
             const product = item.productId;
@@ -900,7 +900,7 @@ exports.getOrder = async (req, res) => {
                     _id: product?._id,
                     name: product?.name,
                     slug: product?.slug,
-                    // ✅ Images from variant, not product level
+                    //  Images from variant, not product level
                     images: variant?.images || []
                 }
             };

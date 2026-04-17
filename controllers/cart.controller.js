@@ -37,13 +37,13 @@ const getUserSpecificPrice = (variant, userType) => {
   };
 };
 
-// ✅ HELPER: Calculate discount percentage
+//  HELPER: Calculate discount percentage
 const calculateDiscountPercentage = (base, sale) => {
   if (!sale || sale <= 0 || sale >= base) return 0;
   return Math.round(((base - sale) / base) * 100);
 };
 
-// ✅ HELPER: Format cart item with FULL variant data (including virtuals)
+//  HELPER: Format cart item with FULL variant data (including virtuals)
 const formatcartItem = (item, product, variant, userType) => {
   if (!product || !variant) return null;
   
@@ -60,7 +60,7 @@ const formatcartItem = (item, product, variant, userType) => {
   
   const itemTotal = currentPrice * item.quantity;
   
-  // ✅ FULL VARIANT OBJECT with all data including virtuals
+  //  FULL VARIANT OBJECT with all data including virtuals
   const fullVariant = {
     _id: variant._id,
     sku: variant.sku,
@@ -80,13 +80,13 @@ const formatcartItem = (item, product, variant, userType) => {
     isActive: variant.isActive,
     wholesale: variant.wholesale || false,
     minimumOrderQuantity: variant.minimumOrderQuantity || 1,
-    // ✅ ADD VIRTUALS HERE
+    //  ADD VIRTUALS HERE
     isSaleActive: isSaleValidForVariant,
     finalPrice: currentPrice,
     discountPercentage: discountPercentage
   };
   
-  // ✅ FULL PRODUCT OBJECT with variants array
+  //  FULL PRODUCT OBJECT with variants array
   const fullProduct = {
     _id: product._id,
     name: product.name,
@@ -149,7 +149,7 @@ const getcart = async (req, res) => {
       });
     }
 
-    // ✅ Format each item with full data
+    //  Format each item with full data
     const itemsWithFullData = [];
     
     for (const item of cart.items) {
