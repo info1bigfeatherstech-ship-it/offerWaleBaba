@@ -389,6 +389,7 @@ async function startApplication() {
       const cacheService = require('./services/cache.service');
       logger.info(`[Cache] Service ready, stats:`, cacheService.getStats());
     } catch (error) {
+      logger.error(`[Redis] Connection failed: ${error.message}`, { stack: error.stack });
       logger.warn('[Redis] Running without Redis cache - functionality may be limited');
     }
 

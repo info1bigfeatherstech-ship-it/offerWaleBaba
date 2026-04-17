@@ -37,9 +37,13 @@
         heartbeatFrequencyMS: 10000,
       });
           
-      const Product = require('../models/Product'); // adjust path if needed
-      await Product.syncIndexes();
-      console.log('[MongoDB] ✓ Product indexes synced');
+      const syncProductIndexes =
+        String(process.env.MONGODB_SYNC_PRODUCT_INDEXES || 'true').toLowerCase() === 'true';
+      if (syncProductIndexes) {
+        const Product = require('../models/Product');
+        await Product.syncIndexes();
+        console.log('[MongoDB] ✓ Product indexes synced');
+      }
 
 
       mongoConnection = connection;

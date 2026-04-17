@@ -28,18 +28,7 @@ class RedisManager {
           connectTimeout: 10000,
           keepAlive: 30000,
         },
-        retry_strategy: (options) => {
-          if (options.error && options.error.code === 'ECONNREFUSED') {
-            logger.error('[Redis] Connection refused');
-            return new Error('Connection refused');
-          }
-          if (options.total_retry_time > 1000 * 60 * 5) {
-            logger.error('[Redis] Retry time exhausted');
-            return new Error('Retry time exhausted');
-          }
-          return Math.min(options.attempt * 100, 3000);
-        },
-        enable_offline_queue: false,
+        disableOfflineQueue: true,
         lazyConnect: false,
       });
 
@@ -104,6 +93,14 @@ class RedisManager {
 
   getClient() {
     return this.client;
+  }
+
+  /**
+   * Safe client for token blacklist and similar (null when Redis is down / not connected).
+   * Prefer this over destructuring a non-existent `redisClient` export.
+   */
+  getRedisClient() {
+    return this.client && this.client.isOpen ? this.client : null;
   }
 
   isReady() {

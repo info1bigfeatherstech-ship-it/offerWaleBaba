@@ -6,6 +6,7 @@
 const axios = require('axios');
 const mongoose = require('mongoose');
 const Product = require('../models/Product');
+const logger = require('./logger');
 
 const DEFAULT_BASE = 'https://apiv2.shiprocket.in/v1';
 
@@ -69,7 +70,7 @@ class ShiprocketService {
     const email = String(process.env.SHIPROCKET_EMAIL || '').trim();
     const password = String(process.env.SHIPROCKET_PASSWORD || '').trim();
     if (!email || !password) {
-      console.warn('[Shiprocket] Missing SHIPROCKET_EMAIL / SHIPROCKET_PASSWORD');
+      logger.warn('[Shiprocket] Missing SHIPROCKET_EMAIL / SHIPROCKET_PASSWORD');
       return null;
     }
 
@@ -85,7 +86,7 @@ class ShiprocketService {
         if (!token) {
           this.token = null;
           this.tokenExpiry = 0;
-          console.error('[Shiprocket] auth failed: token missing in login response');
+          logger.error('[Shiprocket] auth failed: token missing in login response');
           return null;
         }
 
@@ -98,7 +99,7 @@ class ShiprocketService {
       } catch (err) {
         this.token = null;
         this.tokenExpiry = 0;
-        console.error('[Shiprocket] auth failed:', err.response?.data || err.message);
+        logger.error('[Shiprocket] auth failed:', err.response?.data || err.message);
         return null;
       } finally {
         this.authPromise = null;
@@ -238,7 +239,7 @@ class ShiprocketService {
         mock: false
       };
     } catch (err) {
-      console.error('[Shiprocket] serviceability failed:', err.response?.data || err.message);
+      logger.error('[Shiprocket] serviceability failed:', err.response?.data || err.message);
       return this.mockQuote(pincode, weight);
     }
   }
@@ -378,7 +379,7 @@ class ShiprocketService {
         mock: false
       };
     } catch (err) {
-      console.error('[Shiprocket] createShipment failed:', err.response?.data || err.message);
+      logger.error('[Shiprocket] createShipment failed:', err.response?.data || err.message);
       return { success: false, error: err.response?.data || err.message };
     }
   }

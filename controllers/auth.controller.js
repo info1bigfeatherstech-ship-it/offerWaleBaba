@@ -3,7 +3,7 @@ const { OAuth2Client } = require('google-auth-library');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const { validationResult } = require('express-validator');
-const { redisClient } = require('../config/redis.config');
+const redisManager = require('../config/redis.config');
 const tokenStore = require('../config/tokenBlacklist');
 const crypto = require('crypto');
 const bcrypt = require('bcrypt');
@@ -643,10 +643,11 @@ const logout = async (req, res) => {
       const nowSeconds = Math.floor(Date.now() / 1000);
       const ttl = decoded && decoded.exp ? Math.max(0, decoded.exp - nowSeconds) : 0;
 
-      if (redisClient) {
+      const redis = redisManager.getRedisClient();
+      if (redis) {
         try {
-          await redisClient.set(`bl_${token}`, "1");
-          if (ttl > 0) await redisClient.expire(`bl_${token}`, ttl);
+          await redis.set(`bl_${token}`, '1');
+          if (ttl > 0) await redis.expire(`bl_${token}`, ttl);
         } catch (err) {
           tokenStore.add(token, ttl);
         }

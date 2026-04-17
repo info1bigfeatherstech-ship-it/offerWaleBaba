@@ -76,6 +76,7 @@ async function buildFinalTotals({ cartDoc, pin, finalUserType, couponCode, payme
     codAmountForShiprocket: 0
   });
 
+  // COD: Shiprocket quote can depend on declared COD amount — two passes converge fee/totals (same math as before).
   if (assumeCod) {
     for (let i = 0; i < 2; i++) {
       const codVal = roundMoney2(last.subtotal + last.tax - last.discount + last.deliveryCharges);
