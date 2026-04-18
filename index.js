@@ -13,6 +13,7 @@ const redisManager = require('./config/redis.config');
 const { initCloudinary } = require('./config/cloudinary.config');
 const gracefulShutdown = require('./services/shutdown.service');
 const cleanupService = require('./services/cleanup.service');
+const paymentHoldExpiryService = require('./services/paymentHoldExpiry.service');
 const logger = require('./utils/logger');
 
 // Import middleware
@@ -395,6 +396,7 @@ async function startApplication() {
 
     // ✅ START CLEANUP SERVICE (after DB connection)
     cleanupService.start();
+    paymentHoldExpiryService.start();
 
 
     // Create HTTP server
@@ -426,6 +428,10 @@ async function startApplication() {
      // ✅ REGISTER CLEANUP SERVICE WITH SHUTDOWN
     gracefulShutdown.registerConnection('CleanupService', async () => {
       cleanupService.stop();
+    });
+
+    gracefulShutdown.registerConnection('PaymentHoldExpiryService', async () => {
+      paymentHoldExpiryService.stop();
     });
 
     // Setup process handlers
