@@ -5,6 +5,7 @@ const Category = require('../models/Category');
 // ✅ ADD THESE 2 LINES AT THE TOP
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
+const { setApiCacheHeaders } = require('../utils/apiCacheHeaders');
 
 // ✅ ONLY PRICE LOGIC - Baaki sab same
 const getVariantPrice = (variant, userType) => {
@@ -63,7 +64,7 @@ const getProducts = async (req, res) => {
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=600');
+      setApiCacheHeaders(res);
       return res.json(cachedData);
     }
 
@@ -103,7 +104,7 @@ const getProducts = async (req, res) => {
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_LIST);
 
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=600');
+    setApiCacheHeaders(res);
 
     return res.json(responseData);
 
@@ -131,7 +132,7 @@ const getProductBySlug = async (req, res) => {
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=900');
+      setApiCacheHeaders(res);
       return res.json(cachedData);
     }
     
@@ -165,7 +166,7 @@ const getProductBySlug = async (req, res) => {
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_DETAIL);
 
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=900');
+    setApiCacheHeaders(res);
     return res.json(responseData);
 
   } catch (err) {
@@ -202,7 +203,7 @@ const searchProducts = async (req, res) => {
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=300');
+      setApiCacheHeaders(res);
       return res.json(cachedData);
     }
 
@@ -240,7 +241,7 @@ const searchProducts = async (req, res) => {
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_SEARCH);
 
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=300');
+    setApiCacheHeaders(res);
     return res.json(responseData);
 
   } catch (err) {
@@ -270,7 +271,7 @@ const getProductsByCategory = async (req, res) => {
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=600');
+      setApiCacheHeaders(res);
       return res.json(cachedData);
     }
 
@@ -320,7 +321,7 @@ const getProductsByCategory = async (req, res) => {
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_CATEGORY);
 
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=600');
+    setApiCacheHeaders(res);
     return res.json(responseData);
 
   } catch (err) {
@@ -359,7 +360,7 @@ const getProductsByCategory = async (req, res) => {
 //     const cachedData = await cacheService.get(cacheKey);
 //     if (cachedData) {
 //       res.setHeader('X-Cache', 'HIT');
-//       res.setHeader('Cache-Control', 'public, max-age=900');
+//       setApiCacheHeaders(res);
 //       return res.json(cachedData);
 //     }
 
@@ -404,7 +405,7 @@ const getProductsByCategory = async (req, res) => {
 //     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_FEATURED);
 
 //     res.setHeader('X-Cache', 'MISS');
-//     res.setHeader('Cache-Control', 'public, max-age=900');
+//     setApiCacheHeaders(res);
 //     return res.json(responseData);
 
 //   } catch (err) {
@@ -444,7 +445,7 @@ const getFeaturedProducts = async (req, res) => {
     
     if (cachedData && !bypassCache) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=900');
+      setApiCacheHeaders(res);
       return res.json(cachedData);
     }
 
@@ -485,7 +486,7 @@ const getFeaturedProducts = async (req, res) => {
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_FEATURED);
 
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=900');
+    setApiCacheHeaders(res);
     return res.json(responseData);
 
   } catch (err) {
@@ -514,6 +515,7 @@ const getRelatedProducts = async (req, res) => {
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
+      setApiCacheHeaders(res);
       return res.json(cachedData);
     }
 
@@ -557,6 +559,7 @@ const getRelatedProducts = async (req, res) => {
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_RELATED);
 
     res.setHeader('X-Cache', 'MISS');
+    setApiCacheHeaders(res);
     return res.json(responseData);
 
   } catch (err) {

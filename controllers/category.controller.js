@@ -10,6 +10,7 @@ const {
 //  ADD THESE 2 LINES AT THE TOP
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
+const { setApiCacheHeaders } = require('../utils/apiCacheHeaders');
 
 /** Category tiles / headers: slightly tighter cap than product gallery (override via env). */
 const CATEGORY_IMAGE_MAX_WIDTH = Math.min(
@@ -55,7 +56,7 @@ const getAllCategories = async (req, res) => {
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=1800');
+      setApiCacheHeaders(res);
       return res.status(200).json(cachedData);
     }
 
@@ -91,7 +92,7 @@ const getAllCategories = async (req, res) => {
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.CATEGORY_LIST);
 
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=1800');
+    setApiCacheHeaders(res);
     return res.status(200).json(responseData);
 
   } catch (error) {
@@ -119,7 +120,7 @@ const getCategoryById = async (req, res) => {
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
-      res.setHeader('Cache-Control', 'public, max-age=1800');
+      setApiCacheHeaders(res);
       return res.status(200).json(cachedData);
     }
 
@@ -144,7 +145,7 @@ const getCategoryById = async (req, res) => {
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.CATEGORY_DETAIL);
 
     res.setHeader('X-Cache', 'MISS');
-    res.setHeader('Cache-Control', 'public, max-age=1800');
+    setApiCacheHeaders(res);
     return res.status(200).json(responseData);
 
   } catch (error) {

@@ -1,74 +1,96 @@
-// const winston = require('winston');
-// const path = require('path');
+/**
+ * Central logging: console by default; optional Winston (files + console) when LOG_USE_WINSTON=true.
+ * Does not change API surface — same { info, warn, error, debug } used across the app.
+ */
+const fs = require('fs');
+const path = require('path');
 
-// const logFormat = winston.format.combine(
-//   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-//   winston.format.errors({ stack: true }),
-//   winston.format.splat(),
-//   winston.format.json(),
-//   winston.format.printf(({ timestamp, level, message, stack, ...meta }) => {
-//     return `${timestamp} [${level.toUpperCase()}] ${message} ${stack || ''} ${Object.keys(meta).length ? JSON.stringify(meta) : ''}`;
-//   })
-// );
+const useWinston =
+  String(process.env.LOG_USE_WINSTON || '').toLowerCase() === 'true';
 
-// const logger = winston.createLogger({
-//   level: process.env.LOG_LEVEL || 'info',
-//   format: logFormat,
-//   transports: [
-//     new winston.transports.File({
-//       filename: path.join('logs', 'error.log'),
-//       level: 'error',
-//       maxsize: 5242880, // 5MB
-//       maxFiles: 5,
-//     }),
-//     new winston.transports.File({
-//       filename: path.join('logs', 'combined.log'),
-//       maxsize: 5242880,
-//       maxFiles: 5,
-//     }),
-//   ],
-// });
+function createConsoleLogger() {
+  return {
+    info: (message, meta = {}) => {
+      console.log(`[INFO] ${message}`, Object.keys(meta).length ? meta : '');
+    },
+    error: (message, meta = {}) => {
+      console.error(`[ERROR] ${message}`, Object.keys(meta).length ? meta : '');
+    },
+    warn: (message, meta = {}) => {
+      console.warn(`[WARN] ${message}`, Object.keys(meta).length ? meta : '');
+    },
+    debug: (message, meta = {}) => {
+      console.debug(`[DEBUG] ${message}`, Object.keys(meta).length ? meta : '');
+    }
+  };
+}
 
-// if (process.env.NODE_ENV !== 'production') {
-//   logger.add(new winston.transports.Console({
-//     format: winston.format.combine(
-//       winston.format.colorize(),
-//       winston.format.simple()
-//     ),
-//   }));
-// }
-
-// // Create logs directory if it doesn't exist
-// const fs = require('fs');
-// if (!fs.existsSync(path.join('logs'))) {
-//   fs.mkdirSync(path.join('logs'));
-// }
-
-// module.exports = logger;
-
-
-
-
-// ===========================================
-//for development only with console.log 
-// ===========================================
-// utils/logger.js - Development version (No file writing)
-const logger = {
-  info: (message, meta = {}) => {
-    console.log(`[INFO] ${message}`, Object.keys(meta).length ? meta : '');
-  },
-  
-  error: (message, meta = {}) => {
-    console.error(`[ERROR] ${message}`, Object.keys(meta).length ? meta : '');
-  },
-  
-  warn: (message, meta = {}) => {
-    console.warn(`[WARN] ${message}`, Object.keys(meta).length ? meta : '');
-  },
-  
-  debug: (message, meta = {}) => {
-    console.debug(`[DEBUG] ${message}`, Object.keys(meta).length ? meta : '');
+function createWinstonLogger() {
+  const winston = require('winston');
+  const logDir = path.join(__dirname, '..', 'logs');
+  try {
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+  } catch (_) {
+    /* fallback: file transports may fail; console still works */
   }
-};
+
+  const level = process.env.LOG_LEVEL || 'info';
+
+  const logFormat = winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    winston.format.errors({ stack: true }),
+    winston.format.splat(),
+    winston.format.printf(({ timestamp, level: lvl, message, stack, ...meta }) => {
+      const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
+      return `${timestamp} [${lvl.toUpperCase()}] ${message}${stack ? ` ${stack}` : ''}${metaStr}`;
+    })
+  );
+
+  const transports = [
+    new winston.transports.File({
+      filename: path.join(logDir, 'error.log'),
+      level: 'error',
+      maxsize: 5 * 1024 * 1024,
+      maxFiles: 5
+    }),
+    new winston.transports.File({
+      filename: path.join(logDir, 'combined.log'),
+      maxsize: 5 * 1024 * 1024,
+      maxFiles: 5
+    }),
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.printf(({ level: lvl, message, stack, ...meta }) => {
+          const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : '';
+          return `${lvl}: ${message}${stack ? ` ${stack}` : ''}${metaStr}`;
+        })
+      )
+    })
+  ];
+
+  const w = winston.createLogger({
+    level,
+    format: logFormat,
+    transports
+  });
+
+  return {
+    info: (message, meta = {}) => w.info(message, meta),
+    error: (message, meta = {}) => w.error(message, meta),
+    warn: (message, meta = {}) => w.warn(message, meta),
+    debug: (message, meta = {}) => w.debug(message, meta)
+  };
+}
+
+let logger;
+try {
+  logger = useWinston ? createWinstonLogger() : createConsoleLogger();
+} catch (e) {
+  console.error('[logger] Winston init failed, using console:', e.message);
+  logger = createConsoleLogger();
+}
 
 module.exports = logger;

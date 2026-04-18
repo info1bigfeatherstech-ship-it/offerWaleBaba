@@ -9,74 +9,18 @@ const Razorpay = require('razorpay');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const ShiprocketService = require('../utils/shiprocket');
-const { computeCheckoutTotals, cartFingerprintFromItems } = require('../services/checkoutComputation.service');
+const logger = require('../utils/logger');
+const {
+    computeCheckoutTotals,
+    cartFingerprintFromItems,
+    roundMoney2
+} = require('../services/checkoutComputation.service');
 
 // Initialize Razorpay (trim — stray spaces/newlines in .env break auth)
 const razorpay = new Razorpay({
     key_id: String(process.env.RAZORPAY_KEY_ID || '').trim(),
     key_secret: String(process.env.RAZORPAY_KEY_SECRET || '').trim()
 });
-
-// ========== HELPERS ==========
-
-// Helper: Calculate tax (18% GST)
-const calculateTax = (amount) => {
-    return amount * 0.18;
-};
-
-// Helper: Find variant in product
-const findVariant = (product, variantId) => {
-    if (!product || !product.variants) return null;
-    return product.variants.find(v => String(v._id) === String(variantId));
-};
-
-// Helper: Get user-specific price from variant with sale validity check
-const getUserSpecificPrice = (variant, userType) => {
-    const now = new Date();
-    
-    if (userType === 'wholesaler') {
-        const wholesaleBase = variant.price?.wholesaleBase || variant.price?.base || 0;
-        let wholesaleSale = variant.price?.wholesaleSale || variant.price?.wholesaleBase || wholesaleBase;
-        
-        // Check if wholesale sale is valid
-        const isWholesaleSaleValid = wholesaleSale !== wholesaleBase && 
-            (!variant.price?.wholesaleSaleStartDate || now >= variant.price.wholesaleSaleStartDate) &&
-            (!variant.price?.wholesaleSaleEndDate || now <= variant.price.wholesaleSaleEndDate);
-        
-        return {
-            base: wholesaleBase,
-            sale: isWholesaleSaleValid ? wholesaleSale : wholesaleBase,
-            moq: variant.minimumOrderQuantity || 1
-        };
-    }
-    
-    // Normal user pricing
-    const base = variant.price?.base || 0;
-    let sale = variant.price?.sale || null;
-    
-    // Check if sale is valid
-    const isSaleValid = sale && sale < base &&
-        (!variant.price?.saleStartDate || now >= variant.price.saleStartDate) &&
-        (!variant.price?.saleEndDate || now <= variant.price.saleEndDate);
-    
-    return {
-        base: base,
-        sale: isSaleValid ? sale : base,
-        moq: 1
-    };
-};
-
-/** Coupon.applicableUsers uses 'user' | 'wholesaler' | 'admin'; checkout uses 'normal' for retail */
-const couponUserEligible = (coupon, finalUserType) => {
-    if (!coupon || !Array.isArray(coupon.applicableUsers)) return false;
-    if (finalUserType === 'wholesaler') return coupon.applicableUsers.includes('wholesaler');
-    if (finalUserType === 'normal') {
-        return coupon.applicableUsers.includes('user') || coupon.applicableUsers.includes('normal');
-    }
-    return coupon.applicableUsers.includes(finalUserType);
-};
-
-const roundMoney2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 
 async function applyRefundEntryToOrder(order, refundEntity) {
     if (!order || !refundEntity) return;
@@ -116,8 +60,7 @@ async function applyRefundEntryToOrder(order, refundEntity) {
 // ========== MAIN ORDER CREATION API ==========
 // ========== MAIN ORDER CREATION API ==========
 exports.createOrder = async (req, res) => {
-    
-    console.log("Create order request received");
+    logger.debug('Create order request received');
     const session = await mongoose.startSession();
     session.startTransaction();
 

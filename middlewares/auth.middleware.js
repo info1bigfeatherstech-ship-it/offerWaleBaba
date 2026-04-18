@@ -1,6 +1,6 @@
 // middleware/auth.js
 const jwt = require('jsonwebtoken');
-const { redisClient } = require('../config/redis.config');
+const redisManager = require('../config/redis.config');
 const tokenStore = require('../config/tokenBlacklist');
 const User = require('../models/User');
 
@@ -47,10 +47,11 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // Check blacklist
+    // Check blacklist (Redis when available; in-memory fallback for single-instance / Redis outage)
     try {
-      if (redisClient) {
-        const isBlacklisted = await redisClient.get(`bl_${token}`);
+      const redis = redisManager.getRedisClient();
+      if (redis) {
+        const isBlacklisted = await redis.get(`bl_${token}`);
         if (isBlacklisted) {
           return res.status(401).json({ 
             success: false, 

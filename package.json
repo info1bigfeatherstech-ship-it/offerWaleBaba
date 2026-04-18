@@ -10,7 +10,7 @@
     "dev": "nodemon index.js",
     "start": "NODE_ENV=production node index.js",
     "start:dev": "NODE_ENV=development node index.js",
-     "build": "npm install",
+    "build": "npm install",
     "pm2:start": "pm2 start index.js --name ecommerce-api",
     "pm2:stop": "pm2 stop ecommerce-api",
     "pm2:restart": "pm2 restart ecommerce-api",
@@ -45,6 +45,7 @@
     "sharp": "^0.34.5",
     "slugify": "^1.6.6",
     "twilio": "^5.12.2",
-    "unzipper": "^0.12.3"
+    "unzipper": "^0.12.3",
+    "winston": "^3.17.0"
   }
 }

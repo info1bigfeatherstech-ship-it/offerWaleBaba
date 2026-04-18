@@ -1,6 +1,7 @@
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
 const logger = require('../utils/logger');
+const { setApiCacheHeaders } = require('../utils/apiCacheHeaders');
 
 /**
  * Generic cache middleware factory
@@ -26,33 +27,30 @@ const cacheMiddleware = (endpointType, keyGenerator) => {
       const cachedData = await cacheService.get(cacheKey);
       
       if (cachedData) {
-        // Set cache headers
         res.setHeader('X-Cache', 'HIT');
-        res.setHeader('Cache-Control', `public, max-age=${ttl}`);
+        setApiCacheHeaders(res);
         return res.json(cachedData);
       }
       
-      // Store original json method
-      const originalJson = res.json;
-      
-      // Override json method to cache response
-      res.json = function(data) {
-        // Restore original method
+      // Intercept JSON body once — safer than leaving a patched res.json if headers already sent
+      const originalJson = res.json.bind(res);
+
+      res.json = function cacheCaptureJson(data) {
+        if (res.headersSent) {
+          return originalJson(data);
+        }
         res.json = originalJson;
-        
-        // Only cache successful responses
+
         if (data && data.success !== false) {
-          cacheService.set(cacheKey, data, ttl).catch(err => {
+          cacheService.set(cacheKey, data, ttl).catch((err) => {
             logger.error(`[Cache] Failed to cache: ${err.message}`);
           });
         }
-        
-        // Set cache headers
+
         res.setHeader('X-Cache', 'MISS');
-        res.setHeader('Cache-Control', `public, max-age=${ttl}`);
-        
-        // Send response
-        return originalJson.call(this, data);
+        setApiCacheHeaders(res);
+
+        return originalJson(data);
       };
       
       next();
