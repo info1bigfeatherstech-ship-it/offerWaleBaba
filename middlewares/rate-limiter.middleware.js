@@ -24,11 +24,21 @@ const rateLimits = {
     message: 'Too many write operations'
   },
   
-  // Sensitive operations - VERY LOW limit (auth, checkout)
+  // Sensitive operations - VERY LOW limit (auth endpoints only — see index.js)
   sensitive: {
     windowMs: 15 * 60 * 1000,
     max: 20,
     message: 'Too many attempts, please try later'
+  },
+
+  /**
+   * Authenticated order APIs (list, detail, pay, verify, cancel).
+   * Must be higher than `sensitive`: a single My Orders session can issue many GETs + payment retries.
+   */
+  orders: {
+    windowMs: 15 * 60 * 1000,
+    max: 400,
+    message: 'Too many order requests, please wait a moment'
   },
   
   // Admin operations - MEDIUM limit
@@ -73,6 +83,7 @@ const limiters = {
   search: createRateLimiter('search', ['/health', '/api/health']),
   write: createRateLimiter('write', ['/health', '/api/health']),
   sensitive: createRateLimiter('sensitive', ['/health', '/api/health']),
+  orders: createRateLimiter('orders', ['/health', '/api/health']),
   admin: createRateLimiter('admin', ['/health', '/api/health'])
 };
 

@@ -968,10 +968,18 @@ exports.getOrder = async (req, res) => {
     try {
         const { orderId } = req.params;
         
-        // Populate product with variants (to get variant images)
-        const order = await Order.findOne({ orderId: orderId })
-            .populate('items.productId', 'name slug variants')  // ✅ variants included
+        const staffRole = String(req.user?.role || req.userType || '').toLowerCase();
+        const isOrderStaff = ['admin', 'order_manager'].includes(staffRole);
+
+        let orderQuery = Order.findOne({ orderId: orderId })
+            .populate('items.productId', 'name slug variants')
             .populate('address');
+
+        if (isOrderStaff) {
+            orderQuery = orderQuery.populate('userId', 'name email phone');
+        }
+
+        const order = await orderQuery;
 
         if (!order) {
             return res.status(404).json({
@@ -980,30 +988,48 @@ exports.getOrder = async (req, res) => {
             });
         }
 
-        if (order.userId.toString() !== req.userId && req.userType !== 'admin') {
+        if (order.userId.toString() !== req.userId && !isOrderStaff) {
             return res.status(403).json({
                 success: false,
                 message: 'Unauthorized'
             });
         }
 
-        //  Transform items to include correct variant images
         const transformedOrder = order.toObject();
-        transformedOrder.items = transformedOrder.items.map(item => {
+
+        transformedOrder.items = transformedOrder.items.map((item) => {
             const product = item.productId;
-            const variant = product?.variants?.find(v => String(v._id) === String(item.variantId));
-            
+            const variant = product?.variants?.find((v) => String(v._id) === String(item.variantId));
+            const firstImg = Array.isArray(variant?.images) ? variant.images[0] : null;
+            const thumbnailUrl =
+                typeof firstImg === 'string'
+                    ? firstImg
+                    : firstImg && typeof firstImg === 'object'
+                      ? firstImg.url || firstImg.secure_url
+                      : null;
+
             return {
                 ...item,
+                sku: variant?.sku || null,
+                thumbnailUrl,
+                lineTotal: Number(item.priceSnapshot?.total) || 0,
                 productId: {
                     _id: product?._id,
                     name: product?.name,
                     slug: product?.slug,
-                    //  Images from variant, not product level
                     images: variant?.images || []
                 }
             };
         });
+
+        if (isOrderStaff && transformedOrder.userId && typeof transformedOrder.userId === 'object') {
+            transformedOrder.customer = {
+                name: transformedOrder.userId.name || null,
+                email: transformedOrder.userId.email || null,
+                phone: transformedOrder.userId.phone || null
+            };
+            transformedOrder.userId = transformedOrder.userId._id;
+        }
 
         return res.json({
             success: true,
@@ -1025,7 +1051,7 @@ exports.getUserOrders = async (req, res) => {
         const orders = await Order.find({ userId: req.userId })
             .sort({ createdAt: -1 })
             .select(
-                'orderId totalAmount orderStatus paymentStatus createdAt deliveryCharges tax subtotal paymentHoldExpiresAt balanceDueInr amountPaidInr'
+                'orderId totalAmount orderStatus paymentStatus createdAt deliveryCharges tax subtotal paymentHoldExpiresAt balanceDueInr amountPaidInr paymentInfo'
             );
 
         return res.json({

@@ -29,6 +29,7 @@ const wishlistRoutes = require('./routes/wishlist.route');
 const cartRoutes = require('./routes/cart.route');
 const addressRoutes = require('./routes/address.route');
 const adminAnalyticsRoutes = require('./routes/admin-analytics.route');
+const adminOrdersRoutes = require('./routes/admin-orders.route');
 const staffRoutes = require('./routes/staff.route');
 const orderRoutes = require('./routes/orders.route');
 const orderController = require('./controllers/order.controller');
@@ -172,7 +173,8 @@ app.use('/api/auth/register', limiters.sensitive);
 app.use('/api/auth/otp-verify-login', limiters.sensitive);
 app.use('/api/auth/forgot-password', limiters.sensitive);
 app.use('/api/auth/change-password', limiters.sensitive);
-app.use('/api/orders', limiters.sensitive);
+// Orders: own bucket (not `sensitive` — that 20/15m cap blocked normal My Orders + payment retries)
+app.use('/api/orders', limiters.orders);
 
 // Admin operations - MEDIUM limit
 app.use('/api/admin', limiters.admin);
@@ -305,6 +307,7 @@ app.get('/api', (req, res) => {
       addresses: '/api/addresses',
       adminProducts: '/api/admin/products',
       adminAnalytics: '/api/admin/analytics',
+      adminOrders: '/api/admin/orders',
        publicRazorpayKey: '/api/public/razorpay-key',
       orders: '/api/orders',
       checkout: '/api/checkout',
@@ -325,6 +328,7 @@ app.use('/api/wishlist', wishlistRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/admin/analytics', adminAnalyticsRoutes);
+app.use('/api/admin/orders', adminOrdersRoutes);
 app.use('/api/admin/staff', staffRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/checkout', checkoutRoutes);
