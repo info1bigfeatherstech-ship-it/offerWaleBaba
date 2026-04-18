@@ -15,6 +15,8 @@ const {
     cartFingerprintFromItems,
     roundMoney2
 } = require('../services/checkoutComputation.service');
+const { releaseReservedInventoryForOrder } = require('../services/orderInventory.service');
+const paymentHoldExpiryService = require('../services/paymentHoldExpiry.service');
 
 // Initialize Razorpay (trim — stray spaces/newlines in .env break auth)
 const razorpay = new Razorpay({
@@ -186,7 +188,7 @@ exports.createOrder = async (req, res) => {
                 courierName: quote.shippingMeta?.courierName || null,
                 isDeliverable: true,
                 codAvailable: quote.shippingMeta?.codAvailable !== false,
-                mock: Boolean(quote.shippingMeta?.mock)
+                // mock: Boolean(quote.shippingMeta?.mock)
             }
         };
 
@@ -296,6 +298,10 @@ exports.createOrder = async (req, res) => {
                 sessions: []
             }
         });
+
+        if (normalizedPaymentMethod === 'online') {
+            order.paymentHoldExpiresAt = new Date(Date.now() + paymentHoldExpiryService.getPaymentHoldMs());
+        }
 
         await order.save({ session });
 
@@ -719,12 +725,7 @@ exports.razorpayWebhook = async (req, res) => {
                     failedOrder.markModified('paymentInfo');
                     await failedOrder.save();
 
-                    for (const item of failedOrder.items) {
-                        await Product.updateOne(
-                            { _id: item.productId, 'variants._id': item.variantId },
-                            { $inc: { 'variants.$.inventory.quantity': item.quantity } }
-                        );
-                    }
+                    await releaseReservedInventoryForOrder(failedOrder);
                 }
                 break;
             }
@@ -805,6 +806,161 @@ exports.payOrderBalance = async (req, res) => {
     }
 };
 
+/**
+ * Start (or retry) Razorpay Checkout for an unpaid online order still in checkout state.
+ * Frontend: POST → open Checkout with razorpayKeyId + razorpayOrder.id + amount; on success call verify-payment.
+ */
+exports.initiatePendingOrderPayment = async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const order = await Order.findOne({ orderId, userId: req.userId });
+        if (!order) {
+            return res.status(404).json({
+                success: false,
+                code: 'ORDER_NOT_FOUND',
+                message: 'Order not found'
+            });
+        }
+
+        if (order.paymentInfo?.method !== 'online') {
+            return res.status(400).json({
+                success: false,
+                code: 'PAYMENT_NOT_ONLINE',
+                message: 'This order is not an online payment checkout'
+            });
+        }
+
+        if (order.orderStatus !== 'pending') {
+            return res.status(409).json({
+                success: false,
+                code: 'INVALID_ORDER_STATE',
+                message: `Order is ${order.orderStatus}. Retry payment is only for orders awaiting first payment.`
+            });
+        }
+
+        if (order.paymentStatus !== 'pending') {
+            return res.status(409).json({
+                success: false,
+                code: 'INVALID_PAYMENT_STATE',
+                message: 'Payment already progressed. Use pay-balance if you owe a remaining amount.'
+            });
+        }
+
+        if (Number(order.amountPaidInr || 0) > 0.01) {
+            return res.status(409).json({
+                success: false,
+                code: 'USE_PAY_BALANCE_ENDPOINT',
+                message: 'Partial payment already recorded. Use the pay-balance endpoint for the remainder.',
+                payBalancePath: `/api/orders/items/${encodeURIComponent(orderId)}/pay-balance`
+            });
+        }
+
+        if (paymentHoldExpiryService.isOrderPaymentHoldExpired(order)) {
+            return res.status(410).json({
+                success: false,
+                code: 'PAYMENT_WINDOW_EXPIRED',
+                message: 'The payment window for this order has expired. Place a new order.'
+            });
+        }
+
+        const keyId = String(process.env.RAZORPAY_KEY_ID || '').trim();
+        const keySecret = String(process.env.RAZORPAY_KEY_SECRET || '').trim();
+        if (!keyId || !keySecret) {
+            return res.status(503).json({
+                success: false,
+                code: 'PAYMENT_GATEWAY_UNAVAILABLE',
+                message: 'Payment provider is not configured'
+            });
+        }
+
+        const amountPaise = Math.round(Number(order.paymentInfo?.amountPaise));
+        const fullOrderPaise = Math.round(Number(order.paymentInfo?.fullOrderAmountPaise));
+        if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
+            logger.error('initiatePendingOrderPayment: bad amountPaise', { orderId: order.orderId });
+            return res.status(500).json({
+                success: false,
+                code: 'ORDER_PAYMENT_AMOUNT_INVALID',
+                message: 'Order is missing a valid payable amount'
+            });
+        }
+        if (
+            order.paymentInfo?.splitMode === 'advance' &&
+            Number.isFinite(fullOrderPaise) &&
+            fullOrderPaise > 0 &&
+            amountPaise > fullOrderPaise
+        ) {
+            return res.status(500).json({
+                success: false,
+                code: 'ORDER_PAYMENT_AMOUNT_INVALID',
+                message: 'Stored advance amount is inconsistent with order total'
+            });
+        }
+
+        let rz;
+        try {
+            rz = await razorpay.orders.create({
+                amount: amountPaise,
+                currency: 'INR',
+                receipt: `${String(order.orderId).slice(0, 24)}-${Date.now().toString(36)}`.slice(0, 40),
+                payment_capture: 1,
+                notes: {
+                    orderId: order.orderId,
+                    userId: String(req.userId),
+                    type: 'retry_checkout'
+                }
+            });
+        } catch (rzErr) {
+            const body = rzErr && (rzErr.error || rzErr);
+            logger.error('initiatePendingOrderPayment: Razorpay rejected', {
+                orderId: order.orderId,
+                message: rzErr?.message,
+                code: body?.code
+            });
+            return res.status(502).json({
+                success: false,
+                code: 'RAZORPAY_REJECTED',
+                message: (body && (body.description || body.message)) || rzErr.message || 'Could not start payment',
+                detail: body?.code || null
+            });
+        }
+
+        order.paymentInfo = order.paymentInfo || {};
+        order.paymentInfo.razorpayOrderId = rz.id;
+        order.paymentInfo.amountPaise = Number(rz.amount);
+        order.paymentInfo.status = 'created';
+        order.paymentInfo.sessions = order.paymentInfo.sessions || [];
+        order.paymentInfo.sessions.push({
+            razorpayOrderId: rz.id,
+            expectedAmountPaise: Number(rz.amount),
+            status: 'created',
+            initiatedAt: new Date()
+        });
+        order.markModified('paymentInfo');
+        await order.save();
+
+        return res.json({
+            success: true,
+            message: 'Complete payment in Razorpay Checkout',
+            orderId: order.orderId,
+            razorpayKeyId: keyId,
+            razorpayOrder: {
+                id: rz.id,
+                amount: rz.amount,
+                currency: rz.currency
+            },
+            paymentSplitMode: order.paymentInfo.splitMode || 'full',
+            balanceDueInr: order.balanceDueInr || 0
+        });
+    } catch (error) {
+        logger.error('initiatePendingOrderPayment', { message: error.message, stack: error.stack });
+        return res.status(500).json({
+            success: false,
+            code: 'INTERNAL_ERROR',
+            message: 'Could not start payment'
+        });
+    }
+};
+
 // ========== GET ORDER ==========
 // controllers/order.controller.js
 
@@ -868,7 +1024,9 @@ exports.getUserOrders = async (req, res) => {
     try {
         const orders = await Order.find({ userId: req.userId })
             .sort({ createdAt: -1 })
-            .select('orderId totalAmount orderStatus paymentStatus createdAt deliveryCharges tax subtotal');
+            .select(
+                'orderId totalAmount orderStatus paymentStatus createdAt deliveryCharges tax subtotal paymentHoldExpiresAt balanceDueInr amountPaidInr'
+            );
 
         return res.json({
             success: true,
@@ -913,19 +1071,20 @@ exports.cancelOrder = async (req, res) => {
             });
         }
 
+        const wasPaid = order.paymentStatus === 'paid';
+
         order.orderStatus = 'cancelled';
+        order.paymentInfo = order.paymentInfo || {};
+        if (!wasPaid) {
+            order.paymentInfo.cancellationReason = 'user_cancelled';
+            order.paymentInfo.cancelledAt = new Date();
+            order.markModified('paymentInfo');
+        }
         await order.save({ session });
 
-        if (order.paymentStatus === 'paid') {
-            for (const item of order.items) {
-                await Product.updateOne(
-                    { _id: item.productId, 'variants._id': item.variantId },
-                    { $inc: { 'variants.$.inventory.quantity': item.quantity } }
-                ).session(session);
-            }
-        }
+        await releaseReservedInventoryForOrder(order, session);
 
-        if (order.paymentStatus === 'paid' && order.paymentInfo.razorpayPaymentId) {
+        if (wasPaid && order.paymentInfo.razorpayPaymentId) {
             try {
                 const refund = await razorpay.payments.refund(order.paymentInfo.razorpayPaymentId, {
                     amount: Math.round(order.totalAmount * 100),

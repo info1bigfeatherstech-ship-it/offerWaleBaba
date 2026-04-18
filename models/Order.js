@@ -54,6 +54,9 @@ const orderSchema = new mongoose.Schema(
       default: 'pending' 
     },
 
+    /** Online checkout: server time after which unpaid orders may be auto-cancelled (see paymentHoldExpiry.service) */
+    paymentHoldExpiresAt: { type: Date, default: null, index: true },
+
     /** Paid so far (INR) when using advance / multi-capture flows */
     amountPaidInr: { type: Number, default: 0 },
     balanceDueInr: { type: Number, default: 0 },

@@ -6,6 +6,7 @@ const {
   createOrder,
   verifyPayment,
   payOrderBalance,
+  initiatePendingOrderPayment,
   getOrder,
   getUserOrders,
   cancelOrder,
@@ -19,6 +20,7 @@ const {
 
 router.post('/items', verifyToken, createOrder);
 router.post('/items/verify-payment', verifyToken, verifyPayment);
+router.post('/items/:orderId/initiate-payment', verifyToken, initiatePendingOrderPayment);
 router.post('/items/:orderId/pay-balance', verifyToken, payOrderBalance);
 router.get('/items', verifyToken, getUserOrders);
 router.get('/items/:orderId', verifyToken, getOrder);
