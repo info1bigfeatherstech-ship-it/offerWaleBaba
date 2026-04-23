@@ -468,3 +468,46 @@ function startHealthMonitoring() {
 startApplication();
 
 module.exports = { app, gracefulShutdown };
+
+
+
+
+//for wholesaler and e-commerce CORS block replacement must
+// const sameServerOrigins = [
+//   `http://localhost:${PORT}`,
+//   `http://127.0.0.1:${PORT}`
+// ];
+
+// // CSV from env
+// const envOrigins = String(process.env.ALLOWED_ORIGINS || "")
+//   .split(",")
+//   .map((o) => o.trim())
+//   .filter(Boolean);
+
+// // Optional regex allow (for subdomains etc.)
+// const allowedOriginRegex = process.env.ALLOWED_ORIGIN_REGEX
+//   ? new RegExp(process.env.ALLOWED_ORIGIN_REGEX)
+//   : null;
+
+// // Final allowlist
+// const allowedOrigins = [...new Set([...envOrigins, ...sameServerOrigins])];
+
+// app.use(cors({
+//   origin: (origin, callback) => {
+//     // allow non-browser or same-origin requests without Origin header
+//     if (!origin) return callback(null, true);
+
+//     if (allowedOrigins.includes(origin)) {
+//       return callback(null, true);
+//     }
+
+//     if (allowedOriginRegex && allowedOriginRegex.test(origin)) {
+//       return callback(null, true);
+//     }
+
+//     return callback(new Error(`CORS blocked for origin: ${origin}`));
+//   },
+//   credentials: true,
+//   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+//   allowedHeaders: ['Content-Type', 'Authorization']
+// }));
