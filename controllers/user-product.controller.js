@@ -2,14 +2,14 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 
-// ✅ ADD THESE 2 LINES AT THE TOP
+// ADD THESE 2 LINES AT THE TOP
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
 const { setApiCacheHeaders } = require('../utils/apiCacheHeaders');
 // Top of your products controller file mein add karo
 const ProductTag = require('../models/ProductTag');
 
-// ✅ ONLY PRICE LOGIC - Baaki sab same
+//  ONLY PRICE LOGIC - Baaki sab same
 const getVariantPrice = (variant, userType) => {
   if (userType === 'wholesaler') {
     return {
@@ -135,12 +135,22 @@ if (Object.keys(priceQuery).length > 0) {
 
     const userType = req.userType || 'user';
 
-    // ✅ DEBUG (keep for now)
-    console.log("tagsFilter:", tagsFilter);
-    console.log("taggedProducts:", taggedProducts.length);
-    console.log("taggedProductIds:", taggedProductIds.length);
-    console.log("final filters:", filters);
-    console.log("Product:", await Product.countDocuments());
+    //  GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('PRODUCT', {
+      page, limit,
+      category: req.query.category,
+      featured: req.query.featured,
+      q: req.query.q,
+      userType
+    });
+
+    //  CHECK CACHE FIRST
+    const cachedData = await cacheService.get(cacheKey);
+    if (cachedData) {
+      res.setHeader('X-Cache', 'HIT');
+      setApiCacheHeaders(res);
+      return res.json(cachedData);
+    }
 
     const [total, products] = await Promise.all([
       Product.countDocuments(filters),
@@ -148,8 +158,8 @@ if (Object.keys(priceQuery).length > 0) {
         .sort(sortOption)
         .skip(skip)
         .limit(limit)
-        .populate('category')
-        .lean()
+        .populate('category').
+        lean({ virtuals: true })
     ]);
 
     const productsWithData = products.map(product => ({
@@ -174,8 +184,18 @@ if (Object.keys(priceQuery).length > 0) {
       userType,
       appliedTags: tagsFilter
     });
+      userType: userType
+    
 
-  } catch (err) {
+    //  STORE IN CACHE
+    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_LIST);
+
+    res.setHeader('X-Cache', 'MISS');
+    setApiCacheHeaders(res);
+
+    return res.json(responseData);
+
+   } catch (err) {
     console.error('getProducts:', err);
     return res.status(500).json({
       success: false,
@@ -192,10 +212,10 @@ const getProductBySlug = async (req, res) => {
     const { slug } = req.params;
     const userType = req.userType || 'user';
 
-    // ✅ GENERATE CACHE KEY
+    //  GENERATE CACHE KEY
     const cacheKey = cacheConfig.generateKey('PRODUCT', { slug, userType });
 
-    // ✅ CHECK CACHE FIRST
+    //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
@@ -229,7 +249,7 @@ const getProductBySlug = async (req, res) => {
       userType: userType
     };
 
-    // ✅ STORE IN CACHE
+    //  STORE IN CACHE
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_DETAIL);
 
     res.setHeader('X-Cache', 'MISS');
@@ -274,6 +294,10 @@ const searchProducts = async (req, res) => {
       tags: tagsFilter.join(',')   // ✅ add to cache key
     });
 
+    //  GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType });
+
+    //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
@@ -302,7 +326,7 @@ const searchProducts = async (req, res) => {
       .skip(skip)
       .limit(limit)
       .populate('category')
-      .lean();
+      .lean({ virtuals: true });
 
     const productsWithData = products.map(product => ({
       ...product,
@@ -322,6 +346,7 @@ const searchProducts = async (req, res) => {
       appliedTags: tagsFilter   // ✅ add this
     };
 
+    //  STORE IN CACHE
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_SEARCH);
 
     res.setHeader('X-Cache', 'MISS');
@@ -359,6 +384,10 @@ const getProductsByCategory = async (req, res) => {
       tags: tagsFilter.join(',')   // ✅ add to cache key
     });
 
+    //  GENERATE CACHE KEY
+    const cacheKey = cacheConfig.generateKey('PRODUCT', { categorySlug: slug, page, limit, userType });
+
+    //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
@@ -398,7 +427,7 @@ const getProductsByCategory = async (req, res) => {
       .skip(skip)
       .limit(limit)
       .populate('category')
-      .lean();
+      .lean({ virtuals: true });
 
     const productsWithData = products.map(product => ({
       ...product,
@@ -419,6 +448,7 @@ const getProductsByCategory = async (req, res) => {
       appliedTags: tagsFilter   // ✅ tell frontend which tags were applied
     };
 
+    //  STORE IN CACHE
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_CATEGORY);
 
     res.setHeader('X-Cache', 'MISS');
@@ -524,11 +554,11 @@ const getFeaturedProducts = async (req, res) => {
     const skip = (page - 1) * limit;
     const userType = req.userType || 'user';
     
-    // ✅ DEBUG - Check what's coming from query
-    console.log('🔍 Query params:', req.query);
-    console.log('🔍 Page:', page, 'Limit:', limit, 'Skip:', skip);
+    //  DEBUG - Check what's coming from query
+    console.log(' Query params:', req.query);
+    console.log(' Page:', page, 'Limit:', limit, 'Skip:', skip);
 
-    // ✅ Add timestamp to bypass cache for debugging
+    //  Add timestamp to bypass cache for debugging
     const bypassCache = req.query._cb === '1';
     
     const cacheKey = cacheConfig.generateKey('PRODUCT', { 
@@ -538,7 +568,7 @@ const getFeaturedProducts = async (req, res) => {
       userType 
     });
 
-    // ✅ Skip cache if bypass flag is set
+    //  Skip cache if bypass flag is set
     let cachedData = null;
     if (!bypassCache) {
       cachedData = await cacheService.get(cacheKey);
@@ -560,7 +590,7 @@ const getFeaturedProducts = async (req, res) => {
       .skip(skip)
       .limit(limit)
       .populate('category')
-      .lean();
+      .lean({ virtuals: true });
 
     const productsWithData = products.map(product => ({
       ...product,
@@ -609,10 +639,10 @@ const getRelatedProducts = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 8);
     const userType = req.userType || 'user';
 
-    // ✅ GENERATE CACHE KEY
+    //  GENERATE CACHE KEY
     const cacheKey = cacheConfig.generateKey('PRODUCT', { related: slug, limit, userType });
 
-    // ✅ CHECK CACHE FIRST
+    //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
@@ -640,7 +670,7 @@ const getRelatedProducts = async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(limit)
       .populate('category')
-      .lean();
+      .lean({ virtuals: true });
 
     const relatedWithData = related.map(rel => ({
       ...rel,
@@ -656,7 +686,7 @@ const getRelatedProducts = async (req, res) => {
       userType: userType
     };
 
-    // ✅ STORE IN CACHE
+    //  STORE IN CACHE
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_RELATED);
 
     res.setHeader('X-Cache', 'MISS');

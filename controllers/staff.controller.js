@@ -119,7 +119,7 @@ const sendOTPToAdmin = async (adminEmail, adminName, staffName, otp) => {
   const mailOptions = {
     from: `"OfferWaleBaba Security" <${EMAIL_FROM}>`,
     to: adminEmail,
-    subject: '🔐 Staff Password Reset Verification',
+    subject: ' Staff Password Reset Verification',
     html: `
       <!DOCTYPE html>
       <html>
@@ -186,7 +186,7 @@ const sendResetConfirmation = async (adminEmail, adminName, staffName) => {
   const mailOptions = {
     from: `"OfferWaleBaba Security" <${EMAIL_FROM}>`,
     to: adminEmail,
-    subject: '✅ Staff Password Reset Successful',
+    subject: 'Staff Password Reset Successful',
     html: `
       <!DOCTYPE html>
       <html>
@@ -226,6 +226,7 @@ const sendResetConfirmation = async (adminEmail, adminName, staffName) => {
  * @param {string} role - Role filter
  * @returns {object} MongoDB query object
  */
+
 const buildStaffQuery = (search, role) => {
   const query = {
     role: { $ne: 'user', $in: ALLOWED_STAFF_ROLES }
@@ -256,6 +257,7 @@ const buildStaffQuery = (search, role) => {
  * @access  Admin only
  * @query   page, limit, search, role
  */
+
 const getAllStaff = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -306,6 +308,7 @@ const getAllStaff = async (req, res) => {
  * @access  Admin only
  * @body    name, email, phone, password, role
  */
+
 const createStaff = async (req, res) => {
   try {
     const errors = validationResult(req);

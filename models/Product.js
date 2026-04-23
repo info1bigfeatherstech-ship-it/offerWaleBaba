@@ -1,5 +1,6 @@
 
 const mongoose = require('mongoose');
+const mongooseLeanVirtuals = require('mongoose-lean-virtuals'); 
 
 //
 // IMAGE SUB-SCHEMA
@@ -15,7 +16,7 @@ const imageSchema = new mongoose.Schema(
 );
 
 //
-// ✅ NEW: SEO SUB-SCHEMA (Add this)
+//  NEW: SEO SUB-SCHEMA (Add this)
 //
 const seoSchema = new mongoose.Schema(
   {
@@ -334,4 +335,8 @@ productSchema.index({ createdAt: -1 });
 productSchema.index({ 'variants.productCode': 1 }, { unique: true, sparse: true });
 productSchema.index({ hsnCode: 1 });
 
+
+
+//for virtuals
+productSchema.plugin(mongooseLeanVirtuals);
 module.exports = mongoose.model('Product', productSchema);
