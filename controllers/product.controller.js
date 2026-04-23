@@ -14,7 +14,7 @@ const unzipper = require('unzipper');
 const path = require('path');
 const axios = require('axios');
 const AdmZip = require("adm-zip");
-const { Parser } = require("json2csv");   // ✅ ADD THIS
+const { Parser } = require("json2csv");   //  ADD THIS
 const {generateSEOData}=require("../utils/seoUtils");
 
 
