@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, param } = require('express-validator');
 const { requireAdmin, requireSuperAdmin } = require('../middlewares/is-admin.middleware');
+const { uploadWholesalerProofs } = require('../middlewares/upload.middleware');
 const {
   submitWholesalerRequest,
   listWholesalerRequests,
@@ -31,6 +32,7 @@ router.post(
 
 router.post(
   '/request',
+  uploadWholesalerProofs,
   [
     body('fullName').trim().notEmpty().withMessage('fullName is required'),
     body('whatsappNumber').trim().notEmpty().withMessage('whatsappNumber is required'),
@@ -43,8 +45,16 @@ router.post(
     body('sellingZoneCity').trim().notEmpty().withMessage('sellingZoneCity is required'),
     body('productCategory').trim().notEmpty().withMessage('productCategory is required'),
     body('monthlyEstimatedPurchase').isNumeric().withMessage('monthlyEstimatedPurchase must be numeric'),
-    body('idProofUpload').trim().notEmpty().withMessage('idProofUpload is required'),
-    body('businessAddressProofUpload').trim().notEmpty().withMessage('businessAddressProofUpload is required')
+    body('idProofUpload')
+      .optional({ checkFalsy: true })
+      .trim()
+      .isString()
+      .withMessage('idProofUpload must be a string URL when provided'),
+    body('businessAddressProofUpload')
+      .optional({ checkFalsy: true })
+      .trim()
+      .isString()
+      .withMessage('businessAddressProofUpload must be a string URL when provided')
   ],
   submitWholesalerRequest
 );

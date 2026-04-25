@@ -94,15 +94,6 @@ function isLoopbackOriginOnApiPort(origin) {
   }
 }
 
-function isHttpLikeOrigin(origin) {
-  try {
-    const u = new URL(origin);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch (_) {
-    return false;
-  }
-}
-
 // Razorpay netbanking/card flows POST to bank URLs and embed bank frames — Helmet's default
 // form-action/frame-src are too tight (often only 'self'), which can leave a popup on about:blank.
 const razorpayCspHosts = [
@@ -147,7 +138,7 @@ app.use((req, res, next) => {
         (
           ownerReviewAllowedOrigins.has(origin) ||
           origin === 'null' || // opaque origins (some in-app browsers/webviews)
-          isHttpLikeOrigin(origin)
+          isLoopbackOriginOnApiPort(origin)
         )
       ) {
         return callback(null, true);
@@ -169,8 +160,7 @@ app.use((req, res, next) => {
   return cors(corsOptions)(req, res, next);
 });
 
-// Handle preflight requests
-// app.options('*', cors());
+
 
 
 // Razorpay webhooks must use raw body for signature verification (before express.json)
