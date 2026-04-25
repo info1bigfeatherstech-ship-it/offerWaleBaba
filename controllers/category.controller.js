@@ -11,6 +11,7 @@ const {
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
 const { setApiCacheHeaders } = require('../utils/apiCacheHeaders');
+const { mongoCatalogListFilter } = require('../utils/storefrontCatalog');
 
 /** Category tiles / headers: slightly tighter cap than product gallery (override via env). */
 const CATEGORY_IMAGE_MAX_WIDTH = Math.min(
@@ -49,8 +50,9 @@ async function processAndUploadCategoryImage(buffer, { nameHint, uniqueSuffix })
 // =============================================
 const getAllCategories = async (req, res) => {
   try {
+    const storefront = req.storefront || 'ecomm';
     //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('CATEGORY', { all: true });
+    const cacheKey = cacheConfig.generateKey('CATEGORY', { all: true, storefront });
 
     //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
@@ -60,10 +62,21 @@ const getAllCategories = async (req, res) => {
       return res.status(200).json(cachedData);
     }
 
-    // Only active categories
-    const categories = await Category.find({ status: 'active' })
+    let categories = await Category.find({ status: 'active' })
       .sort({ order: 1, name: 1 })
       .lean();
+
+    // Wholesale should only see categories with at least one listed product.
+    if (storefront === 'wholesale') {
+      const listedCategoryIds = await Product.distinct(
+        'category',
+        mongoCatalogListFilter(storefront)
+      );
+      if (listedCategoryIds.length) {
+        const allowedSet = new Set(listedCategoryIds.map((id) => String(id)));
+        categories = categories.filter((cat) => allowedSet.has(String(cat._id)));
+      }
+    }
 
     const map = new Map();
     categories.forEach(cat => {
@@ -112,9 +125,10 @@ const getAllCategories = async (req, res) => {
 const getCategoryById = async (req, res) => {
   try {
     const { id } = req.params;
+    const storefront = req.storefront || 'ecomm';
 
     //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('CATEGORY', { id });
+    const cacheKey = cacheConfig.generateKey('CATEGORY', { id, storefront });
 
     //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
@@ -134,6 +148,18 @@ const getCategoryById = async (req, res) => {
         success: false,
         message: 'Category not found'
       });
+    }
+
+    if (storefront === 'wholesale') {
+      const listedCount = await Product.countDocuments({
+        $and: [...mongoCatalogListFilter(storefront).$and, { category: category._id }]
+      });
+      if (listedCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'Category not found'
+        });
+      }
     }
 
     const responseData = {

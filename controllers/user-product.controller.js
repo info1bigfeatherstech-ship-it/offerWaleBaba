@@ -13,23 +13,40 @@ const {
 
 const storefrontFrom = (req) => req.storefront || 'ecomm';
 
-//  ONLY PRICE LOGIC - Baaki sab same
+// ONLY PRICE LOGIC - shared for ecomm + wholesale
 const getVariantPrice = (variant, userType) => {
   if (userType === 'wholesaler') {
     const wholesaleBase = Number(variant.price?.wholesaleBase || 0);
     const wholesaleSaleRaw = variant.price?.wholesaleSale;
     const wholesaleSale = wholesaleSaleRaw != null ? Number(wholesaleSaleRaw) : null;
+    const isSaleActive = Number.isFinite(wholesaleSale) && wholesaleSale > 0 && wholesaleSale < wholesaleBase;
+    const current = isSaleActive ? wholesaleSale : wholesaleBase;
+    const discountPercentage = isSaleActive && wholesaleBase > 0
+      ? Math.round(((wholesaleBase - wholesaleSale) / wholesaleBase) * 100)
+      : 0;
     return {
       base: wholesaleBase,
       sale: Number.isFinite(wholesaleSale) ? wholesaleSale : null,
+      current,
+      isSaleActive,
+      discountPercentage,
       minimumOrderQuantity: variant.minimumOrderQuantity || 1
     };
   }
   const retailSaleRaw = variant.price?.sale;
   const retailSale = retailSaleRaw != null ? Number(retailSaleRaw) : null;
+  const retailBase = Number(variant.price?.base || 0);
+  const isSaleActive = Number.isFinite(retailSale) && retailSale > 0 && retailSale < retailBase;
+  const current = isSaleActive ? retailSale : retailBase;
+  const discountPercentage = isSaleActive && retailBase > 0
+    ? Math.round(((retailBase - retailSale) / retailBase) * 100)
+    : 0;
   return {
-    base: Number(variant.price?.base || 0),
+    base: retailBase,
     sale: Number.isFinite(retailSale) ? retailSale : null,
+    current,
+    isSaleActive,
+    discountPercentage,
     minimumOrderQuantity: 1
   };
 };

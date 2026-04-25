@@ -1,6 +1,6 @@
 /**
  * Resolves catalog storefront from the incoming HTTP request.
- * Priority: X-Storefront header → hostname allowlists (env) → default "ecomm".
+ * Priority: storefront headers → hostname allowlists (env) → default "ecomm".
  *
  * Env (optional, comma-separated hostnames, no protocol):
  *   STOREFRONT_WHOLESALE_HOSTS=wholesale.example.com,localhost:3001
@@ -8,6 +8,7 @@
  */
 
 const DEFAULT_STOREFRONT = 'ecomm';
+const { STOREFRONT_HEADER_ALIASES } = require('../constants/storefrontHeaders');
 
 function parseHostList(envValue) {
   if (!envValue || typeof envValue !== 'string') return [];
@@ -49,14 +50,20 @@ function resolveStorefrontFromHeader(raw) {
   return null;
 }
 
+function readStorefrontHeader(req) {
+  for (const key of STOREFRONT_HEADER_ALIASES) {
+    const value = req.get(key);
+    if (value != null && String(value).trim() !== '') return value;
+  }
+  return null;
+}
+
 /**
  * @param {import('express').Request} req
  * @returns {'ecomm'|'wholesale'}
  */
 function resolveStorefront(req) {
-  const fromHeader =
-    resolveStorefrontFromHeader(req.get('x-storefront')) ||
-    resolveStorefrontFromHeader(req.get('X-Storefront'));
+  const fromHeader = resolveStorefrontFromHeader(readStorefrontHeader(req));
   if (fromHeader) return fromHeader;
 
   const host = normalizeHostHeader(req.get('host') || '');

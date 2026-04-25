@@ -127,7 +127,11 @@ const proofUpload = multer({
 
 const uploadWholesalerProofs = proofUpload.fields([
   { name: 'idProof', maxCount: 1 },
-  { name: 'businessAddressProof', maxCount: 1 }
+  { name: 'idProofUpload', maxCount: 1 },
+  { name: 'idProofFile', maxCount: 1 },
+  { name: 'businessAddressProof', maxCount: 1 },
+  { name: 'businessAddressProofUpload', maxCount: 1 },
+  { name: 'businessAddressProofFile', maxCount: 1 }
 ]);
 
 

@@ -15,9 +15,11 @@ const gracefulShutdown = require('./services/shutdown.service');
 const cleanupService = require('./services/cleanup.service');
 const paymentHoldExpiryService = require('./services/paymentHoldExpiry.service');
 const logger = require('./utils/logger');
+const { CORS_STOREFRONT_ALLOWED_HEADERS } = require('./constants/storefrontHeaders');
 
 // Import middleware
 const { optionalAuth } = require('./middlewares/user-type-optional.middleware');
+const { resolveStorefrontMiddleware } = require('./middlewares/storefront.middleware');
 const { limiters } = require('./middlewares/rate-limiter.middleware');
 
 // Import routes (ACTIVE ONLY)
@@ -154,7 +156,7 @@ app.use((req, res, next) => {
     },
     credentials: !isOwnerReviewPath, // no cookies needed for token-based owner review
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', ...CORS_STOREFRONT_ALLOWED_HEADERS]
   };
 
   return cors(corsOptions)(req, res, next);
@@ -176,6 +178,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(morgan(NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(resolveStorefrontMiddleware);
 
 // ✅ Apply userType middleware (GLOBAL - for all routes)
 app.use(optionalAuth);
