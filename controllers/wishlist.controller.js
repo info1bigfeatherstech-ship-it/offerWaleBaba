@@ -365,7 +365,32 @@ const moveToCart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
   const storefront = storefrontOrDefault(req);
-  const { productIds = [], moveAll = false } = req.body;
+  const { moveAll = false } = req.body;
+
+  const normalizeIds = (raw) => {
+    if (Array.isArray(raw)) {
+      return raw.map((v) => String(v || '').trim()).filter(Boolean);
+    }
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (!trimmed) return [];
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          return parsed.map((v) => String(v || '').trim()).filter(Boolean);
+        }
+      } catch (_) {
+        // fall through to comma-separated parsing
+      }
+      return trimmed
+        .split(',')
+        .map((v) => String(v || '').trim())
+        .filter(Boolean);
+    }
+    return [];
+  };
+  const productIds = normalizeIds(req.body?.productIds);
+  const selectedIdSet = new Set(productIds);
 
   if (!userId)
     return res.status(401).json({ success: false, message: 'Unauthorized' });
@@ -381,8 +406,8 @@ const moveToCart = async (req, res) => {
     if (moveAll) {
       itemsToMove = wishlist.products;
     } else {
-      itemsToMove = wishlist.products.filter(p =>
-        productIds.includes(String(p.productId))
+      itemsToMove = wishlist.products.filter((p) =>
+        selectedIdSet.has(String(p.productId)) || selectedIdSet.has(String(p._id))
       );
     }
 
@@ -474,8 +499,8 @@ const moveToCart = async (req, res) => {
     if (moveAll) {
       wishlist.products = [];
     } else {
-      wishlist.products = wishlist.products.filter(p =>
-        !productIds.includes(String(p.productId))
+      wishlist.products = wishlist.products.filter((p) =>
+        !(selectedIdSet.has(String(p.productId)) || selectedIdSet.has(String(p._id)))
       );
     }
 
