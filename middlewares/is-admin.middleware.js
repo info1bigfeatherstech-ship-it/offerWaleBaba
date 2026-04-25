@@ -5,7 +5,7 @@ const User = require('../models/User');
 const requireAdmin = async (req, res, next) => {
   try {
     await verifyToken(req, res, async () => {
-      const user = req.user || await User.findById(req.userId).select('userType role');
+      const user = await User.findById(req.userId).select('userType role');
 
       if (!user) {
         return res.status(403).json({ success: false, message: 'User not found' });
@@ -17,11 +17,12 @@ const requireAdmin = async (req, res, next) => {
         return res.status(403).json({ success: false, message: 'Admin access required' });
       }
 
+      const userId = String(user._id);
       req.user = {
-        id: user._id.toString(),
+        id: userId,
         role
       };
-      req.userId = user._id.toString();
+      req.userId = userId;
       req.userType = user.userType || 'user';
 
       next();
@@ -31,5 +32,35 @@ const requireAdmin = async (req, res, next) => {
   }
 };
 
-module.exports = { requireAdmin };
+/** Manual wholesaler approve/reject only (owner decisions use signed review link). */
+const requireSuperAdmin = async (req, res, next) => {
+  try {
+    await verifyToken(req, res, async () => {
+      const user = await User.findById(req.userId).select('userType role');
+      if (!user) {
+        return res.status(403).json({ success: false, message: 'User not found' });
+      }
+      const role = String(user.role || user.userType || 'user').toLowerCase();
+      if (role !== 'superadmin') {
+        return res.status(403).json({
+          success: false,
+          message:
+            'Manual approve/reject is restricted to superadmin. Use the owner review link from the admin panel.'
+        });
+      }
+      const userId = String(user._id);
+      req.user = {
+        id: userId,
+        role
+      };
+      req.userId = userId;
+      req.userType = user.userType || 'user';
+      next();
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Error authorizing user', error: error.message });
+  }
+};
+
+module.exports = { requireAdmin, requireSuperAdmin };
 

@@ -37,6 +37,7 @@ const deliveryRoutes = require('./routes/delivery.route');
 const checkoutRoutes = require('./routes/checkout.route');
 const adminCouponRoutes = require('./routes/admin-coupons.route');
 const userCouponRoutes = require('./routes/user-coupons.route');
+const wholesalerRoutes = require('./routes/wholesaler.route');
 
 // Configuration
 const PORT = process.env.PORT || 8081;
@@ -53,7 +54,7 @@ const sameServerOrigins = [
   `http://localhost:${PORT}`,
   `http://127.0.0.1:${PORT}`
 ];
-const allowedOrigins = [
+const defaultAllowedOrigins = [
   'https://offerwaalebaba.netlify.app',
   'http://localhost:3000',
   'http://localhost:5173',
@@ -61,6 +62,46 @@ const allowedOrigins = [
   'http://127.0.0.1:5173',
   ...sameServerOrigins
 ];
+
+function parseOriginsCsv(value) {
+  return String(value || '')
+    .split(',')
+    .map((s) => s.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+}
+
+const envAllowedOrigins = parseOriginsCsv(process.env.CORS_ALLOWED_ORIGINS);
+const allowedOrigins = new Set([...defaultAllowedOrigins, ...envAllowedOrigins]);
+
+const publicApiBase = String(process.env.PUBLIC_API_BASE_URL || process.env.API_PUBLIC_BASE_URL || '')
+  .trim()
+  .replace(/\/$/, '');
+const ownerReviewAllowedOrigins = new Set([
+  ...allowedOrigins,
+  ...parseOriginsCsv(process.env.OWNER_REVIEW_ALLOWED_ORIGINS),
+  ...(publicApiBase ? [publicApiBase] : [])
+]);
+
+function isLoopbackOriginOnApiPort(origin) {
+  try {
+    const u = new URL(origin);
+    return (
+      (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
+      u.port === String(PORT)
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function isHttpLikeOrigin(origin) {
+  try {
+    const u = new URL(origin);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+}
 
 // Razorpay netbanking/card flows POST to bank URLs and embed bank frames — Helmet's default
 // form-action/frame-src are too tight (often only 'self'), which can leave a popup on about:blank.
@@ -93,32 +134,40 @@ app.use(helmet({
   }
 }));
 
-app.use(cors({
-  origin: function(origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    // Any other same-machine origin on the API port (PORT in .env)
-    try {
-      const u = new URL(origin);
-      const apiPort = String(PORT);
+app.use((req, res, next) => {
+  // Owner review is token-protected, but CORS still remains strict and configurable.
+  const isOwnerReviewPath = req.path.startsWith('/api/wholesaler/owner-review');
+
+  const corsOptions = {
+    origin(origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl)
+      if (!origin) return callback(null, true);
       if (
-        (u.hostname === 'localhost' || u.hostname === '127.0.0.1') &&
-        u.port === apiPort
+        isOwnerReviewPath &&
+        (
+          ownerReviewAllowedOrigins.has(origin) ||
+          origin === 'null' || // opaque origins (some in-app browsers/webviews)
+          isHttpLikeOrigin(origin)
+        )
       ) {
         return callback(null, true);
       }
-    } catch (_) {
-      /* ignore */
-    }
-    return callback(new Error('Not allowed by CORS'));
-  },
-  credentials: true,  // ✅ IMPORTANT - allows cookies
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+      if (!isOwnerReviewPath && allowedOrigins.has(origin)) {
+        return callback(null, true);
+      }
+      // Any other same-machine origin on the API port (PORT in .env)
+      if (isLoopbackOriginOnApiPort(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: !isOwnerReviewPath, // no cookies needed for token-based owner review
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  };
+
+  return cors(corsOptions)(req, res, next);
+});
 
 // Handle preflight requests
 // app.options('*', cors());
@@ -173,6 +222,10 @@ app.use('/api/auth/register', limiters.sensitive);
 app.use('/api/auth/otp-verify-login', limiters.sensitive);
 app.use('/api/auth/forgot-password', limiters.sensitive);
 app.use('/api/auth/change-password', limiters.sensitive);
+app.use('/api/wholesaler/request', limiters.sensitive);
+app.use('/api/wholesaler/activate/send-otp', limiters.sensitive);
+app.use('/api/wholesaler/activate/verify', limiters.sensitive);
+app.use('/api/wholesaler/owner-review', limiters.sensitive);
 // Orders: own bucket (not `sensitive` — that 20/15m cap blocked normal My Orders + payment retries)
 app.use('/api/orders', limiters.orders);
 
@@ -335,6 +388,7 @@ app.use('/api/checkout', checkoutRoutes);
 app.use('/api/delivery', deliveryRoutes);
 app.use('/api/admin/coupons', adminCouponRoutes);
 app.use('/api/coupons', userCouponRoutes);
+app.use('/api/wholesaler', wholesalerRoutes);
 
 // ============================================================================
 // Error Handling Middleware

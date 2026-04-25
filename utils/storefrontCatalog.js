@@ -1,0 +1,267 @@
+const CHANNEL_LIFECYCLE = ['draft', 'active', 'archived'];
+
+const STOREFRONT_KEYS = {
+  ecomm: 'ecomm',
+  wholesale: 'wholesale'
+};
+
+function isValidLifecycle(value) {
+  return CHANNEL_LIFECYCLE.includes(value);
+}
+
+function normalizeLifecycle(value, fallback) {
+  if (isValidLifecycle(value)) return value;
+  return fallback;
+}
+
+/**
+ * Default channel map from legacy single product status (create / migration).
+ * @param {string} status draft|active|archived
+ * @param {object|null|undefined} body optional partial { ecomm?, wholesale? }
+ */
+function deriveProductChannelStatusFromLegacy(status, body) {
+  const fb = normalizeLifecycle(status, 'draft');
+  const out = { ecomm: fb, wholesale: fb };
+  if (body && typeof body === 'object') {
+    if (body.ecomm != null) out.ecomm = normalizeLifecycle(body.ecomm, fb);
+    if (body.wholesale != null) {
+      out.wholesale = normalizeLifecycle(body.wholesale, fb);
+    }
+  }
+  return out;
+}
+
+/**
+ * @param {boolean} isActive legacy variant flag
+ * @param {object|null|undefined} body optional partial channel visibility
+ */
+function deriveVariantChannelVisibilityFromLegacy(isActive, body, options = {}) {
+  const fb = isActive ? 'active' : 'draft';
+  const isWholesaleEligible = options.isWholesaleEligible !== false;
+  const out = { ecomm: fb, wholesale: isWholesaleEligible ? fb : 'draft' };
+  if (body && typeof body === 'object') {
+    if (body.ecomm != null) out.ecomm = normalizeLifecycle(body.ecomm, fb);
+    if (body.wholesale != null) {
+      const requested = normalizeLifecycle(body.wholesale, fb);
+      out.wholesale = isWholesaleEligible ? requested : 'draft';
+    }
+  }
+  return out;
+}
+
+function storefrontKey(storefront) {
+  return storefront === STOREFRONT_KEYS.wholesale ? 'wholesale' : 'ecomm';
+}
+
+function hasWholesalePricingConfig(variant) {
+  const wholesaleBase = Number(variant?.price?.wholesaleBase);
+  return Boolean(variant?.wholesale === true && Number.isFinite(wholesaleBase) && wholesaleBase > 0);
+}
+
+/**
+ * Effective lifecycle for a product on one storefront (new fields with fallback to legacy status).
+ * @param {object} product plain or mongoose doc
+ * @param {'ecomm'|'wholesale'} storefront
+ */
+function effectiveProductChannelStatus(product, storefront) {
+  const key = storefrontKey(storefront);
+  const ch = product.channelStatus;
+  const direct = ch && typeof ch === 'object' ? ch[key] : undefined;
+  if (isValidLifecycle(direct)) return direct;
+  return normalizeLifecycle(product.status, 'draft');
+}
+
+/**
+ * Effective lifecycle for a variant on one storefront.
+ * @param {object} variant
+ * @param {'ecomm'|'wholesale'} storefront
+ */
+function effectiveVariantChannelStatus(variant, storefront) {
+  if (storefrontKey(storefront) === 'wholesale' && !hasWholesalePricingConfig(variant)) {
+    return 'draft';
+  }
+  const key = storefrontKey(storefront);
+  const vis = variant.channelVisibility;
+  const direct = vis && typeof vis === 'object' ? vis[key] : undefined;
+  if (isValidLifecycle(direct)) return direct;
+  return variant.isActive === false ? 'draft' : 'active';
+}
+
+function isProductListedOnStorefront(product, storefront) {
+  return effectiveProductChannelStatus(product, storefront) === 'active';
+}
+
+function isVariantListedOnStorefront(variant, storefront) {
+  return effectiveVariantChannelStatus(variant, storefront) === 'active';
+}
+
+/**
+ * Mongo filter: product is catalog-active on the given storefront.
+ * Uses per-channel status when set; otherwise falls back to legacy `status === 'active'`.
+ * @param {'ecomm'|'wholesale'} storefront
+ */
+function mongoProductCatalogActiveFilter(storefront) {
+  const key = storefrontKey(storefront);
+  const channelField = `channelStatus.${key}`;
+  return {
+    $or: [
+      { [channelField]: 'active' },
+      {
+        $and: [
+          {
+            $or: [
+              { channelStatus: { $exists: false } },
+              { [channelField]: { $exists: false } },
+              { [channelField]: null }
+            ]
+          },
+          { status: 'active' }
+        ]
+      }
+    ]
+  };
+}
+
+/**
+ * At least one variant is purchasable/listable on this storefront (with legacy fallback).
+ * @param {'ecomm'|'wholesale'} storefront
+ */
+function mongoHasVisibleVariantClause(storefront) {
+  const key = storefrontKey(storefront);
+  const vf = `channelVisibility.${key}`;
+  const visibilityRule = {
+    $or: [
+      { [vf]: 'active' },
+      {
+        $and: [
+          {
+            $or: [
+              { channelVisibility: { $exists: false } },
+              { [vf]: { $exists: false } },
+              { [vf]: null }
+            ]
+          },
+          { isActive: { $ne: false } }
+        ]
+      }
+    ]
+  };
+
+  const wholesaleEligibility =
+    key === 'wholesale'
+      ? {
+          wholesale: true,
+          'price.wholesaleBase': { $gt: 0 }
+        }
+      : {};
+
+  return {
+    variants: {
+      $elemMatch: {
+        ...visibilityRule,
+        ...wholesaleEligibility
+      }
+    }
+  };
+}
+
+/**
+ * Combined catalog match for list/count/search (product + variant visibility).
+ */
+function mongoCatalogListFilter(storefront) {
+  return {
+    $and: [
+      mongoProductCatalogActiveFilter(storefront),
+      mongoHasVisibleVariantClause(storefront)
+    ]
+  };
+}
+
+/**
+ * AND-merge extra clause(s) with the standard catalog list filter.
+ * @param {'ecomm'|'wholesale'} storefront
+ * @param {...object} clauses each must be a non-null plain filter object
+ */
+function mongoCatalogAnd(storefront, ...clauses) {
+  const list = [...mongoCatalogListFilter(storefront).$and];
+  for (const c of clauses) {
+    if (c != null && typeof c === 'object' && Object.keys(c).length) {
+      list.push(c);
+    }
+  }
+  return { $and: list };
+}
+
+/**
+ * Merge partial channelStatus from admin API onto existing + legacy fallback.
+ * @param {object} doc mongoose product doc
+ * @param {object} parsed partial { ecomm?, wholesale? }
+ */
+function mergeProductChannelStatus(doc, parsed) {
+  const fb = normalizeLifecycle(doc.status, 'draft');
+  const cur = (doc.channelStatus && doc.channelStatus.toObject
+    ? doc.channelStatus.toObject()
+    : doc.channelStatus) || {};
+  return {
+    ecomm: isValidLifecycle(parsed.ecomm)
+      ? parsed.ecomm
+      : cur.ecomm != null
+        ? cur.ecomm
+        : fb,
+    wholesale: isValidLifecycle(parsed.wholesale)
+      ? parsed.wholesale
+      : cur.wholesale != null
+        ? cur.wholesale
+        : fb
+  };
+}
+
+/**
+ * Merge partial variant channelVisibility.
+ * @param {object} variant mongoose subdoc
+ * @param {object} parsed partial { ecomm?, wholesale? }
+ */
+function mergeVariantChannelVisibility(variant, parsed) {
+  const fb = variant.isActive === false ? 'draft' : 'active';
+  const wholesaleEligible = hasWholesalePricingConfig(variant);
+  const cur = variant.channelVisibility || {};
+  return {
+    ecomm: isValidLifecycle(parsed.ecomm)
+      ? parsed.ecomm
+      : cur.ecomm != null
+        ? cur.ecomm
+        : fb,
+    wholesale: isValidLifecycle(parsed.wholesale)
+      ? (wholesaleEligible ? parsed.wholesale : 'draft')
+      : cur.wholesale != null
+        ? cur.wholesale
+        : (wholesaleEligible ? fb : 'draft')
+  };
+}
+
+/**
+ * Filter variants for storefront listing; preserves order.
+ */
+function filterVariantsForStorefront(variants, storefront) {
+  if (!Array.isArray(variants)) return [];
+  return variants.filter((v) => isVariantListedOnStorefront(v, storefront));
+}
+
+module.exports = {
+  CHANNEL_LIFECYCLE,
+  STOREFRONT_KEYS,
+  deriveProductChannelStatusFromLegacy,
+  deriveVariantChannelVisibilityFromLegacy,
+  effectiveProductChannelStatus,
+  effectiveVariantChannelStatus,
+  isProductListedOnStorefront,
+  isVariantListedOnStorefront,
+  hasWholesalePricingConfig,
+  mongoProductCatalogActiveFilter,
+  mongoHasVisibleVariantClause,
+  mongoCatalogListFilter,
+  mongoCatalogAnd,
+  mergeProductChannelStatus,
+  mergeVariantChannelVisibility,
+  filterVariantsForStorefront
+};

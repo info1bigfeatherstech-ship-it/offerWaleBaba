@@ -2,26 +2,74 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 
-// ADD THESE 2 LINES AT THE TOP
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
 const { setApiCacheHeaders } = require('../utils/apiCacheHeaders');
+const {
+  mongoCatalogAnd,
+  filterVariantsForStorefront,
+  isProductListedOnStorefront
+} = require('../utils/storefrontCatalog');
+
+const storefrontFrom = (req) => req.storefront || 'ecomm';
 
 //  ONLY PRICE LOGIC - Baaki sab same
 const getVariantPrice = (variant, userType) => {
   if (userType === 'wholesaler') {
+    const wholesaleBase = Number(variant.price?.wholesaleBase || 0);
+    const wholesaleSaleRaw = variant.price?.wholesaleSale;
+    const wholesaleSale = wholesaleSaleRaw != null ? Number(wholesaleSaleRaw) : null;
     return {
-      base: variant.price.wholesaleBase || variant.price.base,
-      sale: variant.price.wholesaleSale || variant.price.wholesaleBase || variant.price.base,
+      base: wholesaleBase,
+      sale: Number.isFinite(wholesaleSale) ? wholesaleSale : null,
       minimumOrderQuantity: variant.minimumOrderQuantity || 1
     };
   }
+  const retailSaleRaw = variant.price?.sale;
+  const retailSale = retailSaleRaw != null ? Number(retailSaleRaw) : null;
   return {
-    base: variant.price.base,
-    sale: variant.price.sale || variant.price.base,
+    base: Number(variant.price?.base || 0),
+    sale: Number.isFinite(retailSale) ? retailSale : null,
     minimumOrderQuantity: 1
   };
 };
+
+function mapProductVariantsForApi(product, userType, storefront) {
+  const visible = filterVariantsForStorefront(product.variants || [], storefront);
+  return visible.map((variant) => ({
+    ...variant,
+    price: getVariantPrice(variant, userType)
+  }));
+}
+
+function decorateProductForStorefront(product, userType, storefront) {
+  const variants = mapProductVariantsForApi(product, userType, storefront);
+  const currentPrices = variants.map((v) => {
+    const sale = Number(v?.price?.sale);
+    const base = Number(v?.price?.base || 0);
+    return Number.isFinite(sale) && sale > 0 && sale < base ? sale : base;
+  });
+  const minPrice = currentPrices.length ? Math.min(...currentPrices) : null;
+  const maxPrice = currentPrices.length ? Math.max(...currentPrices) : null;
+  const maxDiscountPercentage = variants.length
+    ? Math.max(
+      ...variants.map((v) => {
+        const sale = Number(v?.price?.sale);
+        const base = Number(v?.price?.base || 0);
+        if (!(Number.isFinite(sale) && sale > 0 && sale < base && base > 0)) return 0;
+        return Math.round(((base - sale) / base) * 100);
+      })
+    )
+    : 0;
+
+  return {
+    ...product,
+    variants,
+    minPrice,
+    maxPrice,
+    maxDiscountPercentage
+  };
+}
 
 // =============================================
 // GET /products/all - WITH CACHE
@@ -32,32 +80,34 @@ const getProducts = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
     const skip = (page - 1) * limit;
 
-    const filters = { status: 'active' };
-
+    const storefront = storefrontFrom(req);
+    const extraClauses = [];
     if (req.query.category) {
-      const cat = await Category.findOne({ 
-        slug: String(req.query.category).toLowerCase() 
+      const cat = await Category.findOne({
+        slug: String(req.query.category).toLowerCase()
       }).select('_id');
-      if (cat) filters.category = cat._id;
+      if (cat) extraClauses.push({ category: cat._id });
     }
-
-    if (req.query.featured === 'true') filters.isFeatured = true;
+    if (req.query.featured === 'true') extraClauses.push({ isFeatured: true });
 
     let sortOption = { createdAt: -1 };
     if (req.query.q) {
-      filters.$text = { $search: String(req.query.q) };
+      extraClauses.push({ $text: { $search: String(req.query.q) } });
       sortOption = { score: { $meta: 'textScore' } };
     }
 
+    const filters = mongoCatalogAnd(storefront, ...extraClauses);
+
     const userType = req.userType || 'user';
 
-    //  GENERATE CACHE KEY
     const cacheKey = cacheConfig.generateKey('PRODUCT', {
-      page, limit,
+      page,
+      limit,
       category: req.query.category,
       featured: req.query.featured,
       q: req.query.q,
-      userType
+      userType,
+      storefront
     });
 
     //  CHECK CACHE FIRST
@@ -68,23 +118,23 @@ const getProducts = async (req, res) => {
       return res.json(cachedData);
     }
 
+    const projection = req.query.q
+      ? { score: { $meta: 'textScore' } }
+      : undefined;
+
     const [total, products] = await Promise.all([
       Product.countDocuments(filters),
-      Product.find(filters)
+      Product.find(filters, projection)
         .sort(sortOption)
         .skip(skip)
         .limit(limit)
-        .populate('category').
-        lean({ virtuals: true })
+        .populate('category')
+        .lean({ virtuals: true })
     ]);
 
-    const productsWithData = products.map(product => ({
-      ...product,
-      variants: product.variants.map(variant => ({
-        ...variant,
-        price: getVariantPrice(variant, userType)
-      }))
-    }));
+    const productsWithData = products.map((product) =>
+      decorateProductForStorefront(product, userType, storefront)
+    );
 
     const responseData = {
       success: true,
@@ -97,7 +147,8 @@ const getProducts = async (req, res) => {
         hasPrevPage: page > 1
       },
       products: productsWithData,
-      userType: userType
+      userType,
+      storefront
     };
 
     //  STORE IN CACHE
@@ -124,9 +175,9 @@ const getProductBySlug = async (req, res) => {
   try {
     const { slug } = req.params;
     const userType = req.userType || 'user';
+    const storefront = storefrontFrom(req);
 
-    //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('PRODUCT', { slug, userType });
+    const cacheKey = cacheConfig.generateKey('PRODUCT', { slug, userType, storefront });
 
     //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
@@ -136,30 +187,28 @@ const getProductBySlug = async (req, res) => {
       return res.json(cachedData);
     }
     
-    const product = await Product.findOne({ 
-      slug: String(slug).toLowerCase(), 
-      status: 'active' 
-    }).populate('category');
+    const product = await Product.findOne(
+      mongoCatalogAnd(storefront, { slug: String(slug).toLowerCase() })
+    ).populate('category');
 
     if (!product) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Product not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
       });
     }
-    
-    const productResponse = {
-      ...product.toObject(),
-      variants: product.variants.map(variant => ({
-        ...variant.toObject(),
-        price: getVariantPrice(variant, userType)
-      }))
-    };
 
-    const responseData = { 
-      success: true, 
+    const productResponse = decorateProductForStorefront(
+      product.toObject(),
+      userType,
+      storefront
+    );
+
+    const responseData = {
+      success: true,
       product: productResponse,
-      userType: userType
+      userType,
+      storefront
     };
 
     //  STORE IN CACHE
@@ -195,9 +244,9 @@ const searchProducts = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
     const skip = (page - 1) * limit;
     const userType = req.userType || 'user';
+    const storefront = storefrontFrom(req);
 
-    //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType });
+    const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType, storefront });
 
     //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
@@ -207,10 +256,7 @@ const searchProducts = async (req, res) => {
       return res.json(cachedData);
     }
 
-    const filters = { 
-      status: 'active', 
-      $text: { $search: q } 
-    };
+    const filters = mongoCatalogAnd(storefront, { $text: { $search: q } });
 
     const total = await Product.countDocuments(filters);
     const products = await Product.find(filters, { score: { $meta: 'textScore' } })
@@ -220,21 +266,18 @@ const searchProducts = async (req, res) => {
       .populate('category')
       .lean({ virtuals: true });
 
-    const productsWithData = products.map(product => ({
-      ...product,
-      variants: product.variants.map(variant => ({
-        ...variant,
-        price: getVariantPrice(variant, userType)
-      }))
-    }));
+    const productsWithData = products.map((product) =>
+      decorateProductForStorefront(product, userType, storefront)
+    );
 
-    const responseData = { 
-      success: true, 
-      total, 
-      page, 
-      limit, 
+    const responseData = {
+      success: true,
+      total,
+      page,
+      limit,
       products: productsWithData,
-      userType: userType
+      userType,
+      storefront
     };
 
     //  STORE IN CACHE
@@ -263,9 +306,15 @@ const getProductsByCategory = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
     const skip = (page - 1) * limit;
     const userType = req.userType || 'user';
+    const storefront = storefrontFrom(req);
 
-    //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('PRODUCT', { categorySlug: slug, page, limit, userType });
+    const cacheKey = cacheConfig.generateKey('PRODUCT', {
+      categorySlug: slug,
+      page,
+      limit,
+      userType,
+      storefront
+    });
 
     //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
@@ -286,10 +335,7 @@ const getProductsByCategory = async (req, res) => {
       });
     }
 
-    const filters = { 
-      status: 'active', 
-      category: category._id 
-    };
+    const filters = mongoCatalogAnd(storefront, { category: category._id });
 
     const total = await Product.countDocuments(filters);
     const products = await Product.find(filters)
@@ -299,22 +345,19 @@ const getProductsByCategory = async (req, res) => {
       .populate('category')
       .lean({ virtuals: true });
 
-    const productsWithData = products.map(product => ({
-      ...product,
-      variants: product.variants.map(variant => ({
-        ...variant,
-        price: getVariantPrice(variant, userType)
-      }))
-    }));
+    const productsWithData = products.map((product) =>
+      decorateProductForStorefront(product, userType, storefront)
+    );
 
-    const responseData = { 
-      success: true, 
-      total, 
-      page, 
-      limit, 
-      products: productsWithData, 
+    const responseData = {
+      success: true,
+      total,
+      page,
+      limit,
+      products: productsWithData,
       category,
-      userType: userType
+      userType,
+      storefront
     };
 
     //  STORE IN CACHE
@@ -422,19 +465,16 @@ const getFeaturedProducts = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
     const skip = (page - 1) * limit;
     const userType = req.userType || 'user';
-    
-    //  DEBUG - Check what's coming from query
-    console.log(' Query params:', req.query);
-    console.log(' Page:', page, 'Limit:', limit, 'Skip:', skip);
+    const storefront = storefrontFrom(req);
 
-    //  Add timestamp to bypass cache for debugging
     const bypassCache = req.query._cb === '1';
-    
-    const cacheKey = cacheConfig.generateKey('PRODUCT', { 
-      featured: true, 
-      page, 
-      limit, 
-      userType 
+
+    const cacheKey = cacheConfig.generateKey('PRODUCT', {
+      featured: true,
+      page,
+      limit,
+      userType,
+      storefront
     });
 
     //  Skip cache if bypass flag is set
@@ -449,10 +489,8 @@ const getFeaturedProducts = async (req, res) => {
       return res.json(cachedData);
     }
 
-    const filters = { status: 'active', isFeatured: true };
+    const filters = mongoCatalogAnd(storefront, { isFeatured: true });
     const total = await Product.countDocuments(filters);
-
-    console.log(`📊 Fetching featured products - Page: ${page}, Limit: ${limit}, Skip: ${skip}`);
 
     const products = await Product.find(filters)
       .sort({ createdAt: -1 })
@@ -461,16 +499,12 @@ const getFeaturedProducts = async (req, res) => {
       .populate('category')
       .lean({ virtuals: true });
 
-    const productsWithData = products.map(product => ({
-      ...product,
-      variants: product.variants.map(variant => ({
-        ...variant,
-        price: getVariantPrice(variant, userType)
-      }))
-    }));
+    const productsWithData = products.map((product) =>
+      decorateProductForStorefront(product, userType, storefront)
+    );
 
-    const responseData = { 
-      success: true, 
+    const responseData = {
+      success: true,
       pagination: {
         total,
         page,
@@ -480,7 +514,8 @@ const getFeaturedProducts = async (req, res) => {
         hasPrevPage: page > 1
       },
       products: productsWithData,
-      userType: userType
+      userType,
+      storefront
     };
 
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_FEATURED);
@@ -503,13 +538,17 @@ const getFeaturedProducts = async (req, res) => {
 // =============================================
 const getRelatedProducts = async (req, res) => {
   try {
-      
     const { slug } = req.params;
     const limit = Math.max(1, parseInt(req.query.limit) || 8);
     const userType = req.userType || 'user';
+    const storefront = storefrontFrom(req);
 
-    //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('PRODUCT', { related: slug, limit, userType });
+    const cacheKey = cacheConfig.generateKey('PRODUCT', {
+      related: slug,
+      limit,
+      userType,
+      storefront
+    });
 
     //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
@@ -519,40 +558,37 @@ const getRelatedProducts = async (req, res) => {
       return res.json(cachedData);
     }
 
-    const product = await Product.findOne({ 
-      slug: String(slug).toLowerCase(), 
-      status: 'active' 
-    });
-    
+    const product = await Product.findOne(
+      mongoCatalogAnd(storefront, { slug: String(slug).toLowerCase() })
+    );
+
     if (!product) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Product not found' 
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
       });
     }
 
-    const related = await Product.find({
-      _id: { $ne: product._id },
-      category: product.category,
-      status: 'active'
-    })
+    const related = await Product.find(
+      mongoCatalogAnd(storefront, {
+        _id: { $ne: product._id },
+        category: product.category
+      })
+    )
       .sort({ createdAt: -1 })
       .limit(limit)
       .populate('category')
       .lean({ virtuals: true });
 
-    const relatedWithData = related.map(rel => ({
-      ...rel,
-      variants: rel.variants.map(variant => ({
-        ...variant,
-        price: getVariantPrice(variant, userType)
-      }))
-    }));
+    const relatedWithData = related.map((rel) =>
+      decorateProductForStorefront(rel, userType, storefront)
+    );
 
-    const responseData = { 
-      success: true, 
+    const responseData = {
+      success: true,
       related: relatedWithData,
-      userType: userType
+      userType,
+      storefront
     };
 
     //  STORE IN CACHE
@@ -577,26 +613,30 @@ const getRelatedProducts = async (req, res) => {
 const getProductDetails = async (req, res) => {
   try {
     const { id } = req.params;
+    const storefront = storefrontFrom(req);
     const product = await Product.findById(id).populate('category');
 
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
 
+    if (!isProductListedOnStorefront(product, storefront)) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
     const userType = req.userType || 'user';
 
-    const productResponse = {
-      ...product.toObject(),
-      variants: product.variants.map(variant => ({
-        ...variant.toObject(),
-        price: getVariantPrice(variant, userType)
-      }))
-    };
+    const productResponse = decorateProductForStorefront(
+      product.toObject(),
+      userType,
+      storefront
+    );
 
     res.status(200).json({
       success: true,
       product: productResponse,
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (error) {

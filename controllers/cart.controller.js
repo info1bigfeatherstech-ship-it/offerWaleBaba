@@ -3,6 +3,20 @@ const Cart = require('../models/cart');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const Address = require('../models/Address');
+const {
+  mongoCatalogAnd,
+  isProductListedOnStorefront,
+  isVariantListedOnStorefront
+} = require('../utils/storefrontCatalog');
+
+const CART_PRODUCT_SELECT =
+  'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status channelStatus createdAt updatedAt variants';
+
+const storefrontOrDefault = (req) => req.storefront || 'ecomm';
+
+function firstListedVariant(product, storefront) {
+  return (product.variants || []).find((v) => isVariantListedOnStorefront(v, storefront)) || null;
+}
 
 // Helper: find variant object inside product document
 const findVariant = (product, variantId) => {
@@ -24,15 +38,20 @@ const isSaleValid = (price) => {
 // Helper: Get user-specific pricing for a variant
 const getUserSpecificPrice = (variant, userType) => {
   if (userType === 'wholesaler') {
+    const wholesaleBase = Number(variant.price?.wholesaleBase || 0);
+    const wholesaleSaleRaw = variant.price?.wholesaleSale;
+    const wholesaleSale = wholesaleSaleRaw != null ? Number(wholesaleSaleRaw) : null;
     return {
-      base: variant.price?.wholesaleBase || variant.price?.base || 0,
-      sale: variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0,
+      base: wholesaleBase,
+      sale: Number.isFinite(wholesaleSale) ? wholesaleSale : null,
       moq: variant.minimumOrderQuantity || 1
     };
   }
+  const retailSaleRaw = variant.price?.sale;
+  const retailSale = retailSaleRaw != null ? Number(retailSaleRaw) : null;
   return {
     base: variant.price?.base || 0,
-    sale: variant.price?.sale || null,
+    sale: Number.isFinite(retailSale) ? retailSale : null,
     moq: 1
   };
 };
@@ -135,17 +154,21 @@ const getcart = async (req, res) => {
   const userType = req.userType || 'user';
 
   try {
+    const storefront = storefrontOrDefault(req);
+
     const cart = await Cart.findOne({ userId })
-      .populate({ 
-        path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
-      }).lean();
+      .populate({
+        path: 'items.productId',
+        select: CART_PRODUCT_SELECT
+      })
+      .lean();
 
     if (!cart) {
       return res.json({ 
         success: true, 
         cart: { items: [], totalAmount: 0 },
-        userType: userType
+        userType: userType,
+        storefront
       });
     }
 
@@ -162,7 +185,7 @@ const getcart = async (req, res) => {
       }
       
       if (!variant) {
-        variant = product.variants?.find(v => v.isActive);
+        variant = firstListedVariant(product, storefront);
       }
       
       if (!variant) continue;
@@ -200,7 +223,8 @@ const getcart = async (req, res) => {
         createdAt: cart.createdAt,
         updatedAt: cart.updatedAt
       },
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {
@@ -218,6 +242,7 @@ const getcart = async (req, res) => {
 const addTocart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
+  const storefront = storefrontOrDefault(req);
   const { productId, productSlug, variantId, quantity = 1 } = req.body;
 
   if (!userId) {
@@ -231,12 +256,11 @@ const addTocart = async (req, res) => {
     // Resolve product
     let product;
     if (productId && mongoose.Types.ObjectId.isValid(productId)) {
-      product = await Product.findById(productId).select('name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants');
+      product = await Product.findById(productId).select(CART_PRODUCT_SELECT);
     } else if (productSlug) {
-      product = await Product.findOne({ 
-        slug: String(productSlug).toLowerCase(), 
-        status: 'active' 
-      }).select('name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants');
+      product = await Product.findOne(
+        mongoCatalogAnd(storefront, { slug: String(productSlug).toLowerCase() })
+      ).select(CART_PRODUCT_SELECT);
     }
 
     if (!product) {
@@ -246,7 +270,7 @@ const addTocart = async (req, res) => {
       });
     }
     
-    if (product.status !== 'active') {
+    if (!isProductListedOnStorefront(product, storefront)) {
       return res.status(400).json({ 
         success: false, 
         message: 'Product not active' 
@@ -258,14 +282,14 @@ const addTocart = async (req, res) => {
     
     if (variantId) {
       variant = findVariant(product, variantId);
-      if (!variant) {
+      if (!variant || !isVariantListedOnStorefront(variant, storefront)) {
         return res.status(400).json({ 
           success: false, 
           message: 'Invalid variantId. Variant not found or inactive.' 
         });
       }
     } else {
-      variant = (product.variants || []).find(v => v.isActive) || null;
+      variant = firstListedVariant(product, storefront);
       if (!variant) {
         return res.status(404).json({ 
           success: false, 
@@ -352,9 +376,9 @@ const addTocart = async (req, res) => {
 
     // Return cart with full data
     const updatedcart = await Cart.findOne({ userId })
-      .populate({ 
-        path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+      .populate({
+        path: 'items.productId',
+        select: CART_PRODUCT_SELECT
       });
 
     // Format response
@@ -368,7 +392,7 @@ const addTocart = async (req, res) => {
         varObj = prod.variants?.find(v => String(v._id) === String(item.variantId));
       }
       if (!varObj) {
-        varObj = prod.variants?.find(v => v.isActive);
+        varObj = firstListedVariant(prod, storefront);
       }
       if (!varObj) continue;
       
@@ -394,7 +418,8 @@ const addTocart = async (req, res) => {
         createdAt: updatedcart.createdAt,
         updatedAt: updatedcart.updatedAt
       },
-      userType: userType
+      userType,
+      storefront
     });
     
   } catch (err) {
@@ -412,6 +437,7 @@ const addTocart = async (req, res) => {
 const updatecartItem = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
+  const storefront = storefrontOrDefault(req);
   const { productId, variantId, quantity } = req.body;
 
   if (!userId) {
@@ -460,7 +486,7 @@ const updatecartItem = async (req, res) => {
       const updatedcart = await Cart.findOne({ userId })
         .populate({ 
           path: 'items.productId', 
-          select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+          select: CART_PRODUCT_SELECT
         });
       
       // Format response
@@ -469,7 +495,7 @@ const updatecartItem = async (req, res) => {
         const prod = it.productId;
         if (!prod) continue;
         let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
-        if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+        if (!varObj) varObj = firstListedVariant(prod, storefront);
         if (!varObj) continue;
         const formatted = formatcartItem(it, prod, varObj, userType);
         if (formatted) formattedItems.push(formatted);
@@ -490,14 +516,15 @@ const updatecartItem = async (req, res) => {
           totalDiscount: totalDisc,
           totalDiscountPercentage: totalDiscPerc
         },
-        userType: userType
+        userType,
+        storefront
       });
     }
 
     // Re-check live stock and pricing
-    const product = await Product.findById(productId).select('variants name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt');
+    const product = await Product.findById(productId).select(CART_PRODUCT_SELECT);
     const variant = findVariant(product, variantId);
-    if (!variant) {
+    if (!variant || !isProductListedOnStorefront(product, storefront) || !isVariantListedOnStorefront(variant, storefront)) {
       return res.status(404).json({ 
         success: false, 
         message: 'Variant not found' 
@@ -545,7 +572,7 @@ const updatecartItem = async (req, res) => {
     const populatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: CART_PRODUCT_SELECT
       });
 
     // Format response
@@ -554,7 +581,7 @@ const updatecartItem = async (req, res) => {
       const prod = it.productId;
       if (!prod) continue;
       let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
-      if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+      if (!varObj) varObj = firstListedVariant(prod, storefront);
       if (!varObj) continue;
       const formatted = formatcartItem(it, prod, varObj, userType);
       if (formatted) formattedItems.push(formatted);
@@ -575,7 +602,8 @@ const updatecartItem = async (req, res) => {
         totalDiscount: totalDisc,
         totalDiscountPercentage: totalDiscPerc
       },
-      userType: userType
+      userType,
+      storefront
     });
     
   } catch (err) {
@@ -593,6 +621,7 @@ const updatecartItem = async (req, res) => {
 const mergecart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
+  const storefront = storefrontOrDefault(req);
   const { items } = req.body;
 
   if (!userId) {
@@ -617,12 +646,11 @@ const mergecart = async (req, res) => {
       const { productId, variantId, quantity } = incoming;
       if (!productId || !variantId || quantity <= 0) continue;
 
-      // Check if product exists
-      const product = await Product.findById(productId).select('variants status');
-      if (!product || product.status !== 'active') continue;
+      const product = await Product.findById(productId).select(CART_PRODUCT_SELECT);
+      if (!product || !isProductListedOnStorefront(product, storefront)) continue;
 
       const variant = product.variants.find(v => String(v._id) === String(variantId));
-      if (!variant || !variant.isActive) continue;
+      if (!variant || !isVariantListedOnStorefront(variant, storefront)) continue;
 
       let qty = Number(quantity);
       if (qty <= 0) continue;
@@ -662,7 +690,7 @@ const mergecart = async (req, res) => {
     const populatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: CART_PRODUCT_SELECT
       });
 
     const formattedItems = [];
@@ -670,7 +698,7 @@ const mergecart = async (req, res) => {
       const prod = it.productId;
       if (!prod) continue;
       let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
-      if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+      if (!varObj) varObj = firstListedVariant(prod, storefront);
       if (!varObj) continue;
       const formatted = formatcartItem(it, prod, varObj, userType);
       if (formatted) formattedItems.push(formatted);
@@ -691,7 +719,8 @@ const mergecart = async (req, res) => {
         totalDiscount: totalDisc,
         totalDiscountPercentage: totalDiscPerc
       } : { items: [], totalAmount: 0 },
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {
@@ -710,6 +739,7 @@ const mergecart = async (req, res) => {
 const removecartItem = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
+  const storefront = storefrontOrDefault(req);
   const { productId, variantId } = req.body;
 
   try {
@@ -732,7 +762,7 @@ const removecartItem = async (req, res) => {
     const populatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: CART_PRODUCT_SELECT
       });
 
     const formattedItems = [];
@@ -741,7 +771,7 @@ const removecartItem = async (req, res) => {
         const prod = it.productId;
         if (!prod) continue;
         let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
-        if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+        if (!varObj) varObj = firstListedVariant(prod, storefront);
         if (!varObj) continue;
         const formatted = formatcartItem(it, prod, varObj, userType);
         if (formatted) formattedItems.push(formatted);
@@ -763,7 +793,8 @@ const removecartItem = async (req, res) => {
         totalDiscount: totalDisc,
         totalDiscountPercentage: totalDiscPerc
       } : { items: [], totalAmount: 0 },
-      userType: userType
+      userType,
+      storefront
     });
     
   } catch (err) {
@@ -781,6 +812,7 @@ const removecartItem = async (req, res) => {
 const bulkRemove = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
+  const storefront = storefrontOrDefault(req);
   const { items } = req.body;
 
   try {
@@ -805,7 +837,7 @@ const bulkRemove = async (req, res) => {
     const populatedcart = await Cart.findOne({ userId })
       .populate({ 
         path: 'items.productId', 
-        select: 'name slug title description brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt variants'
+        select: CART_PRODUCT_SELECT
       });
 
     const formattedItems = [];
@@ -814,7 +846,7 @@ const bulkRemove = async (req, res) => {
         const prod = it.productId;
         if (!prod) continue;
         let varObj = prod.variants?.find(v => String(v._id) === String(it.variantId));
-        if (!varObj) varObj = prod.variants?.find(v => v.isActive);
+        if (!varObj) varObj = firstListedVariant(prod, storefront);
         if (!varObj) continue;
         const formatted = formatcartItem(it, prod, varObj, userType);
         if (formatted) formattedItems.push(formatted);
@@ -836,7 +868,8 @@ const bulkRemove = async (req, res) => {
         totalDiscount: totalDisc,
         totalDiscountPercentage: totalDiscPerc
       } : { items: [], totalAmount: 0 },
-      userType: userType
+      userType,
+      storefront
     });
     
   } catch (err) {
@@ -854,6 +887,7 @@ const bulkRemove = async (req, res) => {
 const clearcart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
+  const storefront = storefrontOrDefault(req);
 
   try {
     const cart = await Cart.findOne({ userId });
@@ -862,7 +896,8 @@ const clearcart = async (req, res) => {
         success: true, 
         message: 'cart already empty',
         cart: { items: [], totalAmount: 0 },
-        userType: userType
+        userType,
+        storefront
       });
     }
 
@@ -875,7 +910,8 @@ const clearcart = async (req, res) => {
       success: true,
       message: 'cart cleared successfully',
       cart: { items: [], totalAmount: 0 },
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {

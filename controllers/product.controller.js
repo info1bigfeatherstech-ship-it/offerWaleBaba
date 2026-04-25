@@ -15,7 +15,14 @@ const path = require('path');
 const axios = require('axios');
 const AdmZip = require("adm-zip");
 const { Parser } = require("json2csv");   //  ADD THIS
-const {generateSEOData}=require("../utils/seoUtils");
+const { generateSEOData } = require("../utils/seoUtils");
+const {
+  deriveProductChannelStatusFromLegacy,
+  deriveVariantChannelVisibilityFromLegacy,
+  mergeProductChannelStatus,
+  mergeVariantChannelVisibility,
+  hasWholesalePricingConfig
+} = require("../utils/storefrontCatalog");
 
 
 // =============================================
@@ -63,6 +70,15 @@ function parseBoolean(value) {
     return value === 1;
   }
   return false;
+}
+
+function hasActiveWholesaleVariantForCatalog(doc) {
+  if (!doc || !Array.isArray(doc.variants)) return false;
+  return doc.variants.some((v) => {
+    const ws = v?.channelVisibility?.wholesale;
+    const isVisibleWholesale = ws != null ? ws === "active" : v.isActive !== false;
+    return isVisibleWholesale && hasWholesalePricingConfig(v);
+  });
 }
 
 const PRODUCT_CODE_REGEX = /^([A-Z0-9]+)-(\d{2})$/;
@@ -744,6 +760,8 @@ const createProduct = async (req, res) => {
         }
       }
 
+      const isActiveFlag = v.isActive !== false;
+      const wholesaleEligible = wholesale && Number(priceObj.wholesaleBase) > 0;
       variants.push({
         sku: skuVal,
         productCode,
@@ -755,7 +773,12 @@ const createProduct = async (req, res) => {
         minimumOrderQuantity: moq,
         inventory: inventoryObj,
         images: variantImages,
-        isActive: v.isActive !== false
+        isActive: isActiveFlag,
+        channelVisibility: deriveVariantChannelVisibilityFromLegacy(
+          isActiveFlag,
+          v.channelVisibility,
+          { isWholesaleEligible: wholesaleEligible }
+        )
       });
     }
 
@@ -814,6 +837,15 @@ const createProduct = async (req, res) => {
     // =============================
     const finalIsFragile = isFragile === true || isFragile === "true";
 
+    const resolvedStatus =
+      status && ["draft", "active", "archived"].includes(String(status).toLowerCase())
+        ? String(status).toLowerCase()
+        : "draft";
+    const channelStatus = deriveProductChannelStatusFromLegacy(
+      resolvedStatus,
+      req.body.channelStatus
+    );
+
     // =============================
     //  CREATE PRODUCT
     // =============================
@@ -824,7 +856,8 @@ const createProduct = async (req, res) => {
       description: description || "",
       category: existingCategory._id,
       brand: brand || "Generic",
-      status,
+      status: resolvedStatus,
+      channelStatus,
       isFeatured,
       soldInfo: parsedSoldInfo || { enabled: false, count: 0 },
       fomo: parsedFomo || { enabled: false, type: "viewing_now", viewingNow: 0 },
@@ -849,6 +882,17 @@ const createProduct = async (req, res) => {
       gstRate: finalgstRate,
       isFragile: finalIsFragile
     });
+
+    if (
+      product.channelStatus?.wholesale === "active" &&
+      !hasActiveWholesaleVariantForCatalog(product)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Cannot enable wholesale storefront: no variant has wholesale=true, valid wholesaleBase (>0), and wholesale visibility active. Update at least one variant first."
+      });
+    }
 
     // =============================
     //  AUTO-GENERATE SEO DATA
@@ -2203,6 +2247,7 @@ async function buildCompleteVariant(row, productName, images) {
   const random = Math.floor(Math.random() * 10000);
   const sku = row.sku?.trim() || `SKU-${productCode}`;
   
+  const wholesaleEligible = wholesale && Number(wholesaleBase) > 0;
   return {
     sku,
     productCode,
@@ -2222,6 +2267,11 @@ async function buildCompleteVariant(row, productName, images) {
     },
     images: images,
     isActive: true,
+    channelVisibility: deriveVariantChannelVisibilityFromLegacy(
+      true,
+      null,
+      { isWholesaleEligible: wholesaleEligible }
+    )
   };
 }
 
@@ -2487,6 +2537,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
               variants: [newVariant]
             });
             
+            const rowStatus = row.status?.toLowerCase() || "active";
             product = new Product({
               name: row.name,
               title: row.title || row.name,
@@ -2494,7 +2545,8 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
               description: row.description || "",
               category: categoryDoc._id,
               brand: row.brand || "Generic",
-              status: row.status?.toLowerCase() || "active",
+              status: rowStatus,
+              channelStatus: deriveProductChannelStatusFromLegacy(rowStatus, null),
               isFeatured: parseBoolean(row.isfeatured),
               attributes: productAttributes,
               variants: [newVariant],
@@ -3357,6 +3409,11 @@ const updateProduct = async (req, res) => {
     if (updates.status !== undefined) {
       doc.status = updates.status;
     }
+    if (updates.channelStatus !== undefined) {
+      const parsed = parseIfString(updates.channelStatus, {});
+      doc.channelStatus = mergeProductChannelStatus(doc, parsed);
+      doc.markModified("channelStatus");
+    }
     if (updates.isFeatured !== undefined) {
       doc.isFeatured =
         updates.isFeatured === true ||
@@ -3476,6 +3533,22 @@ const updateProduct = async (req, res) => {
         updates.variantIsActive !== undefined ? updates.variantIsActive : updates.isActive;
       if (activeFlag !== undefined) {
         variant.isActive = parseBoolean(activeFlag);
+      }
+
+      if (updates.channelVisibility !== undefined) {
+        const parsed = parseIfString(updates.channelVisibility, {});
+        if (
+          parsed?.wholesale === "active" &&
+          !hasWholesalePricingConfig(variant)
+        ) {
+          return res.status(400).json({
+            success: false,
+            message:
+              "Cannot set wholesale visibility active for this variant. Set wholesale=true and wholesaleBase (>0) first."
+          });
+        }
+        variant.channelVisibility = mergeVariantChannelVisibility(variant, parsed);
+        doc.markModified("variants");
       }
 
       if (updates.attributes !== undefined) {
@@ -3622,6 +3695,17 @@ const updateProduct = async (req, res) => {
         gstRate: doc.gstRate
       };
       doc.seo = generateSEOData(productDataForSEO);
+    }
+
+    if (
+      doc.channelStatus?.wholesale === "active" &&
+      !hasActiveWholesaleVariantForCatalog(doc)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Wholesale storefront is active but no eligible wholesale variant is available. Add/update at least one variant with wholesale=true, wholesaleBase (>0), and wholesale visibility active."
+      });
     }
 
     recomputeProductAggregates(doc);

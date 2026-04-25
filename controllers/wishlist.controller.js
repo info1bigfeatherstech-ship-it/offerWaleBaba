@@ -1,6 +1,21 @@
 const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
 const Cart = require('../models/cart');
+const {
+  mongoCatalogAnd,
+  mongoCatalogListFilter,
+  isProductListedOnStorefront,
+  isVariantListedOnStorefront
+} = require('../utils/storefrontCatalog');
+
+const WISHLIST_PRODUCT_SELECT =
+  'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status channelStatus createdAt updatedAt';
+
+const storefrontOrDefault = (req) => req.storefront || 'ecomm';
+
+function firstListedVariant(product, storefront) {
+  return (product.variants || []).find((v) => isVariantListedOnStorefront(v, storefront)) || null;
+}
 
 // ✅ HELPER: Calculate discount percentage
 const calculateDiscountPercentage = (base, sale) => {
@@ -11,8 +26,9 @@ const calculateDiscountPercentage = (base, sale) => {
 // ✅ HELPER: Get variant price based on user type with virtuals
 const getVariantPrice = (variant, userType) => {
   if (userType === 'wholesaler') {
-    const base = variant.price?.wholesaleBase || variant.price?.base || 0;
-    const sale = variant.price?.wholesaleSale || variant.price?.wholesaleBase || variant.price?.base || 0;
+    const base = Number(variant.price?.wholesaleBase || 0);
+    const wholesaleSaleRaw = variant.price?.wholesaleSale;
+    const sale = wholesaleSaleRaw != null ? Number(wholesaleSaleRaw) : null;
     const isSaleActive = sale > 0 && sale < base;
     const discountPercentage = isSaleActive ? calculateDiscountPercentage(base, sale) : 0;
     
@@ -27,8 +43,9 @@ const getVariantPrice = (variant, userType) => {
   }
   
   // Normal user
-  const base = variant.price?.base || 0;
-  const sale = variant.price?.sale || null;
+  const base = Number(variant.price?.base || 0);
+  const retailSaleRaw = variant.price?.sale;
+  const sale = retailSaleRaw != null ? Number(retailSaleRaw) : null;
   const isSaleActive = sale && sale > 0 && sale < base;
   const discountPercentage = isSaleActive ? calculateDiscountPercentage(base, sale) : 0;
   
@@ -76,21 +93,22 @@ const formatVariantWithVirtuals = (variant, userType) => {
 };
 
 // ✅ HELPER: Format wishlist item response (SAME AS CART RESPONSE)
-const formatWishlistItem = (item, userType) => {
+const formatWishlistItem = (item, userType, storefront) => {
   const product = item.productId;
   if (!product) return null;
-  
-  // Find the specific variant
+
   let variant = null;
   if (item.variantId) {
-    variant = product.variants?.find(v => String(v._id) === String(item.variantId));
+    variant = product.variants?.find((v) => String(v._id) === String(item.variantId));
+    if (variant && !isVariantListedOnStorefront(variant, storefront)) {
+      return null;
+    }
   }
-  
-  // If no variant found, use first active variant
+
   if (!variant) {
-    variant = (product.variants || []).find(v => v.isActive);
+    variant = firstListedVariant(product, storefront);
   }
-  
+
   if (!variant) return null;
   
   // ✅ Format variant with all virtuals
@@ -116,25 +134,26 @@ const getWishlist = async (req, res) => {
   try {
     const userId = req.userId;
     const userType = req.userType || 'user';
+    const storefront = storefrontOrDefault(req);
 
     const wishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+        select: WISHLIST_PRODUCT_SELECT
       });
 
     if (!wishlist) {
       return res.json({
         success: true,
         wishlist: { products: [] },
-        userType: userType
+        userType,
+        storefront
       });
     }
 
-    // ✅ Format each item with full product and variant data
     const formattedProducts = wishlist.products
-      .map(item => formatWishlistItem(item, userType))
-      .filter(item => item !== null);
+      .map((item) => formatWishlistItem(item, userType, storefront))
+      .filter((item) => item !== null);
 
     return res.json({
       success: true,
@@ -145,7 +164,8 @@ const getWishlist = async (req, res) => {
         createdAt: wishlist.createdAt,
         updatedAt: wishlist.updatedAt
       },
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {
@@ -165,6 +185,7 @@ const addToWishlist = async (req, res) => {
     const userId = req.userId;
     const { productSlug, variantId } = req.body;
     const userType = req.userType || 'user';
+    const storefront = storefrontOrDefault(req);
 
     if (!productSlug) {
       return res.status(400).json({ 
@@ -173,10 +194,9 @@ const addToWishlist = async (req, res) => {
       });
     }
 
-    const product = await Product.findOne({ 
-      slug: productSlug.toLowerCase(), 
-      status: 'active' 
-    }).select('name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt');
+    const product = await Product.findOne(
+      mongoCatalogAnd(storefront, { slug: productSlug.toLowerCase() })
+    ).select(WISHLIST_PRODUCT_SELECT);
 
     if (!product) {
       return res.status(404).json({ 
@@ -185,27 +205,24 @@ const addToWishlist = async (req, res) => {
       });
     }
 
-    // Check if variant exists
     let chosenVariantId = variantId;
     if (chosenVariantId) {
-      const variantExists = product.variants.some(v => 
-        String(v._id) === String(chosenVariantId) && v.isActive
-      );
-      if (!variantExists) {
+      const v = product.variants.find((x) => String(x._id) === String(chosenVariantId));
+      if (!v || !isVariantListedOnStorefront(v, storefront)) {
         return res.status(400).json({ 
           success: false, 
           message: 'Variant not found or inactive' 
         });
       }
     } else {
-      const firstActive = product.variants.find(v => v.isActive);
-      if (!firstActive) {
+      const first = firstListedVariant(product, storefront);
+      if (!first) {
         return res.status(400).json({ 
           success: false, 
           message: 'No active variant available' 
         });
       }
-      chosenVariantId = firstActive._id;
+      chosenVariantId = first._id;
     }
 
     // Check if already in wishlist
@@ -239,12 +256,12 @@ const addToWishlist = async (req, res) => {
     const updatedWishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+        select: WISHLIST_PRODUCT_SELECT
       });
 
     const formattedProducts = updatedWishlist.products
-      .map(item => formatWishlistItem(item, userType))
-      .filter(item => item !== null);
+      .map((item) => formatWishlistItem(item, userType, storefront))
+      .filter((item) => item !== null);
 
     return res.json({ 
       success: true, 
@@ -256,7 +273,8 @@ const addToWishlist = async (req, res) => {
         createdAt: updatedWishlist.createdAt,
         updatedAt: updatedWishlist.updatedAt
       },
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {
@@ -276,6 +294,7 @@ const removeFromWishlist = async (req, res) => {
     const { productSlug } = req.params;
     const userId = req.userId;
     const userType = req.userType || 'user';
+    const storefront = storefrontOrDefault(req);
 
     if (!productSlug) {
       return res.status(400).json({ 
@@ -285,8 +304,7 @@ const removeFromWishlist = async (req, res) => {
     }
 
     const product = await Product.findOne({
-      slug: productSlug.toLowerCase(),
-      status: 'active'
+      slug: productSlug.toLowerCase()
     }).select('_id');
 
     if (!product) {
@@ -305,20 +323,21 @@ const removeFromWishlist = async (req, res) => {
     const updatedWishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+        select: WISHLIST_PRODUCT_SELECT
       });
 
     if (!updatedWishlist) {
       return res.json({ 
         success: true, 
         wishlist: { products: [] },
-        userType: userType
+        userType,
+        storefront
       });
     }
 
     const formattedProducts = updatedWishlist.products
-      .map(item => formatWishlistItem(item, userType))
-      .filter(item => item !== null);
+      .map((item) => formatWishlistItem(item, userType, storefront))
+      .filter((item) => item !== null);
 
     return res.json({
       success: true,
@@ -329,7 +348,8 @@ const removeFromWishlist = async (req, res) => {
         createdAt: updatedWishlist.createdAt,
         updatedAt: updatedWishlist.updatedAt
       },
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {
@@ -347,6 +367,7 @@ const removeFromWishlist = async (req, res) => {
 const moveToCart = async (req, res) => {
   const userId = req.userId;
   const userType = req.userType || 'user';
+  const storefront = storefrontOrDefault(req);
   const { productIds = [], moveAll = false } = req.body;
 
   if (!userId)
@@ -371,16 +392,16 @@ const moveToCart = async (req, res) => {
     if (!itemsToMove.length)
       return res.status(400).json({ success: false, message: 'No items selected' });
 
-    // Get full product details
-    const productIdsList = itemsToMove.map(item => item.productId);
-    const products = await Product.find({ 
-      _id: { $in: productIdsList },
-      status: 'active'
-    }).select('name slug variants images brand');
+    const productIdsList = itemsToMove.map((item) => item.productId);
+    const rawProducts = await Product.find({
+      _id: { $in: productIdsList }
+    }).select('name slug variants images brand channelStatus status');
 
     const productMap = new Map();
-    products.forEach(product => {
-      productMap.set(String(product._id), product);
+    rawProducts.forEach((product) => {
+      if (isProductListedOnStorefront(product, storefront)) {
+        productMap.set(String(product._id), product);
+      }
     });
 
     let cartDoc = await Cart.findOne({ userId });
@@ -393,12 +414,12 @@ const moveToCart = async (req, res) => {
       // Find the variant
       let variant = null;
       if (item.variantId) {
-        variant = product.variants.find(v => String(v._id) === String(item.variantId));
+        variant = product.variants.find((v) => String(v._id) === String(item.variantId));
       }
       if (!variant) {
-        variant = product.variants.find(v => v.isActive);
+        variant = firstListedVariant(product, storefront);
       }
-      if (!variant) continue;
+      if (!variant || !isVariantListedOnStorefront(variant, storefront)) continue;
 
       // Calculate price based on user type (with discount)
       let basePrice, salePrice, isSaleActive, discountPercentage;
@@ -461,7 +482,8 @@ const moveToCart = async (req, res) => {
       success: true,
       message: 'Wishlist items moved to cart',
       cart: cartDoc,
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {
@@ -476,6 +498,7 @@ const moveToCart = async (req, res) => {
 const mergeWishlist = async (req, res) => {
   try {
     const userId = req.userId;
+    const storefront = storefrontOrDefault(req);
     let { slugs, items } = req.body;
 
     // Handle old format (slugs array)
@@ -510,15 +533,13 @@ const mergeWishlist = async (req, res) => {
       });
     }
 
-    // Fetch all products
-    const slugsList = normalizedItems.map(item => item.slug.toLowerCase());
+    const slugsList = normalizedItems.map((item) => item.slug.toLowerCase());
     const products = await Product.find({
-      slug: { $in: slugsList },
-      status: 'active'
-    }).select('slug variants');
+      $and: [...mongoCatalogListFilter(storefront).$and, { slug: { $in: slugsList } }]
+    }).select('slug variants channelStatus status');
 
     const productMap = new Map();
-    products.forEach(product => {
+    products.forEach((product) => {
       productMap.set(product.slug, product);
     });
 
@@ -531,17 +552,15 @@ const mergeWishlist = async (req, res) => {
       let chosenVariantId = item.variantId;
       
       if (!chosenVariantId) {
-        const firstActive = product.variants.find(v => v.isActive);
-        if (firstActive) {
-          chosenVariantId = firstActive._id;
+        const first = firstListedVariant(product, storefront);
+        if (first) {
+          chosenVariantId = first._id;
         } else {
           continue;
         }
       } else {
-        const variantExists = product.variants.some(v => 
-          String(v._id) === String(chosenVariantId) && v.isActive
-        );
-        if (!variantExists) continue;
+        const v = product.variants.find((x) => String(x._id) === String(chosenVariantId));
+        if (!v || !isVariantListedOnStorefront(v, storefront)) continue;
       }
 
       // Check if already in wishlist
@@ -608,10 +627,10 @@ const removeBulkFromWishlist = async (req, res) => {
       });
     }
 
+    const storefront = storefrontOrDefault(req);
     const products = await Product.find({
-      slug: { $in: slugs.map(s => s.toLowerCase()) },
-      status: "active"
-    }).select("_id");
+      slug: { $in: slugs.map((s) => s.toLowerCase()) }
+    }).select('_id');
 
     const productIds = products.map(p => p._id);
 
@@ -629,20 +648,21 @@ const removeBulkFromWishlist = async (req, res) => {
     const updatedWishlist = await Wishlist.findOne({ userId })
       .populate({
         path: 'products.productId',
-        select: 'name slug variants images brand category seo soldInfo fomo hsnCode gstRate isFragile shipping attributes isFeatured status createdAt updatedAt'
+        select: WISHLIST_PRODUCT_SELECT
       });
 
     if (!updatedWishlist) {
       return res.json({
         success: true,
         wishlist: { products: [] },
-        userType: userType
+        userType,
+        storefront
       });
     }
 
     const formattedProducts = updatedWishlist.products
-      .map(item => formatWishlistItem(item, userType))
-      .filter(item => item !== null);
+      .map((item) => formatWishlistItem(item, userType, storefront))
+      .filter((item) => item !== null);
 
     return res.json({
       success: true,
@@ -653,7 +673,8 @@ const removeBulkFromWishlist = async (req, res) => {
         createdAt: updatedWishlist.createdAt,
         updatedAt: updatedWishlist.updatedAt
       },
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {
@@ -672,6 +693,7 @@ const clearWishlist = async (req, res) => {
   try {
     const userId = req.userId;
     const userType = req.userType || 'user';
+    const storefront = storefrontOrDefault(req);
 
     const wishlist = await Wishlist.findOneAndUpdate(
       { userId },
@@ -683,7 +705,8 @@ const clearWishlist = async (req, res) => {
       success: true,
       message: "Wishlist cleared",
       wishlist: wishlist || { products: [] },
-      userType: userType
+      userType,
+      storefront
     });
 
   } catch (err) {
