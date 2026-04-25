@@ -68,9 +68,9 @@ exports.createOrder = async (req, res) => {
 
     try {
         // Never trust client totals — only address, payment channel, user type, coupon code, Razorpay split mode
-        const { addressId, paymentMethod, userType = 'normal', couponCode, onlinePaymentMode = 'full', quoteId } = req.body || {};
+        const { addressId, paymentMethod, couponCode, onlinePaymentMode = 'full', quoteId } = req.body || {};
         const userId = req.userId;
-        const finalUserType = userType === 'wholesaler' ? 'wholesaler' : 'normal';
+        const finalUserType = req.userType === 'wholesaler' ? 'wholesaler' : 'normal';
         const normalizedPaymentMethod = String(paymentMethod || '').toLowerCase() === 'prepaid' ? 'online' : paymentMethod;
         const normalizedOnlinePaymentMode =
             String(onlinePaymentMode || '').toLowerCase() === 'partial' ? 'advance' : onlinePaymentMode;

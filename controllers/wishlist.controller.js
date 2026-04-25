@@ -13,6 +13,7 @@ const WISHLIST_PRODUCT_SELECT =
 
 const storefrontOrDefault = (req) => req.storefront || 'ecomm';
 
+
 function firstListedVariant(product, storefront) {
   return (product.variants || []).find((v) => isVariantListedOnStorefront(v, storefront)) || null;
 }
@@ -76,11 +77,7 @@ const formatVariantWithVirtuals = (variant, userType) => {
       current: price.current,
       isSaleActive: price.isSaleActive,
       discountPercentage: price.discountPercentage,
-      ...(userType === 'wholesaler' && {
-        wholesaleBase: variant.price?.wholesaleBase,
-        wholesaleSale: variant.price?.wholesaleSale,
-        minimumOrderQuantity: variant.minimumOrderQuantity
-      })
+      minimumOrderQuantity: userType === 'wholesaler' ? (variant.minimumOrderQuantity || 1) : 1
     },
     isActive: variant.isActive,
     wholesale: variant.wholesale || false,
@@ -122,7 +119,7 @@ const formatWishlistItem = (item, userType, storefront) => {
     addedAt: item.addedAt,
     product: {
       ...productObj,
-      variants: [formattedVariant]  // Only the selected variant in wishlist
+      variants: [formattedVariant] // Only the selected variant in wishlist
     }
   };
 };
@@ -441,12 +438,18 @@ const moveToCart = async (req, res) => {
       );
 
       if (existing) {
-        existing.quantity += 1;
+        const qtyToAdd = userType === 'wholesaler'
+          ? Math.max(1, Number(variant.minimumOrderQuantity || 1))
+          : 1;
+        existing.quantity += qtyToAdd;
       } else {
+        const initialQuantity = userType === 'wholesaler'
+          ? Math.max(1, Number(variant.minimumOrderQuantity || 1))
+          : 1;
         cartDoc.items.push({
           productId: product._id,
           variantId: variant._id,
-          quantity: 1,
+          quantity: initialQuantity,
           priceSnapshot: {
             base: basePrice,
             sale: salePrice,

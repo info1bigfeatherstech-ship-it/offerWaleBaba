@@ -142,8 +142,18 @@ function uploadProofBufferToCloudinary(file, folder, publicIdPrefix) {
 
 async function resolveWholesalerProofUrls(req, payload) {
   const files = req.files || {};
-  const idProofFile = Array.isArray(files.idProof) ? files.idProof[0] : null;
-  const businessProofFile = Array.isArray(files.businessAddressProof) ? files.businessAddressProof[0] : null;
+  const pickFirst = (...keys) => {
+    for (const key of keys) {
+      if (Array.isArray(files[key]) && files[key][0]) return files[key][0];
+    }
+    return null;
+  };
+  const idProofFile = pickFirst('idProof', 'idProofUpload', 'idProofFile');
+  const businessProofFile = pickFirst(
+    'businessAddressProof',
+    'businessAddressProofUpload',
+    'businessAddressProofFile'
+  );
 
   const uploads = [];
 

@@ -14,6 +14,7 @@ const CART_PRODUCT_SELECT =
 
 const storefrontOrDefault = (req) => req.storefront || 'ecomm';
 
+
 function firstListedVariant(product, storefront) {
   return (product.variants || []).find((v) => isVariantListedOnStorefront(v, storefront)) || null;
 }
@@ -90,11 +91,10 @@ const formatcartItem = (item, product, variant, userType) => {
     price: {
       base: price.base,
       sale: price.sale,
-      ...(userType === 'wholesaler' && {
-        wholesaleBase: variant.price?.wholesaleBase,
-        wholesaleSale: variant.price?.wholesaleSale,
-        minimumOrderQuantity: variant.minimumOrderQuantity
-      })
+      current: currentPrice,
+      isSaleActive: isSaleValidForVariant,
+      discountPercentage,
+      minimumOrderQuantity: userType === 'wholesaler' ? (variant.minimumOrderQuantity || 1) : 1
     },
     isActive: variant.isActive,
     wholesale: variant.wholesale || false,
@@ -182,6 +182,9 @@ const getcart = async (req, res) => {
       let variant = null;
       if (item.variantId) {
         variant = product.variants?.find(v => String(v._id) === String(item.variantId));
+        if (variant && !isVariantListedOnStorefront(variant, storefront)) {
+          variant = null;
+        }
       }
       
       if (!variant) {
@@ -663,6 +666,10 @@ const mergecart = async (req, res) => {
       if (existing) {
         existing.quantity += qty;
       } else {
+        if (userType === 'wholesaler') {
+          const moq = Number(variant.minimumOrderQuantity || 1);
+          qty = Math.max(qty, moq);
+        }
         const price = getUserSpecificPrice(variant, userType);
         cart.items.push({
           productId,
