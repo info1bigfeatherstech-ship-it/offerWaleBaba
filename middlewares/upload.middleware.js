@@ -98,10 +98,43 @@ const uploadBulkNewProductFiles = multer({
   { name: "imagesZip", maxCount: 1 }
 ]);
 
+// ===============================
+// WHOLESALER PROOFS (PDF / IMAGE)
+// ===============================
+const proofStorage = multer.memoryStorage();
+
+const proofFileFilter = (req, file, cb) => {
+  const allowedMimes = [
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+    'image/jpg'
+  ];
+
+  if (allowedMimes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only PDF, JPG, JPEG, PNG, WEBP files are allowed for proofs'), false);
+  }
+};
+
+const proofUpload = multer({
+  storage: proofStorage,
+  fileFilter: proofFileFilter,
+  limits: { fileSize: 10 * 1024 * 1024 }
+});
+
+const uploadWholesalerProofs = proofUpload.fields([
+  { name: 'idProof', maxCount: 1 },
+  { name: 'businessAddressProof', maxCount: 1 }
+]);
+
 
 module.exports = {
   uploadProductImages,
   uploadSingleImage,
   uploadCSVFile,
-  uploadBulkNewProductFiles
+  uploadBulkNewProductFiles,
+  uploadWholesalerProofs
 };

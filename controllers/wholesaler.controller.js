@@ -2,9 +2,11 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
+const path = require('path');
 const WholesalerDetails = require('../models/WholesalerDetails');
 const User = require('../models/User');
 const { generateOTP, sendOTP } = require('../services/otp.service');
+const { cloudinary } = require('../config/cloudinary.config');
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
@@ -97,6 +99,83 @@ function getRefreshCookieOptions() {
   return options;
 }
 
+function sanitizePublicIdPart(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60) || 'proof';
+}
+
+function uploadProofBufferToCloudinary(file, folder, publicIdPrefix) {
+  return new Promise((resolve, reject) => {
+    const ext = path.extname(String(file.originalname || '')).toLowerCase();
+    const isPdf = file.mimetype === 'application/pdf' || ext === '.pdf';
+    const publicId = `${publicIdPrefix}-${Date.now()}`;
+
+    const uploadOptions = {
+      folder,
+      public_id: publicId,
+      resource_type: isPdf ? 'raw' : 'image'
+    };
+
+    if (!isPdf) {
+      uploadOptions.format = 'webp';
+      uploadOptions.transformation = [{ quality: 'auto' }];
+    }
+
+    const stream = cloudinary.uploader.upload_stream(uploadOptions, (error, result) => {
+      if (error) {
+        return reject(new Error(`Proof upload failed: ${error.message}`));
+      }
+      return resolve({
+        url: result.secure_url,
+        publicId: result.public_id,
+        resourceType: result.resource_type
+      });
+    });
+
+    stream.end(file.buffer);
+  });
+}
+
+async function resolveWholesalerProofUrls(req, payload) {
+  const files = req.files || {};
+  const idProofFile = Array.isArray(files.idProof) ? files.idProof[0] : null;
+  const businessProofFile = Array.isArray(files.businessAddressProof) ? files.businessAddressProof[0] : null;
+
+  const uploads = [];
+
+  if (idProofFile) {
+    uploads.push(
+      uploadProofBufferToCloudinary(
+        idProofFile,
+        'wholesaler/proofs/id',
+        sanitizePublicIdPart(`${payload.fullName}-id-proof`)
+      ).then((r) => {
+        payload.idProofUpload = r.url;
+      })
+    );
+  }
+
+  if (businessProofFile) {
+    uploads.push(
+      uploadProofBufferToCloudinary(
+        businessProofFile,
+        'wholesaler/proofs/business',
+        sanitizePublicIdPart(`${payload.fullName}-business-proof`)
+      ).then((r) => {
+        payload.businessAddressProofUpload = r.url;
+      })
+    );
+  }
+
+  if (uploads.length) {
+    await Promise.all(uploads);
+  }
+}
+
 function generateAccessToken(userId, userType = 'user', role = 'user') {
   return jwt.sign(
     { id: userId, type: 'access', userType, role },
@@ -137,6 +216,8 @@ exports.submitWholesalerRequest = async (req, res) => {
       businessAddressProofUpload: req.body.businessAddressProofUpload
     };
 
+    await resolveWholesalerProofUrls(req, payload);
+
     if (!/^\d{10}$/.test(payload.mobileNumber)) {
       return res.status(400).json({ success: false, message: 'Valid 10-digit mobileNumber is required' });
     }
@@ -145,6 +226,13 @@ exports.submitWholesalerRequest = async (req, res) => {
     }
     if (!payload.email || !payload.fullName || !payload.permanentAddress) {
       return res.status(400).json({ success: false, message: 'Missing required wholesaler details' });
+    }
+    if (!payload.idProofUpload || !payload.businessAddressProofUpload) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'idProofUpload and businessAddressProofUpload are required (provide URLs or upload files as idProof/businessAddressProof)'
+      });
     }
 
     const existingPending = await WholesalerDetails.findOne({
