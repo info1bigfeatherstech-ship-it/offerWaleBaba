@@ -55,10 +55,17 @@ const getVariantPrice = (variant, userType) => {
 
 function mapProductVariantsForApi(product, userType, storefront) {
   const visible = filterVariantsForStorefront(product.variants || [], storefront);
-  return visible.map((variant) => ({
-    ...variant,
-    price: getVariantPrice(variant, userType)
-  }));
+  return visible.map((variant) => {
+    const resolvedPrice = getVariantPrice(variant, userType);
+    return {
+      ...variant,
+      price: resolvedPrice,
+      // Keep top-level computed fields aligned with resolved storefront/user pricing.
+      isSaleActive: Boolean(resolvedPrice.isSaleActive),
+      finalPrice: Number(resolvedPrice.current || 0),
+      discountPercentage: Number(resolvedPrice.discountPercentage || 0)
+    };
+  });
 }
 
 function decorateProductForStorefront(product, userType, storefront) {
@@ -209,9 +216,11 @@ if (Object.keys(priceQuery).length > 0) {
       storefront
     });
 
+    const bypassCache = req.query._cb === '1';
+
     //  CHECK CACHE FIRST
-    const cachedData = await cacheService.get(cacheKey);
-    if (cachedData) {
+    const cachedData = bypassCache ? null : await cacheService.get(cacheKey);
+    if (cachedData && !bypassCache) {
       res.setHeader('X-Cache', 'HIT');
       setApiCacheHeaders(res);
       return res.json(cachedData);
@@ -363,9 +372,11 @@ const searchProducts = async (req, res) => {
     const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType });
     const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType, storefront });
 
+    const bypassCache = req.query._cb === '1';
+
     //  CHECK CACHE FIRST
-    const cachedData = await cacheService.get(cacheKey);
-    if (cachedData) {
+    const cachedData = bypassCache ? null : await cacheService.get(cacheKey);
+    if (cachedData && !bypassCache) {
       res.setHeader('X-Cache', 'HIT');
       setApiCacheHeaders(res);
       return res.json(cachedData);
@@ -455,9 +466,11 @@ const getProductsByCategory = async (req, res) => {
       storefront
     });
 
+    const bypassCache = req.query._cb === '1';
+
     //  CHECK CACHE FIRST
-    const cachedData = await cacheService.get(cacheKey);
-    if (cachedData) {
+    const cachedData = bypassCache ? null : await cacheService.get(cacheKey);
+    if (cachedData && !bypassCache) {
       res.setHeader('X-Cache', 'HIT');
       setApiCacheHeaders(res);
       return res.json(cachedData);
