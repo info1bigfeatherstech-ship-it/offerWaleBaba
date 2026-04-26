@@ -11,7 +11,6 @@ const {
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
 const { setApiCacheHeaders } = require('../utils/apiCacheHeaders');
-const { mongoCatalogListFilter } = require('../utils/storefrontCatalog');
 
 /** Category tiles / headers: slightly tighter cap than product gallery (override via env). */
 const CATEGORY_IMAGE_MAX_WIDTH = Math.min(
@@ -65,18 +64,6 @@ const getAllCategories = async (req, res) => {
     let categories = await Category.find({ status: 'active' })
       .sort({ order: 1, name: 1 })
       .lean();
-
-    // Wholesale should only see categories with at least one listed product.
-    if (storefront === 'wholesale') {
-      const listedCategoryIds = await Product.distinct(
-        'category',
-        mongoCatalogListFilter(storefront)
-      );
-      if (listedCategoryIds.length) {
-        const allowedSet = new Set(listedCategoryIds.map((id) => String(id)));
-        categories = categories.filter((cat) => allowedSet.has(String(cat._id)));
-      }
-    }
 
     const map = new Map();
     categories.forEach(cat => {
@@ -148,18 +135,6 @@ const getCategoryById = async (req, res) => {
         success: false,
         message: 'Category not found'
       });
-    }
-
-    if (storefront === 'wholesale') {
-      const listedCount = await Product.countDocuments({
-        $and: [...mongoCatalogListFilter(storefront).$and, { category: category._id }]
-      });
-      if (listedCount === 0) {
-        return res.status(404).json({
-          success: false,
-          message: 'Category not found'
-        });
-      }
     }
 
     const responseData = {
