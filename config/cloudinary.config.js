@@ -3,6 +3,8 @@ const cloudinary = require('cloudinary').v2;
 // ============================================================================
 // CLOUDINARY CONFIGURATION
 // ============================================================================
+// PDF proofs: if public .pdf URLs return 401, enable "Allow delivery of PDF and ZIP files"
+// (Settings → Security). Wholesaler flows also use a page-1 JPEG preview URL to bypass that limit.
 
 function initCloudinary() {
   cloudinary.config({
