@@ -227,9 +227,21 @@ const sendResetConfirmation = async (adminEmail, adminName, staffName) => {
  * @returns {object} MongoDB query object
  */
 
-const buildStaffQuery = (search, role) => {
+const buildStaffQuery = (search, role, storefront) => {
+  const storefrontScope =
+    storefront === 'wholesale'
+      ? { allowedStorefronts: 'wholesale' }
+      : {
+          $or: [
+            { allowedStorefronts: 'ecomm' },
+            { allowedStorefronts: { $exists: false } },
+            { allowedStorefronts: [] }
+          ]
+        };
+
   const query = {
-    role: { $ne: 'user', $in: ALLOWED_STAFF_ROLES }
+    role: { $ne: 'user', $in: ALLOWED_STAFF_ROLES },
+    ...storefrontScope
   };
 
   if (search) {
@@ -246,6 +258,8 @@ const buildStaffQuery = (search, role) => {
 
   return query;
 };
+
+const storefrontFromScope = (req) => req.adminScope?.storefront || 'ecomm';
 
 // ==============================
 // CONTROLLER FUNCTIONS
@@ -265,11 +279,12 @@ const getAllStaff = async (req, res) => {
     const skip = (page - 1) * limit;
     const { search = '', role = '' } = req.query;
 
-    const query = buildStaffQuery(search, role);
+    const storefront = storefrontFromScope(req);
+    const query = buildStaffQuery(search, role, storefront);
     
     const [staff, total] = await Promise.all([
       User.find(query)
-        .select('name email phone role userType status createdAt updatedAt')
+        .select('name email phone role userType allowedStorefronts status createdAt updatedAt')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -280,6 +295,7 @@ const getAllStaff = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'Staff fetched successfully',
+      scope: storefront,
       data: {
         staff,
         pagination: {
@@ -321,6 +337,7 @@ const createStaff = async (req, res) => {
     }
 
     const { name, email, phone, password, role } = req.body;
+    const storefront = storefrontFromScope(req);
 
     if (!ALLOWED_STAFF_ROLES.includes(role)) {
       return res.status(400).json({
@@ -359,7 +376,8 @@ const createStaff = async (req, res) => {
       isPhoneVerified: true,
       isProfileComplete: true,
       status: 'active',
-      registrationMethod: 'email'
+      registrationMethod: 'email',
+      allowedStorefronts: [storefront]
     });
 
     await staff.save();
@@ -371,6 +389,7 @@ const createStaff = async (req, res) => {
       phone: staff.phone,
       role: staff.role,
       userType: staff.userType,
+      allowedStorefronts: staff.allowedStorefronts,
       status: staff.status,
       createdAt: staff.createdAt,
       updatedAt: staff.updatedAt
@@ -399,9 +418,20 @@ const createStaff = async (req, res) => {
 const getStaffById = async (req, res) => {
   try {
     const { id } = req.params;
+    const storefront = storefrontFromScope(req);
+    const scopeFilter =
+      storefront === 'wholesale'
+        ? { allowedStorefronts: 'wholesale' }
+        : {
+            $or: [
+              { allowedStorefronts: 'ecomm' },
+              { allowedStorefronts: { $exists: false } },
+              { allowedStorefronts: [] }
+            ]
+          };
 
-    const staff = await User.findById(id)
-      .select('name email phone role userType status createdAt updatedAt')
+    const staff = await User.findOne({ _id: id, ...scopeFilter })
+      .select('name email phone role userType allowedStorefronts status createdAt updatedAt')
       .lean();
 
     if (!staff) {
@@ -443,6 +473,17 @@ const updateStaff = async (req, res) => {
   try {
     const { id } = req.params;
     const { name, email, phone, role, status } = req.body;
+    const storefront = storefrontFromScope(req);
+    const scopeFilter =
+      storefront === 'wholesale'
+        ? { allowedStorefronts: 'wholesale' }
+        : {
+            $or: [
+              { allowedStorefronts: 'ecomm' },
+              { allowedStorefronts: { $exists: false } },
+              { allowedStorefronts: [] }
+            ]
+          };
 
     if (id === req.userId) {
       return res.status(403).json({
@@ -451,7 +492,7 @@ const updateStaff = async (req, res) => {
       });
     }
 
-    const staff = await User.findById(id);
+    const staff = await User.findOne({ _id: id, ...scopeFilter });
     if (!staff) {
       return res.status(404).json({
         success: false,
@@ -484,11 +525,11 @@ const updateStaff = async (req, res) => {
       updates.status = status;
     }
 
-    const updatedStaff = await User.findByIdAndUpdate(
-      id,
+    const updatedStaff = await User.findOneAndUpdate(
+      { _id: id, ...scopeFilter },
       { $set: updates },
       { returnDocument: 'after', runValidators: true }
-    ).select('name email phone role userType status createdAt updatedAt')
+    ).select('name email phone role userType allowedStorefronts status createdAt updatedAt')
       .lean();
 
     return res.status(200).json({
@@ -515,6 +556,17 @@ const initiatePasswordReset = async (req, res) => {
   try {
     const { id } = req.params;
     const adminId = req.userId;
+    const storefront = storefrontFromScope(req);
+    const scopeFilter =
+      storefront === 'wholesale'
+        ? { allowedStorefronts: 'wholesale' }
+        : {
+            $or: [
+              { allowedStorefronts: 'ecomm' },
+              { allowedStorefronts: { $exists: false } },
+              { allowedStorefronts: [] }
+            ]
+          };
 
     // Prevent self reset
     if (id === adminId) {
@@ -525,7 +577,7 @@ const initiatePasswordReset = async (req, res) => {
     }
 
     // Get staff details
-    const staff = await User.findById(id).select('name email');
+    const staff = await User.findOne({ _id: id, ...scopeFilter }).select('name email');
     if (!staff) {
       return res.status(404).json({
         success: false,
@@ -596,6 +648,17 @@ const verifyOTPAndResetPassword = async (req, res) => {
     const { id } = req.params;
     const { otp, newPassword } = req.body;
     const adminId = req.userId;
+    const storefront = storefrontFromScope(req);
+    const scopeFilter =
+      storefront === 'wholesale'
+        ? { allowedStorefronts: 'wholesale' }
+        : {
+            $or: [
+              { allowedStorefronts: 'ecomm' },
+              { allowedStorefronts: { $exists: false } },
+              { allowedStorefronts: [] }
+            ]
+          };
 
     // Input validation
     if (!otp || !newPassword) {
@@ -638,7 +701,7 @@ const verifyOTPAndResetPassword = async (req, res) => {
     }
 
     // Get staff
-    const staff = await User.findById(id);
+    const staff = await User.findOne({ _id: id, ...scopeFilter });
     if (!staff) {
       return res.status(404).json({
         success: false,
@@ -680,6 +743,17 @@ const verifyOTPAndResetPassword = async (req, res) => {
 const deleteStaff = async (req, res) => {
   try {
     const { id } = req.params;
+    const storefront = storefrontFromScope(req);
+    const scopeFilter =
+      storefront === 'wholesale'
+        ? { allowedStorefronts: 'wholesale' }
+        : {
+            $or: [
+              { allowedStorefronts: 'ecomm' },
+              { allowedStorefronts: { $exists: false } },
+              { allowedStorefronts: [] }
+            ]
+          };
 
     if (id === req.userId) {
       return res.status(403).json({
@@ -688,7 +762,7 @@ const deleteStaff = async (req, res) => {
       });
     }
 
-    const staff = await User.findByIdAndDelete(id);
+    const staff = await User.findOneAndDelete({ _id: id, ...scopeFilter });
     if (!staff) {
       return res.status(404).json({
         success: false,

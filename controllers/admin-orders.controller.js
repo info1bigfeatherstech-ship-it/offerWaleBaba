@@ -46,7 +46,8 @@ exports.getDashboardSummary = async (req, res) => {
       rangePreset
     });
 
-    const summary = await aggregateSummary(range.from, range.to);
+    const scopeMatch = req.adminScope?.orderMatch || {};
+    const summary = await aggregateSummary(range.from, range.to, scopeMatch);
 
     return res.json({
       success: true,
@@ -56,6 +57,7 @@ exports.getDashboardSummary = async (req, res) => {
           to: range.to.toISOString(),
           preset: range.presetLabel
         },
+        scope: req.adminScope?.storefront || 'ecomm',
         totals: {
           totalOrders: summary.totalOrders,
           /** Gross merchandise value in period (excludes cancelled & payment_failed). */
@@ -102,9 +104,14 @@ exports.getOrdersList = async (req, res) => {
     const sort = { [sortBy]: sortOrder };
 
     const dateMatch = { createdAt: { $gte: range.from, $lte: range.to } };
+    const scopeMatch = req.adminScope?.orderMatch || {};
     const search = buildSearchFilter(req.query.search);
     const bucket = buildBucketMatch(req.query.bucket);
-    const filter = mergeFilters(dateMatch, search, bucket);
+    const filter = mergeFilters(
+      Object.keys(scopeMatch).length ? { $and: [dateMatch, scopeMatch] } : dateMatch,
+      search,
+      bucket
+    );
 
     const [orders, total] = await Promise.all([
       Order.find(filter).sort(sort).skip(skip).limit(limit).lean(),
@@ -121,6 +128,7 @@ exports.getOrdersList = async (req, res) => {
           to: range.to.toISOString(),
           preset: range.presetLabel
         },
+        scope: req.adminScope?.storefront || 'ecomm',
         orders: rows,
         pagination: {
           page,

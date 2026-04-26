@@ -1,9 +1,23 @@
 // controllers/admin-analytics.controller.js
 const User = require('../models/User');
-const cart = require('../models/cart');
+const Cart = require('../models/cart');
 const Wishlist = require('../models/Wishlist');
 const Product = require('../models/Product');
 const mongoose = require('mongoose');
+
+const scopedUserQueryFromReq = (req) => req.adminScope?.userMatch || { userType: 'user' };
+const scopeLabelFromReq = (req) => req.adminScope?.storefront || 'ecomm';
+
+function mergeAnd(base, extra) {
+  if (!extra || !Object.keys(extra).length) return base;
+  if (!base || !Object.keys(base).length) return extra;
+  return { $and: [base, extra] };
+}
+
+async function fetchScopedUserIds(req) {
+  const scopedUsers = await User.find(scopedUserQueryFromReq(req)).select('_id').lean();
+  return scopedUsers.map((u) => u._id);
+}
 
 // =============================================
 // 1. GET ALL USERS (READ ONLY)
@@ -16,8 +30,8 @@ const getAllUsers = async (req, res) => {
     limit = Math.min(100, Math.max(1, Number(limit)));
     const skip = (page - 1) * limit;
 
-    // Build query
-    let query = {};
+    // Build query (always scoped by admin storefront)
+    let query = scopedUserQueryFromReq(req);
     
     if (search) {
       query.$or = [
@@ -28,7 +42,7 @@ const getAllUsers = async (req, res) => {
     }
     
     if (role && ['user', 'wholesaler', 'admin'].includes(role)) {
-      query.role = role;
+      query = mergeAnd(query, { role });
     }
 
     const [users, total] = await Promise.all([
@@ -44,7 +58,7 @@ const getAllUsers = async (req, res) => {
     // Get additional stats for each user
     const usersWithStats = await Promise.all(users.map(async (user) => {
       // Get cart count
-      const cartt = await cart.findOne({ userId: user._id });
+      const cartt = await Cart.findOne({ userId: user._id });
       const cartItemsCount = cartt?.items?.length || 0;
       
       // Get wishlist count
@@ -61,6 +75,7 @@ const getAllUsers = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: usersWithStats,
       pagination: {
         total,
@@ -94,7 +109,7 @@ const           getUserById = async (req, res) => {
       });
     }
 
-    const user = await User.findById(userId)
+    const user = await User.findOne(mergeAnd({ _id: userId }, scopedUserQueryFromReq(req)))
       .select('-password -refreshToken')
       .lean();
 
@@ -106,7 +121,7 @@ const           getUserById = async (req, res) => {
     }
 
     // Get cart details
-    const cart = await cart.findOne({ userId: user._id })
+    const userCart = await Cart.findOne({ userId: user._id })
       .populate('items.productId', 'name slug images')
       .lean();
 
@@ -117,9 +132,10 @@ const           getUserById = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: {
         user,
-        cart: cart || { items: [], totalAmount: 0 },
+        cart: userCart || { items: [], totalAmount: 0 },
         wishlist: wishlist || { products: [] }
       }
     });
@@ -149,15 +165,27 @@ const getAllcarts = async (req, res) => {
     const sortOrder = order === 'asc' ? 1 : -1;
     const sort = { [sortBy]: sortOrder };
 
+    const scopedUserIds = await fetchScopedUserIds(req);
+    if (!scopedUserIds.length) {
+      return res.status(200).json({
+        success: true,
+        scope: scopeLabelFromReq(req),
+        data: [],
+        pagination: { total: 0, page, limit, totalPages: 0 }
+      });
+    }
+
+    const scopeQuery = { userId: { $in: scopedUserIds } };
+
     const [carts, total] = await Promise.all([
-      cart.find()
+      Cart.find(scopeQuery)
         .populate('userId', 'name email phone role')
         .populate('items.productId', 'name slug images')
         .sort(sort)
         .skip(skip)
         .limit(limit)
         .lean(),
-      cart.countDocuments()
+      Cart.countDocuments(scopeQuery)
     ]);
 
     // Format carts data
@@ -181,6 +209,7 @@ const getAllcarts = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: formattedcarts,
       pagination: {
         total,
@@ -215,8 +244,27 @@ const getAbandonedcarts = async (req, res) => {
     const cutoffDate = new Date();
     cutoffDate.setHours(cutoffDate.getHours() - hours);
 
+    const scopedUserIds = await fetchScopedUserIds(req);
+    if (!scopedUserIds.length) {
+      return res.status(200).json({
+        success: true,
+        scope: scopeLabelFromReq(req),
+        data: [],
+        pagination: {
+          total: 0,
+          page,
+          limit,
+          totalPages: 0,
+          criteria: `Abandoned for > ${hours} hours`
+        }
+      });
+    }
+
+    const scopeQuery = { userId: { $in: scopedUserIds } };
+
     // Find carts older than cutoff date with items
-    const carts = await cart.find({
+    const carts = await Cart.find({
+      ...scopeQuery,
       updatedAt: { $lt: cutoffDate },
       'items.0': { $exists: true } // Has at least one item
     })
@@ -227,7 +275,8 @@ const getAbandonedcarts = async (req, res) => {
       .limit(limit)
       .lean();
 
-    const total = await cart.countDocuments({
+    const total = await Cart.countDocuments({
+      ...scopeQuery,
       updatedAt: { $lt: cutoffDate },
       'items.0': { $exists: true }
     });
@@ -250,6 +299,7 @@ const getAbandonedcarts = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: formattedcarts,
       pagination: {
         total,
@@ -282,7 +332,26 @@ const getHighValuecarts = async (req, res) => {
     minAmount = Math.max(0, Number(minAmount));
     const skip = (page - 1) * limit;
 
-    const carts = await cart.find({
+    const scopedUserIds = await fetchScopedUserIds(req);
+    if (!scopedUserIds.length) {
+      return res.status(200).json({
+        success: true,
+        scope: scopeLabelFromReq(req),
+        data: [],
+        pagination: {
+          total: 0,
+          page,
+          limit,
+          totalPages: 0,
+          criteria: `cart value ≥ ₹${minAmount}`
+        }
+      });
+    }
+
+    const scopeQuery = { userId: { $in: scopedUserIds } };
+
+    const carts = await Cart.find({
+      ...scopeQuery,
       totalAmount: { $gte: minAmount },
       'items.0': { $exists: true }
     })
@@ -293,13 +362,15 @@ const getHighValuecarts = async (req, res) => {
       .limit(limit)
       .lean();
 
-    const total = await cart.countDocuments({
+    const total = await Cart.countDocuments({
+      ...scopeQuery,
       totalAmount: { $gte: minAmount },
       'items.0': { $exists: true }
     });
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: carts.map(cart => ({
         _id: cart._id,
         user: cart.userId,
@@ -341,15 +412,26 @@ const getAllWishlists = async (req, res) => {
     const sortOrder = order === 'asc' ? 1 : -1;
     const sort = { [sortBy]: sortOrder };
 
+    const scopedUserIds = await fetchScopedUserIds(req);
+    if (!scopedUserIds.length) {
+      return res.status(200).json({
+        success: true,
+        scope: scopeLabelFromReq(req),
+        data: [],
+        pagination: { total: 0, page, limit, totalPages: 0 }
+      });
+    }
+    const scopeQuery = { userId: { $in: scopedUserIds } };
+
     const [wishlists, total] = await Promise.all([
-      Wishlist.find()
+      Wishlist.find(scopeQuery)
         .populate('userId', 'name email phone role')
         .populate('products.productId', 'name slug images price')
         .sort(sort)
         .skip(skip)
         .limit(limit)
         .lean(),
-      Wishlist.countDocuments()
+      Wishlist.countDocuments(scopeQuery)
     ]);
 
     const formattedWishlists = wishlists.map(wishlist => ({
@@ -369,6 +451,7 @@ const getAllWishlists = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: formattedWishlists,
       pagination: {
         total,
@@ -403,8 +486,26 @@ const getStaleWishlists = async (req, res) => {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
+    const scopedUserIds = await fetchScopedUserIds(req);
+    if (!scopedUserIds.length) {
+      return res.status(200).json({
+        success: true,
+        scope: scopeLabelFromReq(req),
+        data: [],
+        pagination: {
+          total: 0,
+          page,
+          limit,
+          totalPages: 0,
+          criteria: `Items added > ${days} days ago`
+        }
+      });
+    }
+    const scopeQuery = { userId: { $in: scopedUserIds } };
+
     // Find wishlists with products added before cutoff date
     const wishlists = await Wishlist.find({
+      ...scopeQuery,
       'products.addedAt': { $lt: cutoffDate },
       'products.0': { $exists: true }
     })
@@ -416,6 +517,7 @@ const getStaleWishlists = async (req, res) => {
       .lean();
 
     const total = await Wishlist.countDocuments({
+      ...scopeQuery,
       'products.addedAt': { $lt: cutoffDate },
       'products.0': { $exists: true }
     });
@@ -444,6 +546,7 @@ const getStaleWishlists = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: formattedWishlists,
       pagination: {
         total,
@@ -472,7 +575,20 @@ const getPopularWishlistProducts = async (req, res) => {
     let { limit = 20 } = req.query;
     limit = Math.min(50, Math.max(1, Number(limit)));
 
-    const wishlists = await Wishlist.find({ 'products.0': { $exists: true } })
+    const scopedUserIds = await fetchScopedUserIds(req);
+    if (!scopedUserIds.length) {
+      return res.status(200).json({
+        success: true,
+        scope: scopeLabelFromReq(req),
+        data: [],
+        totalProducts: 0
+      });
+    }
+
+    const wishlists = await Wishlist.find({
+      userId: { $in: scopedUserIds },
+      'products.0': { $exists: true }
+    })
       .populate('products.productId', 'name slug price images')
       .lean();
 
@@ -507,6 +623,7 @@ const getPopularWishlistProducts = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: popularProducts,
       totalProducts: Object.keys(productCount).length
     });
@@ -526,6 +643,10 @@ const getPopularWishlistProducts = async (req, res) => {
 // =============================================
 const getDashboardSummary = async (req, res) => {
   try {
+    const scopedUserQuery = scopedUserQueryFromReq(req);
+    const scopedUserIds = await fetchScopedUserIds(req);
+    const hasScopedUsers = scopedUserIds.length > 0;
+
     // Get counts
     const [
       totalUsers,
@@ -535,29 +656,31 @@ const getDashboardSummary = async (req, res) => {
       abandonedcarts24h,
       staleWishlists7d
     ] = await Promise.all([
-      User.countDocuments(),
-      User.countDocuments({ role: 'wholesaler' }),
-      cart.countDocuments({ 'items.0': { $exists: true } }),
-      Wishlist.countDocuments({ 'products.0': { $exists: true } }),
+      User.countDocuments(scopedUserQuery),
+      User.countDocuments(mergeAnd(scopedUserQuery, { role: 'wholesaler' })),
+      hasScopedUsers ? Cart.countDocuments({ userId: { $in: scopedUserIds }, 'items.0': { $exists: true } }) : 0,
+      hasScopedUsers ? Wishlist.countDocuments({ userId: { $in: scopedUserIds }, 'products.0': { $exists: true } }) : 0,
       
       // Abandoned carts (>24 hours)
-      cart.countDocuments({
+      hasScopedUsers ? Cart.countDocuments({
+        userId: { $in: scopedUserIds },
         updatedAt: { $lt: new Date(Date.now() - 24 * 60 * 60 * 1000) },
         'items.0': { $exists: true }
-      }),
+      }) : 0,
       
       // Stale wishlists (>7 days)
-      Wishlist.countDocuments({
+      hasScopedUsers ? Wishlist.countDocuments({
+        userId: { $in: scopedUserIds },
         'products.addedAt': { $lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
         'products.0': { $exists: true }
-      })
+      }) : 0
     ]);
 
     // Get total cart value
-    const cartAggregation = await cart.aggregate([
-      { $match: { 'items.0': { $exists: true } } },
+    const cartAggregation = hasScopedUsers ? await Cart.aggregate([
+      { $match: { userId: { $in: scopedUserIds }, 'items.0': { $exists: true } } },
       { $group: { _id: null, totalValue: { $sum: '$totalAmount' } } }
-    ]);
+    ]) : [];
     const totalcartValue = cartAggregation[0]?.totalValue || 0;
 
     // Get average cart value
@@ -565,6 +688,7 @@ const getDashboardSummary = async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      scope: scopeLabelFromReq(req),
       data: {
         users: {
           total: totalUsers,

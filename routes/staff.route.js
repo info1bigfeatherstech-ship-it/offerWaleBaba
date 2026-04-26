@@ -11,6 +11,7 @@ const router = express.Router();
 const { body } = require('express-validator');
 const { verifyToken } = require('../middlewares/auth.middleware');
 const { authorizeRoles } = require('../middlewares/authorize-roles.middleware');
+const { requireStrictAdminStorefrontScope } = require('../middlewares/admin-storefront-scope.middleware');
 const staffController = require('../controllers/staff.controller');
 
 // =============================================
@@ -18,6 +19,7 @@ const staffController = require('../controllers/staff.controller');
 // =============================================
 router.use(verifyToken);
 router.use(authorizeRoles('admin'));
+router.use(requireStrictAdminStorefrontScope);
 
 // =============================================
 // STAFF CRUD OPERATIONS
