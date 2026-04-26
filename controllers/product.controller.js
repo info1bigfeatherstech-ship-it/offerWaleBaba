@@ -4465,14 +4465,14 @@ const getAllProductsAdmin = async (req, res) => {
 
     const skip = (page - 1) * limit;
 
-    let query = {};
+    const query = {};
 
-   
-
-    const products = await Product.find()
+    const products = await Product.find(query)
+      .populate('category', 'name slug status')
       .sort({ createdAt: -1 }) // latest first
       .skip(skip)
-      .limit(limit);
+      .limit(limit)
+      .lean({ virtuals: true });
 
     const totalProducts = await Product.countDocuments();
 
