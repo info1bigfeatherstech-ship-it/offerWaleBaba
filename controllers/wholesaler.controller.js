@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const { validationResult } = require('express-validator');
@@ -7,6 +8,7 @@ const WholesalerDetails = require('../models/WholesalerDetails');
 const User = require('../models/User');
 const { generateOTP, sendOTP } = require('../services/otp.service');
 const { cloudinary } = require('../config/cloudinary.config');
+const { buildWholesalerPdfPreviewUrl } = require('../utils/cloudinaryProofDelivery');
 
 const OTP_TTL_MS = 10 * 60 * 1000;
 const MAX_OTP_ATTEMPTS = 5;
@@ -27,6 +29,16 @@ function rawDigitsToWaMePath(raw) {
   if (digits.length === 10) return `91${digits}`;
   if (digits.length === 11 && digits.startsWith('0')) return `91${digits.slice(-10)}`;
   return null;
+}
+
+/**
+ * Frontend URL where approved wholesalers complete activation (OTP + password).
+ * Override per environment; server must be restarted after .env changes.
+ */
+function getWholesalerActivateAppUrl() {
+  const raw = String(process.env.WHOLESALER_ACTIVATE_APP_URL || '').trim().replace(/\/$/, '');
+  if (raw) return raw;
+  return 'http://localhost:5173/activate';
 }
 
 function hashString(v) {
@@ -75,6 +87,205 @@ function escapeHtml(s) {
   });
 }
 
+/** Safe http(s) URL for HTML attributes (href / img src for remote assets). */
+function safeHttpUrlForAttr(raw) {
+  const u = String(raw || '').trim();
+  try {
+    const parsed = new URL(u);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') return parsed.href;
+  } catch (_) {
+    /* ignore */
+  }
+  return '';
+}
+
+/**
+ * Classify ID / business proof field for UI (admin + owner review page).
+ * Legacy rows may store non-URL blobs; those are surfaced as opaque, not as broken links.
+ * @param {object} [_options] reserved for future use
+ */
+function classifyWholesalerProof(raw, _options = {}) {
+  const value = String(raw ?? '').trim();
+  if (!value) {
+    return {
+      kind: 'empty',
+      href: null,
+      openHref: null,
+      originalHref: null,
+      pdfPreviewHref: null,
+      viewerIsRasterized: false,
+      label: 'Not provided',
+      isImage: false,
+      isPdf: false
+    };
+  }
+  const httpHref = safeHttpUrlForAttr(value);
+  if (httpHref) {
+    const lower = httpHref.toLowerCase();
+    const isPdf =
+      lower.endsWith('.pdf') ||
+      /\/image\/upload\/[^?]*\.pdf(\?|$)/i.test(lower) ||
+      /\/raw\/upload\//.test(lower) ||
+      /format=pdf/.test(lower) ||
+      lower.includes('content-type=application%2Fpdf');
+    const isImage =
+      !isPdf &&
+      (/\.(jpe?g|png|gif|webp|avif)(\?|$)/i.test(lower) ||
+        /\/image\/upload\//.test(lower) ||
+        /res\.cloudinary\.com/.test(lower));
+    // PDF public URLs often return 401 when Cloudinary "PDF and ZIP delivery" is off (typical on free tiers).
+    // Page-1 as JPEG uses image delivery and still works; see utils/cloudinaryProofDelivery.js.
+    const pdfPreviewHref = isPdf ? buildWholesalerPdfPreviewUrl(httpHref) : null;
+    const openHref = pdfPreviewHref || httpHref;
+    return {
+      kind: 'url',
+      href: httpHref,
+      originalHref: httpHref,
+      pdfPreviewHref,
+      openHref,
+      viewerIsRasterized: Boolean(pdfPreviewHref),
+      label: isPdf ? 'PDF document' : isImage ? 'Image' : 'File link',
+      isImage,
+      isPdf
+    };
+  }
+  if (/^data:image\/(png|jpe?g|gif|webp|svg\+xml);base64,/i.test(value)) {
+    return {
+      kind: 'dataUrl',
+      href: value,
+      openHref: value,
+      originalHref: value,
+      pdfPreviewHref: null,
+      viewerIsRasterized: false,
+      label: 'Embedded image (legacy)',
+      isImage: true,
+      isPdf: false
+    };
+  }
+  if (/^data:application\/pdf/i.test(value)) {
+    return {
+      kind: 'dataUrl',
+      href: value,
+      openHref: value,
+      originalHref: value,
+      pdfPreviewHref: null,
+      viewerIsRasterized: false,
+      label: 'Embedded PDF (legacy)',
+      isImage: false,
+      isPdf: true
+    };
+  }
+  const preview = value.length > 160 ? `${value.slice(0, 160)}…` : value;
+  return {
+    kind: 'opaque',
+    href: null,
+    openHref: null,
+    originalHref: null,
+    pdfPreviewHref: null,
+    viewerIsRasterized: false,
+    label: 'Stored value is not a public URL (legacy upload or truncated data).',
+    isImage: false,
+    isPdf: false,
+    preview
+  };
+}
+
+function buildOwnerReviewTableRows(doc) {
+  const rows = [
+    ['Full name', doc.fullName],
+    ['WhatsApp', doc.whatsappNumber],
+    ['Mobile', doc.mobileNumber],
+    ['Email', doc.email],
+    ['Permanent address', doc.permanentAddress],
+    ['Have shop', doc.haveShop ? 'Yes' : 'No'],
+    ['Business address', doc.businessAddress],
+    ['Delivery address', doc.deliveryAddress],
+    ['Selling from', doc.sellingPlaceFrom],
+    ['City / zone', doc.sellingZoneCity],
+    ['Product category', doc.productCategory],
+    ['Est. monthly purchase (₹)', String(doc.monthlyEstimatedPurchase)]
+  ];
+  return rows
+    .map(([k, v]) => `<tr><th>${escapeHtml(k)}</th><td>${escapeHtml(String(v ?? ''))}</td></tr>`)
+    .join('');
+}
+
+function buildOwnerReviewDocArticle(title, info) {
+  const h = escapeHtml(title);
+  if (info.kind === 'empty') {
+    return `<article class="doc doc-missing"><h3>${h}</h3><p class="muted">No file on record.</p></article>`;
+  }
+  if (info.kind === 'opaque') {
+    return `<article class="doc doc-warn"><h3>${h}</h3><p>${escapeHtml(info.label)}</p>${
+      info.preview ? `<pre class="preview">${escapeHtml(info.preview)}</pre>` : ''
+    }</article>`;
+  }
+  const open = escapeHtml(info.openHref || info.href || '');
+  if (info.kind === 'url' && info.isImage && !info.isPdf) {
+    return `<article class="doc"><h3>${h}</h3><p class="meta">${escapeHtml(info.label)}</p>
+      <div class="row-btns"><a class="btn secondary" href="${open}" target="_blank" rel="noopener noreferrer">Open in new tab</a></div>
+      <details class="preview"><summary>Show image preview</summary>
+      <div class="preview-frame"><img src="${open}" alt="${h}" loading="lazy" decoding="async" /></div>
+      </details></article>`;
+  }
+  if (info.kind === 'url' && info.isPdf) {
+    const orig = escapeHtml(info.originalHref || info.href || '');
+    if (info.viewerIsRasterized && info.pdfPreviewHref) {
+      const prev = escapeHtml(info.pdfPreviewHref);
+      return `<article class="doc"><h3>${h}</h3><p class="meta">${escapeHtml(info.label)}</p>
+      <div class="row-btns">
+        <a class="btn" href="${prev}" target="_blank" rel="noopener noreferrer">View proof (page 1)</a>
+        <a class="btn secondary" href="${orig}" target="_blank" rel="noopener noreferrer">Open original PDF</a>
+      </div>
+      <p class="hint">View proof (page 1) is a JPEG and works even when Cloudinary blocks public PDF delivery. For the full PDF, enable <strong>Allow delivery of PDF and ZIP files</strong> in Cloudinary Settings → Security, or use the second link if your plan already allows it.</p></article>`;
+    }
+    return `<article class="doc"><h3>${h}</h3><p class="meta">${escapeHtml(info.label)}</p>
+      <div class="row-btns"><a class="btn" href="${orig}" target="_blank" rel="noopener noreferrer">Open PDF</a></div>
+      <p class="hint">Preview unavailable for this URL (e.g. legacy <code>raw</code> upload). Enable PDF delivery in Cloudinary Security settings or ask the applicant to re-upload proofs.</p></article>`;
+  }
+  if (info.kind === 'url') {
+    return `<article class="doc"><h3>${h}</h3><p class="meta">${escapeHtml(info.label)}</p>
+      <a class="btn" href="${open}" target="_blank" rel="noopener noreferrer">Open file</a></article>`;
+  }
+  if (info.kind === 'dataUrl' && info.isImage) {
+    const esc = escapeHtml(info.href);
+    return `<article class="doc"><h3>${h}</h3><p class="meta">${escapeHtml(info.label)}</p>
+      <details class="preview"><summary>Show image preview</summary>
+      <div class="preview-frame"><img src="${esc}" alt="${h}" /></div></details></article>`;
+  }
+  if (info.kind === 'dataUrl') {
+    const esc = escapeHtml(info.href);
+    return `<article class="doc"><h3>${h}</h3><p class="meta">${escapeHtml(info.label)}</p>
+      <a class="btn" href="${esc}" download="wholesaler-proof.pdf">Download</a></article>`;
+  }
+  return `<article class="doc doc-warn"><h3>${h}</h3><p>Unknown attachment type.</p></article>`;
+}
+
+function buildOwnerReviewDocsSection(idMedia, bizMedia) {
+  return `<div class="doc-grid">${buildOwnerReviewDocArticle('ID proof', idMedia)}${buildOwnerReviewDocArticle(
+    'Business address proof',
+    bizMedia
+  )}</div>`;
+}
+
+function buildOwnerReviewPageHtml({ doc, token, apiBase }) {
+  const templatePath = path.join(__dirname, '..', 'templates', 'wholesaler-owner-review.html');
+  const template = fs.readFileSync(templatePath, 'utf8');
+  const idMedia = classifyWholesalerProof(doc.idProofUpload, { attachmentFilename: 'wholesaler-id-proof.pdf' });
+  const bizMedia = classifyWholesalerProof(doc.businessAddressProofUpload, {
+    attachmentFilename: 'wholesaler-business-proof.pdf'
+  });
+  const summaryLine = escapeHtml(`${doc.fullName} · ${doc.sellingZoneCity} · ${doc.productCategory}`);
+  const decisionUrl = escapeHtml(`${apiBase}/api/wholesaler/owner-review/decision`);
+  const tokenField = escapeHtml(token);
+  return template
+    .replace(/\{\{SUMMARY_LINE\}\}/g, summaryLine)
+    .replace(/\{\{TABLE_ROWS\}\}/g, buildOwnerReviewTableRows(doc))
+    .replace(/\{\{DOCS_SECTION\}\}/g, buildOwnerReviewDocsSection(idMedia, bizMedia))
+    .replace(/\{\{DECISION_URL\}\}/g, decisionUrl)
+    .replace(/\{\{TOKEN\}\}/g, tokenField);
+}
+
 function buildPublicApiBase(req) {
   const envBase = String(process.env.PUBLIC_API_BASE_URL || process.env.API_PUBLIC_BASE_URL || '').trim().replace(/\/$/, '');
   if (envBase) return envBase;
@@ -112,12 +323,15 @@ function uploadProofBufferToCloudinary(file, folder, publicIdPrefix) {
   return new Promise((resolve, reject) => {
     const ext = path.extname(String(file.originalname || '')).toLowerCase();
     const isPdf = file.mimetype === 'application/pdf' || ext === '.pdf';
+    // Cloudinary treats PDFs as `image` assets. `raw` delivery often uses a generic Content-Type
+    // (e.g. octet-stream), so Chrome's built-in PDF viewer fails even when the URL ends in .pdf.
     const publicId = `${publicIdPrefix}-${Date.now()}`;
 
     const uploadOptions = {
       folder,
       public_id: publicId,
-      resource_type: isPdf ? 'raw' : 'image'
+      resource_type: 'image',
+      access_mode: 'public'
     };
 
     if (!isPdf) {
@@ -297,13 +511,25 @@ exports.listWholesalerRequests = async (req, res) => {
           : {};
 
     const total = await WholesalerDetails.countDocuments(query);
+    // Full application row for admin (all stored fields). OTP hash stays off via schema select:false.
     const rows = await WholesalerDetails.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
-      .select(
-        'fullName whatsappNumber mobileNumber sellingZoneCity productCategory monthlyEstimatedPurchase status createdAt ownerNotifiedAt ownerReviewLinkVersion'
-      );
+      .populate('reviewedBy ownerNotifiedBy linkedUserId userId', 'name email phone userType role')
+      .lean();
+
+    const requests = rows.map((row) => ({
+      ...row,
+      ownerReviewMirror: {
+        ...requestSummaryForOwner(row),
+        media: {
+          idProof: classifyWholesalerProof(row.idProofUpload),
+          businessAddressProof: classifyWholesalerProof(row.businessAddressProofUpload)
+        }
+      }
+    }));
+
     return res.status(200).json({
       success: true,
       filters: {
@@ -315,7 +541,7 @@ exports.listWholesalerRequests = async (req, res) => {
         total,
         totalPages: Math.max(Math.ceil(total / limit), 1)
       },
-      requests: rows
+      requests
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Error fetching wholesaler requests', error: error.message });
@@ -365,7 +591,21 @@ exports.getWholesalerRequestDetails = async (req, res) => {
     if (!doc) {
       return res.status(404).json({ success: false, message: 'Wholesaler request not found' });
     }
-    return res.status(200).json({ success: true, request: doc });
+    const plain = doc.toObject ? doc.toObject() : doc;
+    const ownerReviewMirror = {
+      ...requestSummaryForOwner(plain),
+      media: {
+        idProof: classifyWholesalerProof(plain.idProofUpload),
+        businessAddressProof: classifyWholesalerProof(plain.businessAddressProofUpload)
+      }
+    };
+    return res.status(200).json({
+      success: true,
+      request: plain,
+      /** Same applicant + document context as the owner review link (for admin UIs). */
+      ownerReviewMirror,
+      recordHint: 'MongoDB model WholesalerDetails; this document is the wholesaler application row.'
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Error fetching request details', error: error.message });
   }
@@ -382,6 +622,7 @@ exports.buildNotifyOwnerPayload = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
     }
 
+    // Owner destination for wa.me — only env (restart server after changing .env).
     const ownerPhoneRaw = String(process.env.OWNER_WHATSAPP_NUMBER || '').trim();
     const ownerWaPath = rawDigitsToWaMePath(ownerPhoneRaw);
     if (!ownerWaPath) {
@@ -500,15 +741,19 @@ exports.buildNotifyApplicantPayload = async (req, res) => {
 
     let messagePlain;
     if (doc.status === 'approved') {
+      const activateUrl = getWholesalerActivateAppUrl();
       messagePlain = [
         `Hello ${doc.fullName},`,
         '',
         '*Good news:* your wholesaler application has been approved.',
         '',
+        'Click to activate your account (open in browser):',
+        activateUrl,
+        '',
         'Complete account setup: request OTP on the app/website using your registered mobile number, then set your password.',
         `Registered mobile: ${doc.mobileNumber}`,
         '',
-        '— Team'
+        '— Team OfferWaaleBaba'
       ].join('\n');
     } else if (doc.status === 'rejected') {
       messagePlain = [
@@ -606,62 +851,22 @@ exports.getOwnerReviewPage = async (req, res) => {
     }
 
     if (acceptJson) {
+      const summary = requestSummaryForOwner(doc);
       return res.status(200).json({
         success: true,
-        request: requestSummaryForOwner(doc),
+        request: {
+          ...summary,
+          media: {
+            idProof: classifyWholesalerProof(doc.idProofUpload),
+            businessAddressProof: classifyWholesalerProof(doc.businessAddressProofUpload)
+          }
+        },
         decisionEndpoint: `${apiBase}/api/wholesaler/owner-review/decision`,
         tokenExpiresIn: OWNER_REVIEW_TOKEN_EXPIRES
       });
     }
 
-    const safe = (v) => escapeHtml(v);
-    const rows = [
-      ['Name', doc.fullName],
-      ['WhatsApp', doc.whatsappNumber],
-      ['Mobile', doc.mobileNumber],
-      ['Email', doc.email],
-      ['Permanent address', doc.permanentAddress],
-      ['Have shop', doc.haveShop ? 'Yes' : 'No'],
-      ['Business address', doc.businessAddress],
-      ['Delivery address', doc.deliveryAddress],
-      ['Selling from', doc.sellingPlaceFrom],
-      ['City / zone', doc.sellingZoneCity],
-      ['Category', doc.productCategory],
-      ['Est. monthly purchase', String(doc.monthlyEstimatedPurchase)],
-      ['ID proof URL', doc.idProofUpload],
-      ['Business proof URL', doc.businessAddressProofUpload]
-    ]
-      .map(([k, v]) => `<tr><th style="text-align:left;padding:4px 8px;border:1px solid #ccc">${safe(k)}</th><td style="padding:4px 8px;border:1px solid #ccc;word-break:break-all">${safe(v)}</td></tr>`)
-      .join('');
-
-    const tokenField = safe(token);
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Wholesaler review</title>
-  <style>body{font-family:system-ui,sans-serif;margin:16px;max-width:720px} table{border-collapse:collapse;width:100%} button{padding:12px 20px;font-size:16px;margin:8px 8px 0 0;border-radius:8px;border:none;cursor:pointer} .approve{background:#166534;color:#fff} .reject{background:#991b1b;color:#fff}</style>
-</head>
-<body>
-  <h1>Wholesaler application</h1>
-  <p>Review the details below, then choose an action.</p>
-  <table>${rows}</table>
-  <form method="post" action="${safe(`${apiBase}/api/wholesaler/owner-review/decision`)}" style="margin-top:20px">
-    <input type="hidden" name="token" value="${tokenField}" />
-    <input type="hidden" name="decision" value="approve" />
-    <button type="submit" class="approve">Approve</button>
-  </form>
-  <form method="post" action="${safe(`${apiBase}/api/wholesaler/owner-review/decision`)}" style="margin-top:8px">
-    <input type="hidden" name="token" value="${tokenField}" />
-    <input type="hidden" name="decision" value="reject" />
-    <label style="display:block;margin-top:12px">Optional note (rejection only)</label>
-    <textarea name="reason" maxlength="500" rows="3" style="width:100%;box-sizing:border-box"></textarea>
-    <button type="submit" class="reject" style="margin-top:8px">Reject</button>
-  </form>
-</body>
-</html>`;
-
+    const html = buildOwnerReviewPageHtml({ doc, token, apiBase });
     return res.status(200).type('html').send(html);
   } catch (error) {
     return res.status(500).send('Server error');
@@ -749,12 +954,30 @@ exports.postOwnerReviewDecision = async (req, res) => {
       decision === 'approve'
         ? 'Thank you. The wholesaler request has been approved.'
         : 'The wholesaler request has been rejected.';
-    return res
-      .status(200)
-      .type('html')
-      .send(
-        `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Done</title></head><body><p>${escapeHtml(msg)}</p></body></html>`
-      );
+    const ok = decision === 'approve';
+    return res.status(200).type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Decision saved</title>
+  <link rel="stylesheet" href="/wholesaler/owner-review.css" />
+  <style>
+    body { display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .done-card { max-width: 400px; text-align: center; padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: #fff; }
+    .done-card h1 { margin: 0 0 8px; font-size: 1.2rem; }
+    .done-card p { margin: 0; color: var(--muted); font-size: 0.9rem; }
+    .done-icon { font-size: 2rem; line-height: 1; margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+  <div class="done-card">
+    <div class="done-icon">${ok ? '✓' : '✕'}</div>
+    <h1>${ok ? 'Approved' : 'Rejected'}</h1>
+    <p>${escapeHtml(msg)}</p>
+  </div>
+</body>
+</html>`);
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Error processing decision', error: error.message });
   }
