@@ -49,9 +49,8 @@ async function processAndUploadCategoryImage(buffer, { nameHint, uniqueSuffix })
 // =============================================
 const getAllCategories = async (req, res) => {
   try {
-    const storefront = req.storefront || 'ecomm';
-    //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('CATEGORY', { all: true, storefront });
+    // Categories are shared across storefronts; keep one cache key for all panels.
+    const cacheKey = cacheConfig.generateKey('CATEGORY', { all: true });
 
     //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
@@ -112,10 +111,8 @@ const getAllCategories = async (req, res) => {
 const getCategoryById = async (req, res) => {
   try {
     const { id } = req.params;
-    const storefront = req.storefront || 'ecomm';
-
-    //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('CATEGORY', { id, storefront });
+    // Categories are shared across storefronts; keep one cache key for all panels.
+    const cacheKey = cacheConfig.generateKey('CATEGORY', { id });
 
     //  CHECK CACHE FIRST
     const cachedData = await cacheService.get(cacheKey);
