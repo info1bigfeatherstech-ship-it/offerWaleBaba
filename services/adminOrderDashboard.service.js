@@ -145,12 +145,17 @@ function mergeFilters(base, search, bucket) {
 /**
  * @param {Date} from
  * @param {Date} to
+ * @param {import('mongoose').FilterQuery<any>} [scopeMatch]
  */
-async function aggregateSummary(from, to) {
+async function aggregateSummary(from, to, scopeMatch = {}) {
   const dateMatch = { createdAt: { $gte: from, $lte: to } };
+  const baseMatch =
+    scopeMatch && Object.keys(scopeMatch).length
+      ? { $and: [dateMatch, scopeMatch] }
+      : dateMatch;
 
   const [row] = await Order.aggregate([
-    { $match: dateMatch },
+    { $match: baseMatch },
     {
       $facet: {
         totals: [

@@ -149,6 +149,16 @@ const userSchema = new mongoose.Schema(
         "wholesaler"
       ],
       default: "user"
+    },
+
+    /**
+     * Admin operational data scope (orders/users/carts/wishlists/analytics).
+     * Backward-compatible default is ecomm only.
+     */
+    allowedStorefronts: {
+      type: [String],
+      enum: ["ecomm", "wholesale"],
+      default: ["ecomm"]
     }
   },
   { timestamps: true }

@@ -19,10 +19,12 @@ const {
 //auth middleware 
 const { verifyToken } = require('../middlewares/auth.middleware');
 const { authorizeRoles } = require('../middlewares/authorize-roles.middleware');
+const { requireStrictAdminStorefrontScope } = require('../middlewares/admin-storefront-scope.middleware');
 
 // All routes require authentication and admin/marketing role
 router.use(verifyToken);
 router.use(authorizeRoles('admin', 'marketing_manager'));
+router.use(requireStrictAdminStorefrontScope);
 
 // User analytics
 router.get('/users', getAllUsers);

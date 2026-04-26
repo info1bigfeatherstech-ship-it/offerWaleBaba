@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const redisManager = require('../config/redis.config');
 const tokenStore = require('../config/tokenBlacklist');
 const User = require('../models/User');
+const { normalizeAllowedStorefronts } = require('./admin-storefront-scope.middleware');
 
 /**
  * Verify JWT Token Middleware
@@ -77,7 +78,7 @@ const verifyToken = async (req, res, next) => {
     }
 
     // Fetch user to get role and userType for RBAC
-    const user = await User.findById(decoded.id).select('userType role');
+    const user = await User.findById(decoded.id).select('userType role allowedStorefronts');
     
     if (!user) {
       return res.status(401).json({
@@ -93,7 +94,8 @@ const verifyToken = async (req, res, next) => {
     req.userType = user.userType || 'user';
     req.user = {
       id: decoded.id,
-      role: String(resolvedRole).toLowerCase()
+      role: String(resolvedRole).toLowerCase(),
+      allowedStorefronts: normalizeAllowedStorefronts(user.allowedStorefronts)
     };
     req.userRole = req.user.role;
 
