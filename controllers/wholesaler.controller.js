@@ -753,7 +753,7 @@ exports.buildNotifyApplicantPayload = async (req, res) => {
         'Complete account setup: request OTP on the app/website using your registered mobile number, then set your password.',
         `Registered mobile: ${doc.mobileNumber}`,
         '',
-        '— Team OfferWaaleBaba'
+        '— Team OfferWaleBaba'
       ].join('\n');
     } else if (doc.status === 'rejected') {
       messagePlain = [
@@ -761,7 +761,7 @@ exports.buildNotifyApplicantPayload = async (req, res) => {
         '',
         'Thank you for your interest. Unfortunately your wholesaler application was not approved at this time.',
         '',
-        '— Team'
+        '— Team OfferWaleBaba'
       ].join('\n');
     } else {
       return res.status(409).json({ success: false, message: `Unexpected status: ${doc.status}` });
