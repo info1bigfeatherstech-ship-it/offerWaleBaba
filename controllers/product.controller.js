@@ -2481,6 +2481,7 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
               variants: [newVariant]
             });
             
+            const rowStatus = row.status?.toLowerCase() || "active";
             product = new Product({
               name: row.name,
               title: row.title || row.name,

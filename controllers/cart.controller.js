@@ -155,6 +155,7 @@ const getcart = async (req, res) => {
 
   try {
     const storefront = storefrontOrDefault(req);
+        console.log('🛒 [getcart] userId:', userId, 'storefront:', storefront);
 
     const cart = await Cart.findOne({ userId })
       .populate({
@@ -162,6 +163,8 @@ const getcart = async (req, res) => {
         select: CART_PRODUCT_SELECT
       })
       .lean();
+       console.log('🛒 [getcart] Raw cart items count:', cart?.items?.length);
+    console.log('🛒 [getcart] First raw item:', JSON.stringify(cart?.items?.[0], null, 2));
 
     if (!cart) {
       return res.json({ 
@@ -177,6 +180,8 @@ const getcart = async (req, res) => {
     
     for (const item of cart.items) {
       const product = item.productId;
+            console.log('🛒 [getcart] product:', product?._id, 'variants count:', product?.variants?.length);
+
       if (!product) continue;
       
       let variant = null;
@@ -194,6 +199,8 @@ const getcart = async (req, res) => {
       if (!variant) continue;
       
       const formattedItem = formatcartItem(item, product, variant, userType);
+            console.log('🛒 [getcart] formattedItem:', !!formattedItem);
+
       if (formattedItem) {
         itemsWithFullData.push(formattedItem);
       }
