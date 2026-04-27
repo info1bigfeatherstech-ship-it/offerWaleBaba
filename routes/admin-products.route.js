@@ -216,6 +216,7 @@ router.get('/active', productController.getAllActiveProducts);
 router.patch('/restore/:slug', productController.restoreProduct);
 router.delete('/hard/:slug', productController.hardDeleteProduct);
 router.post('/:slug/variants', uploadProductImages, productController.addVariant);
+router.patch('/:slug/variants/:productCode/channel-visibility', productController.updateVariantChannelVisibility);
 router.delete('/:slug/variants', productController.deleteVariant);
 router.get('/variant/:productCode', productController.getVariantByproductCode);
 router.put('/:slug', uploadProductImages, rejectSlugSku, productController.updateProduct);

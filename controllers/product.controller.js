@@ -1225,29 +1225,8 @@ function collectImportCsvRowFieldErrors(row, productName) {
 
   const wholesale = parseBoolean(row.wholesale);
   if (wholesale) {
-    if (!row.wholesaleBase || !String(row.wholesaleBase).trim()) {
-      errors.push('wholesaleBase is required when wholesale=true');
-    } else {
-      const wholesaleBase = Number(String(row.wholesaleBase).replace(/[^0-9.]/g, ''));
-      if (isNaN(wholesaleBase) || wholesaleBase <= 0) {
-        errors.push(`Invalid wholesaleBase: ${row.wholesaleBase}`);
-      }
-      if (row.wholesaleSale && String(row.wholesaleSale).trim() !== '') {
-        const wholesaleSale = Number(String(row.wholesaleSale).replace(/[^0-9.]/g, ''));
-        if (isNaN(wholesaleSale) || wholesaleSale <= 0) {
-          errors.push(`Invalid wholesaleSale: ${row.wholesaleSale}`);
-        } else if (!isNaN(wholesaleBase) && wholesaleSale >= wholesaleBase) {
-          errors.push(`wholesaleSale (${wholesaleSale}) must be less than wholesaleBase (${wholesaleBase})`);
-        }
-      }
-      const moq =
-        row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0
-          ? Number(row.minimumOrderQuantity)
-          : 1;
-      if (moq < 1) {
-        errors.push('minimumOrderQuantity must be at least 1');
-      }
-    }
+    const wholesaleCfg = parseWholesaleConfigForImportRow(row);
+    warnings.push(...wholesaleCfg.warnings);
   }
 
   if (row.productCode != null && String(row.productCode).trim()) {
@@ -1274,6 +1253,7 @@ function collectImportCsvRowFieldErrors(row, productName) {
 
 async function validateImportCsvProductGroupPreview(productName, productRows) {
   const productErrors = [];
+  const productWarnings = [];
   const variants = [];
 
   const existingProduct = await Product.findOne({
@@ -1412,6 +1392,30 @@ async function validateImportCsvProductGroupPreview(productName, productRows) {
 
   const hasErrors =
     productErrors.length > 0 || variants.some((v) => !v.isValid);
+  const previewVariantsForStatus = productRows.map((row) => {
+    const wholesaleCfg = parseWholesaleConfigForImportRow(row);
+    return {
+      wholesale: wholesaleCfg.wholesale,
+      price: { wholesaleBase: wholesaleCfg.wholesaleBase },
+      channelVisibility: buildChannelVisibilityFromCsvRow(row, wholesaleCfg.wholesaleEligible),
+      isActive: normalizeLifecycleFromRowStatus(row.status, 'active') === 'active'
+    };
+  });
+  const derivedChannelStatus = deriveProductChannelStatusFromVariants(previewVariantsForStatus);
+  const ineligibleWholesaleCount = productRows.filter((row) => {
+    const cfg = parseWholesaleConfigForImportRow(row);
+    return cfg.wholesale && !cfg.wholesaleEligible;
+  }).length;
+
+  if (ineligibleWholesaleCount > 0) {
+    productWarnings.push(
+      `${ineligibleWholesaleCount} variant(s) are not wholesale-eligible; wholesale visibility will be set to draft for them.`
+    );
+  }
+  if (derivedChannelStatus.wholesale === 'active') {
+    productWarnings.push('Product wholesale channel will be active (at least one eligible wholesale variant found).');
+  }
+
   return {
     name: productName,
     category: firstRow?.category,
@@ -1420,6 +1424,8 @@ async function validateImportCsvProductGroupPreview(productName, productRows) {
     variants,
     nextSuggestedProductCode,
     hasErrors,
+    productWarnings,
+    derivedChannelStatus,
     existingInDb: Boolean(existingProduct),
     existingSlug: existingProduct?.slug || null
   };
@@ -1673,6 +1679,7 @@ async function processProductWithRollback(productName, productRows, stats) {
         variants: existingProduct.variants,
       });
       existingProduct.seo = seoData;
+      syncProductStorefrontStatusFromVariants(existingProduct);
       
       await existingProduct.save();
       return { success: true, action: 'updated', product: existingProduct };
@@ -1699,45 +1706,12 @@ async function buildVariantWithValidation(row, productName) {
     throw new Error(`Invalid basePrice: ${row.basePrice} (Row ${row.rowNumber})`);
   }
   
-  // ✅ WHOLESALE HANDLING WITH VALIDATION
- const wholesale = parseBoolean(row.wholesale);
-  
-  let wholesaleBase = null;
-  let wholesaleSale = null;
-  let moq = 1;
-  
-  if (wholesale) {
-    // Validate wholesaleBase is provided
-    if (!row.wholesaleBase || row.wholesaleBase.trim() === "") {
-      throw new Error(`wholesaleBase is required when wholesale=true (Row ${row.rowNumber})`);
-    }
-    
-    wholesaleBase = Number(row.wholesaleBase?.replace(/[^0-9.]/g, ""));
-    if (isNaN(wholesaleBase)) {
-      throw new Error(`Invalid wholesaleBase: ${row.wholesaleBase} (Row ${row.rowNumber})`);
-    }
-    
-    if (row.wholesaleSale && row.wholesaleSale.trim() !== "") {
-      wholesaleSale = Number(row.wholesaleSale?.replace(/[^0-9.]/g, ""));
-      if (isNaN(wholesaleSale)) {
-        throw new Error(`Invalid wholesaleSale: ${row.wholesaleSale} (Row ${row.rowNumber})`);
-      }
-      
-      // Validate wholesaleSale < wholesaleBase
-      if (wholesaleSale >= wholesaleBase) {
-        throw new Error(`wholesaleSale (${wholesaleSale}) must be less than wholesaleBase (${wholesaleBase}) (Row ${row.rowNumber})`);
-      }
-    }
-    
-    // MOQ handling
-    moq = row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0 
-      ? Number(row.minimumOrderQuantity) 
-      : 1;
-      
-    if (moq < 1) {
-      throw new Error(`minimumOrderQuantity must be at least 1 (Row ${row.rowNumber})`);
-    }
-  }
+  // Wholesale config: do not fail row when wholesaleBase is missing/invalid.
+  const wholesaleCfg = parseWholesaleConfigForImportRow(row);
+  const wholesale = wholesaleCfg.wholesale;
+  const wholesaleBase = wholesaleCfg.wholesaleBase;
+  const wholesaleSale = wholesaleCfg.wholesaleSale;
+  const moq = wholesaleCfg.minimumOrderQuantity;
   
   // ✅ Validate sale price < base price
   if (cleanSalePrice && cleanSalePrice >= cleanBasePrice) {
@@ -1841,7 +1815,8 @@ async function buildVariantWithValidation(row, productName) {
       lowStockThreshold: 5,
     },
     images: imagesArr,
-    isActive: true,
+    isActive: normalizeLifecycleFromRowStatus(row?.status, 'active') === 'active',
+    channelVisibility: buildChannelVisibilityFromCsvRow(row, wholesaleCfg.wholesaleEligible),
   };
 }
 
@@ -1881,7 +1856,7 @@ async function buildNewProductWithVariants(productName, productRows, variants) {
     description: firstRow.description || "",
     category: category._id,
     brand: firstRow.brand || "Generic",
-    status: firstRow.status?.toLowerCase() || "draft",
+    status: normalizeLifecycleFromRowStatus(firstRow.status, "active"),
     isFeatured: parseBoolean(firstRow.isfeatured),
     variants: variants,
     hsnCode: finalHsnCode,
@@ -1907,6 +1882,8 @@ async function buildNewProductWithVariants(productName, productRows, variants) {
       customMessage: firstRow.customMessage || "",
     },
   };
+  productObj.channelStatus = deriveProductChannelStatusFromVariants(variants);
+  productObj.status = productObj.channelStatus.ecomm;
   
   // Generate SEO
   const seoData = generateSEOData({
@@ -2195,41 +2172,11 @@ async function buildCompleteVariant(row, productName, images) {
     throw new Error(`Sale price (${salePrice}) must be less than base price (${basePrice})`);
   }
   
-  // ✅ WHOLESALE HANDLING
-  const wholesale = parseBoolean(row.wholesale);
-  let wholesaleBase = null;
-  let wholesaleSale = null;
-  let minimumOrderQuantity = 1;
-  
-  if (wholesale) {
-    if (!row.wholesaleBase || row.wholesaleBase.trim() === "") {
-      throw new Error(`wholesaleBase is required when wholesale=true for productCode ${productCode}`);
-    }
-    
-    wholesaleBase = Number(row.wholesaleBase);
-    if (isNaN(wholesaleBase) || wholesaleBase <= 0) {
-      throw new Error(`Invalid wholesaleBase: ${row.wholesaleBase}. Must be a positive number`);
-    }
-    
-    if (row.wholesaleSale && row.wholesaleSale.trim() !== "") {
-      wholesaleSale = Number(row.wholesaleSale);
-      if (isNaN(wholesaleSale) || wholesaleSale <= 0) {
-        throw new Error(`Invalid wholesaleSale: ${row.wholesaleSale}. Must be a positive number`);
-      }
-      
-      if (wholesaleSale >= wholesaleBase) {
-        throw new Error(`wholesaleSale (${wholesaleSale}) must be less than wholesaleBase (${wholesaleBase})`);
-      }
-    }
-    
-    minimumOrderQuantity = row.minimumOrderQuantity && Number(row.minimumOrderQuantity) > 0 
-      ? Number(row.minimumOrderQuantity) 
-      : 1;
-      
-    if (minimumOrderQuantity < 1) {
-      throw new Error(`minimumOrderQuantity must be at least 1 for productCode ${productCode}`);
-    }
-  }
+  const wholesaleCfg = parseWholesaleConfigForImportRow(row);
+  const wholesale = wholesaleCfg.wholesale;
+  const wholesaleBase = wholesaleCfg.wholesaleBase;
+  const wholesaleSale = wholesaleCfg.wholesaleSale;
+  const minimumOrderQuantity = wholesaleCfg.minimumOrderQuantity;
   
   // Parse attributes
   const parseAttributes = (attrString) => {
@@ -2247,7 +2194,7 @@ async function buildCompleteVariant(row, productName, images) {
   const random = Math.floor(Math.random() * 10000);
   const sku = row.sku?.trim() || `SKU-${productCode}`;
   
-  const wholesaleEligible = wholesale && Number(wholesaleBase) > 0;
+  const wholesaleEligible = wholesaleCfg.wholesaleEligible;
   return {
     sku,
     productCode,
@@ -2266,12 +2213,8 @@ async function buildCompleteVariant(row, productName, images) {
       lowStockThreshold: 5,
     },
     images: images,
-    isActive: true,
-    channelVisibility: deriveVariantChannelVisibilityFromLegacy(
-      true,
-      null,
-      { isWholesaleEligible: wholesaleEligible }
-    )
+    isActive: normalizeLifecycleFromRowStatus(row?.status, 'active') === 'active',
+    channelVisibility: buildChannelVisibilityFromCsvRow(row, wholesaleEligible)
   };
 }
 
@@ -2512,7 +2455,8 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
             if (productAttributes.length && !product.attributes?.length) {
               product.attributes = productAttributes;
             }
-            
+
+            syncProductStorefrontStatusFromVariants(product);
             await product.save();
             stats.successful++;
             stats.products.push({ name: row.name, productCode, action: 'updated' });
@@ -2537,7 +2481,6 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
               variants: [newVariant]
             });
             
-            const rowStatus = row.status?.toLowerCase() || "active";
             product = new Product({
               name: row.name,
               title: row.title || row.name,
@@ -2545,8 +2488,8 @@ const bulkUploadNewProductsWithImages = async (req, res) => {
               description: row.description || "",
               category: categoryDoc._id,
               brand: row.brand || "Generic",
-              status: rowStatus,
-              channelStatus: deriveProductChannelStatusFromLegacy(rowStatus, null),
+              status: normalizeLifecycleFromRowStatus(row.status, "active"),
+              channelStatus: deriveProductChannelStatusFromVariants([newVariant]),
               isFeatured: parseBoolean(row.isfeatured),
               attributes: productAttributes,
               variants: [newVariant],
@@ -3950,6 +3893,123 @@ const bulkRestore = async (req, res) => {
 };
 
 const ALLOWED_PRODUCT_STATUSES = ['draft', 'active', 'archived'];
+const STOREFRONT_KEYS = ['ecomm', 'wholesale'];
+
+function normalizeLifecycleValue(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ALLOWED_PRODUCT_STATUSES.includes(normalized) ? normalized : null;
+}
+
+function normalizeOptionalLifecycleMap(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out = {};
+  for (const storefront of STOREFRONT_KEYS) {
+    const parsed = normalizeLifecycleValue(input[storefront]);
+    if (parsed) out[storefront] = parsed;
+  }
+  return out;
+}
+
+function normalizeLifecycleFromRowStatus(statusValue, fallback = 'active') {
+  const normalized = String(statusValue || '').trim().toLowerCase();
+  if (ALLOWED_PRODUCT_STATUSES.includes(normalized)) return normalized;
+  return fallback;
+}
+
+function buildChannelVisibilityFromCsvRow(row, wholesaleEligible) {
+  const ecommLifecycle = normalizeLifecycleFromRowStatus(row?.status, 'active');
+  return {
+    ecomm: ecommLifecycle,
+    wholesale: wholesaleEligible ? 'active' : 'draft'
+  };
+}
+
+function parseWholesaleConfigForImportRow(row) {
+  const wholesaleRequested = parseBoolean(row?.wholesale);
+  let wholesaleBase = null;
+  let wholesaleSale = null;
+  let minimumOrderQuantity = 1;
+  const warnings = [];
+
+  if (!wholesaleRequested) {
+    return {
+      wholesale: false,
+      wholesaleBase,
+      wholesaleSale,
+      minimumOrderQuantity,
+      wholesaleEligible: false,
+      warnings
+    };
+  }
+
+  const rawWholesaleBase = String(row?.wholesaleBase || '').trim();
+  const parsedWholesaleBase = rawWholesaleBase
+    ? Number(rawWholesaleBase.replace(/[^0-9.]/g, ''))
+    : NaN;
+
+  if (!Number.isFinite(parsedWholesaleBase) || parsedWholesaleBase <= 0) {
+    wholesaleBase = 0;
+    warnings.push(
+      'wholesale=true but wholesaleBase is missing/invalid; wholesale visibility forced to draft for this variant.'
+    );
+  } else {
+    wholesaleBase = parsedWholesaleBase;
+  }
+
+  const rawWholesaleSale = String(row?.wholesaleSale || '').trim();
+  if (rawWholesaleSale) {
+    const parsedWholesaleSale = Number(rawWholesaleSale.replace(/[^0-9.]/g, ''));
+    if (!Number.isFinite(parsedWholesaleSale) || parsedWholesaleSale <= 0) {
+      warnings.push(`Invalid wholesaleSale ignored: ${row.wholesaleSale}`);
+    } else if (wholesaleBase > 0 && parsedWholesaleSale >= wholesaleBase) {
+      warnings.push(
+        `wholesaleSale (${parsedWholesaleSale}) must be less than wholesaleBase (${wholesaleBase}); wholesaleSale ignored.`
+      );
+    } else {
+      wholesaleSale = parsedWholesaleSale;
+    }
+  }
+
+  const parsedMoq = Number(row?.minimumOrderQuantity);
+  if (Number.isFinite(parsedMoq) && parsedMoq >= 1) {
+    minimumOrderQuantity = parsedMoq;
+  } else if (String(row?.minimumOrderQuantity || '').trim()) {
+    warnings.push('minimumOrderQuantity invalid; defaulting to 1');
+  }
+
+  const wholesaleEligible = wholesaleRequested && wholesaleBase > 0;
+  return {
+    wholesale: wholesaleRequested,
+    wholesaleBase,
+    wholesaleSale,
+    minimumOrderQuantity,
+    wholesaleEligible,
+    warnings
+  };
+}
+
+function deriveProductChannelStatusFromVariants(variants) {
+  const list = Array.isArray(variants) ? variants : [];
+
+  const hasActiveEcomm = list.some((v) => {
+    const state = v?.channelVisibility?.ecomm;
+    return state === 'active' || (state == null && v?.isActive !== false);
+  });
+  const hasDraftEcomm = list.some((v) => (v?.channelVisibility?.ecomm || 'draft') === 'draft');
+  const ecomm = hasActiveEcomm ? 'active' : (hasDraftEcomm ? 'draft' : 'archived');
+
+  const wholesale = list.some((v) => hasWholesalePricingConfig(v)) ? 'active' : 'draft';
+
+  return { ecomm, wholesale };
+}
+
+function syncProductStorefrontStatusFromVariants(productDoc) {
+  if (!productDoc || !Array.isArray(productDoc.variants)) return;
+  const derived = deriveProductChannelStatusFromVariants(productDoc.variants);
+  productDoc.channelStatus = derived;
+  // Keep legacy status aligned for backward-compatible queries.
+  productDoc.status = derived.ecomm;
+}
 
 /**
  * Bulk set lifecycle status for many products (admin list multi-select).
@@ -3959,12 +4019,16 @@ const ALLOWED_PRODUCT_STATUSES = ['draft', 'active', 'archived'];
  */
 const bulkUpdateProductStatus = async (req, res) => {
   try {
-    const { status, slugs: rawSlugs } = req.body || {};
+    const { status, channelStatus, slugs: rawSlugs } = req.body || {};
+    const normalizedLegacyStatus = normalizeLifecycleValue(status);
+    const normalizedChannelStatus = normalizeOptionalLifecycleMap(channelStatus);
+    const hasLegacyStatus = Boolean(normalizedLegacyStatus);
+    const hasChannelStatus = Object.keys(normalizedChannelStatus).length > 0;
 
-    if (!ALLOWED_PRODUCT_STATUSES.includes(status)) {
+    if (!hasLegacyStatus && !hasChannelStatus) {
       return res.status(400).json({
         success: false,
-        message: `status is required and must be one of: ${ALLOWED_PRODUCT_STATUSES.join(', ')}`
+        message: `Provide either "status" or "channelStatus" with values in: ${ALLOWED_PRODUCT_STATUSES.join(', ')}`
       });
     }
 
@@ -3994,36 +4058,101 @@ const bulkUpdateProductStatus = async (req, res) => {
     }
 
     const existing = await Product.find({ slug: { $in: slugs } })
-      .select('slug')
+      .select('slug name status channelStatus variants')
       .lean();
     const foundSet = new Set(existing.map((p) => p.slug));
     const notFoundSlugs = slugs.filter((s) => !foundSet.has(s));
 
-    const updatePipeline =
-      status === 'archived'
-        ? {
-            $set: {
-              status: 'archived',
-              archivedAt: new Date()
-            }
-          }
-        : {
-            $set: { status },
-            $unset: { archivedAt: '' }
-          };
+    const updates = [];
+    const skipped = [];
+    const now = new Date();
 
-    const result = await Product.updateMany({ slug: { $in: slugs } }, updatePipeline);
+    for (const product of existing) {
+      const currentChannelStatus = {
+        ...(product.channelStatus || {})
+      };
+      const nextChannelStatus = {
+        ...currentChannelStatus,
+        ...normalizedChannelStatus
+      };
+
+      // Backward compatibility: legacy `status` can still drive both channels in bulk.
+      if (hasLegacyStatus) {
+        nextChannelStatus.ecomm = normalizedLegacyStatus;
+        nextChannelStatus.wholesale = normalizedLegacyStatus;
+      }
+
+      if (
+        nextChannelStatus.wholesale === 'active' &&
+        !hasActiveWholesaleVariantForCatalog(product)
+      ) {
+        skipped.push({
+          slug: product.slug,
+          name: product.name,
+          reasonCode: 'WHOLESALE_ELIGIBILITY_MISSING',
+          reason:
+            'Wholesale activation skipped: no variant is eligible (requires wholesale=true, wholesaleBase>0, and wholesale visibility active).'
+        });
+        continue;
+      }
+
+      const updateDoc = {
+        channelStatus: nextChannelStatus
+      };
+      if (hasLegacyStatus) {
+        updateDoc.status = normalizedLegacyStatus;
+      }
+
+      if (
+        nextChannelStatus.ecomm === 'archived' &&
+        nextChannelStatus.wholesale === 'archived'
+      ) {
+        updateDoc.archivedAt = now;
+      } else if (hasLegacyStatus && normalizedLegacyStatus !== 'archived') {
+        updateDoc.archivedAt = null;
+      }
+
+      updates.push({
+        updateOne: {
+          filter: { _id: product._id },
+          update: {
+            $set: updateDoc
+          }
+        }
+      });
+    }
+
+    let modifiedCount = 0;
+    if (updates.length > 0) {
+      const writeResult = await Product.bulkWrite(updates, { ordered: false });
+      modifiedCount = Number(writeResult.modifiedCount || 0);
+    }
 
     await invalidateAllProductCaches();
 
     return res.status(200).json({
       success: true,
-      message: `Bulk status update to "${status}" completed`,
-      status,
+      message:
+        updates.length > 0
+          ? `Bulk channel status update completed. Updated: ${updates.length}, skipped: ${skipped.length}.`
+          : `No products were updated. Skipped: ${skipped.length}.`,
+      status: hasLegacyStatus ? normalizedLegacyStatus : null,
+      channelStatus: hasChannelStatus || hasLegacyStatus
+        ? {
+            ecomm: hasLegacyStatus ? normalizedLegacyStatus : normalizedChannelStatus.ecomm || null,
+            wholesale: hasLegacyStatus ? normalizedLegacyStatus : normalizedChannelStatus.wholesale || null
+          }
+        : null,
       requested: slugs.length,
-      matched: result.matchedCount,
-      modified: result.modifiedCount,
-      unchanged: result.matchedCount - result.modifiedCount,
+      matched: existing.length,
+      modified: modifiedCount,
+      updatedCount: updates.length,
+      skippedCount: skipped.length,
+      skippedProducts: skipped,
+      updatedProducts: existing
+        .filter((p) => !skipped.some((s) => s.slug === p.slug))
+        .map((p) => ({ slug: p.slug, name: p.name })),
+      unchanged: Math.max(existing.length - modifiedCount - skipped.length, 0),
       notFoundSlugs,
       notFoundCount: notFoundSlugs.length
     });
@@ -4032,6 +4161,101 @@ const bulkUpdateProductStatus = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Error updating product statuses',
+      error: error.message
+    });
+  }
+};
+
+const updateVariantChannelVisibility = async (req, res) => {
+  try {
+    const slug = String(req.params.slug || '').trim();
+    const productCode = normalizeProductCode(req.params.productCode);
+    const requested = normalizeOptionalLifecycleMap(req.body?.channelVisibility);
+
+    if (!slug) {
+      return res.status(400).json({
+        success: false,
+        message: 'Product slug is required'
+      });
+    }
+    if (!productCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Variant productCode is required'
+      });
+    }
+    if (Object.keys(requested).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: `channelVisibility must include at least one of: ${STOREFRONT_KEYS.join(', ')}`
+      });
+    }
+
+    const doc = await Product.findOne({ slug });
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        message: 'Product not found'
+      });
+    }
+
+    const variantIndex = doc.variants.findIndex(
+      (v) => normalizeProductCode(v.productCode) === productCode
+    );
+    if (variantIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Variant not found for provided productCode'
+      });
+    }
+
+    const variant = doc.variants[variantIndex];
+    if (
+      requested.wholesale === 'active' &&
+      !hasWholesalePricingConfig(variant)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Cannot set wholesale visibility active for this variant. Set wholesale=true and wholesaleBase (>0) first.'
+      });
+    }
+
+    variant.channelVisibility = mergeVariantChannelVisibility(variant, requested);
+    doc.markModified('variants');
+
+    // Prevent wholesale storefront active state without an eligible active variant.
+    if (
+      doc.channelStatus?.wholesale === 'active' &&
+      !hasActiveWholesaleVariantForCatalog(doc)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Wholesale storefront remains active only when at least one variant is wholesale-eligible and wholesale-visible.'
+      });
+    }
+
+    await doc.save({ validateBeforeSave: true });
+    await invalidateProductCaches(doc.slug);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Variant channel visibility updated successfully',
+      product: {
+        slug: doc.slug,
+        name: doc.name
+      },
+      variant: {
+        productCode: variant.productCode,
+        channelVisibility: variant.channelVisibility
+      }
+    });
+  } catch (error) {
+    console.error('updateVariantChannelVisibility:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error updating variant channel visibility',
       error: error.message
     });
   }
@@ -4057,7 +4281,6 @@ const getLowStockProducts = async (req, res) => {
             in: {
               $and: [
                 { $eq: ["$$variant.inventory.trackInventory", true] },
-                { $gt: ["$$variant.inventory.quantity", 0] },
                 {
                   $lte: [
                     "$$variant.inventory.quantity",
@@ -5159,6 +5382,7 @@ module.exports = {
    previewImportProductsFromCSV,
    getAllProductsAdmin , 
    addVariant,
+  updateVariantChannelVisibility,
    deleteVariant,
    getVariantByproductCode,
    bulkUploadNewProductsWithImages,
