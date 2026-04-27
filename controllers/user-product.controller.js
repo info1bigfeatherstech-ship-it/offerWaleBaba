@@ -6,6 +6,8 @@ const Category = require('../models/Category');
 const cacheService = require('../services/cache.service');
 const cacheConfig = require('../config/cache.config');
 const { setApiCacheHeaders } = require('../utils/apiCacheHeaders');
+// Top of your products controller file mein add karo
+const ProductTag = require('../models/ProductTag');
 
 // ✅ ONLY PRICE LOGIC - Baaki sab same
 const getVariantPrice = (variant, userType) => {
@@ -26,23 +28,105 @@ const getVariantPrice = (variant, userType) => {
 // =============================================
 // GET /products/all - WITH CACHE
 // =============================================
+
 const getProducts = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.max(1, parseInt(req.query.limit) || 12);
     const skip = (page - 1) * limit;
+    const allProducts = await Product.find({}).lean();
 
-    const filters = { status: 'active' };
+console.table(
+  allProducts.map((p) => ({
+    name: p.name,
+    sale: p.variants?.[0]?.price?.sale,
+    base: p.variants?.[0]?.price?.base,
+  }))
+);
+    // ✅ normalize tag (on_sale → on-sale)
+    const normalizeTag = (tag) => tag.replace(/_/g, '-');
 
+    const tagsRaw = req.query.tags;
+    const tagsFilter = tagsRaw
+      ? String(tagsRaw)
+          .split(',')
+          .map(t => normalizeTag(t.trim()))
+          .filter(Boolean)
+      : [];
+      
+    const filters = {
+  status:
+    req.userType === "admin"
+      ? { $in: ["active", "draft"] }
+      : "active",
+};
+
+// price filter
+const priceQuery = {};
+
+if (req.query.minPrice) {
+  priceQuery.$gte = Number(req.query.minPrice);
+}
+
+if (req.query.maxPrice) {
+  priceQuery.$lte = Number(req.query.maxPrice);
+}
+
+if (Object.keys(priceQuery).length > 0) {
+  filters.variants = {
+    $elemMatch: {
+      "price.sale": priceQuery,
+    },
+  };
+}
+
+
+    // ✅ category filter
     if (req.query.category) {
-      const cat = await Category.findOne({ 
-        slug: String(req.query.category).toLowerCase() 
+      const cat = await Category.findOne({
+        slug: String(req.query.category).toLowerCase()
       }).select('_id');
+
       if (cat) filters.category = cat._id;
     }
 
-    if (req.query.featured === 'true') filters.isFeatured = true;
+    // ✅ featured filter
+    if (req.query.featured === 'true') {
+      filters.isFeatured = true;
+    }
 
+    // ✅ TAG FILTER (FIXED)
+    let taggedProducts = [];
+    let taggedProductIds = [];
+
+    if (tagsFilter.length > 0) {
+      taggedProducts = await ProductTag.find({
+        tags: { $in: tagsFilter }
+      }).select('product').lean();
+
+      taggedProductIds = taggedProducts.map(t => t.product);
+
+      // 🔥 IMPORTANT: handle empty case
+      if (taggedProductIds.length === 0) {
+        return res.json({
+          success: true,
+          pagination: {
+            total: 0,
+            page,
+            limit,
+            totalPages: 0,
+            hasNextPage: false,
+            hasPrevPage: false
+          },
+          products: [],
+          appliedTags: tagsFilter
+        });
+      }
+
+      filters._id = { $in: taggedProductIds };
+    }
+
+    // ✅ search
     let sortOption = { createdAt: -1 };
     if (req.query.q) {
       filters.$text = { $search: String(req.query.q) };
@@ -51,22 +135,12 @@ const getProducts = async (req, res) => {
 
     const userType = req.userType || 'user';
 
-    // ✅ GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('PRODUCT', {
-      page, limit,
-      category: req.query.category,
-      featured: req.query.featured,
-      q: req.query.q,
-      userType
-    });
-
-    // ✅ CHECK CACHE FIRST
-    const cachedData = await cacheService.get(cacheKey);
-    if (cachedData) {
-      res.setHeader('X-Cache', 'HIT');
-      setApiCacheHeaders(res);
-      return res.json(cachedData);
-    }
+    // ✅ DEBUG (keep for now)
+    console.log("tagsFilter:", tagsFilter);
+    console.log("taggedProducts:", taggedProducts.length);
+    console.log("taggedProductIds:", taggedProductIds.length);
+    console.log("final filters:", filters);
+    console.log("Product:", await Product.countDocuments());
 
     const [total, products] = await Promise.all([
       Product.countDocuments(filters),
@@ -86,7 +160,7 @@ const getProducts = async (req, res) => {
       }))
     }));
 
-    const responseData = {
+    return res.json({
       success: true,
       pagination: {
         total,
@@ -97,22 +171,15 @@ const getProducts = async (req, res) => {
         hasPrevPage: page > 1
       },
       products: productsWithData,
-      userType: userType
-    };
-
-    // ✅ STORE IN CACHE
-    await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_LIST);
-
-    res.setHeader('X-Cache', 'MISS');
-    setApiCacheHeaders(res);
-
-    return res.json(responseData);
+      userType,
+      appliedTags: tagsFilter
+    });
 
   } catch (err) {
     console.error('getProducts:', err);
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Server error' 
+    return res.status(500).json({
+      success: false,
+      message: 'Server error'
     });
   }
 };
@@ -196,10 +263,17 @@ const searchProducts = async (req, res) => {
     const skip = (page - 1) * limit;
     const userType = req.userType || 'user';
 
-    // ✅ GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType });
+    // ✅ ADD THIS
+    const tagsRaw = req.query.tags;
+    const tagsFilter = tagsRaw
+      ? String(tagsRaw).split(',').map(t => t.trim()).filter(Boolean)
+      : [];
 
-    // ✅ CHECK CACHE FIRST
+    const cacheKey = cacheConfig.generateKey('SEARCH', { 
+      q, page, limit, userType,
+      tags: tagsFilter.join(',')   // ✅ add to cache key
+    });
+
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
@@ -211,6 +285,16 @@ const searchProducts = async (req, res) => {
       status: 'active', 
       $text: { $search: q } 
     };
+
+    // ✅ ADD THIS
+    if (tagsFilter.length > 0) {
+      const taggedProducts = await ProductTag.find({
+        tags: { $in: tagsFilter }
+      }).select('product').lean();
+
+      const taggedProductIds = taggedProducts.map(t => t.product);
+      filters._id = { $in: taggedProductIds };
+    }
 
     const total = await Product.countDocuments(filters);
     const products = await Product.find(filters, { score: { $meta: 'textScore' } })
@@ -234,10 +318,10 @@ const searchProducts = async (req, res) => {
       page, 
       limit, 
       products: productsWithData,
-      userType: userType
+      userType,
+      appliedTags: tagsFilter   // ✅ add this
     };
 
-    // ✅ STORE IN CACHE
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_SEARCH);
 
     res.setHeader('X-Cache', 'MISS');
@@ -264,10 +348,17 @@ const getProductsByCategory = async (req, res) => {
     const skip = (page - 1) * limit;
     const userType = req.userType || 'user';
 
-    // ✅ GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('PRODUCT', { categorySlug: slug, page, limit, userType });
+    // ✅ ADD THIS — parse tags from query
+    const tagsRaw = req.query.tags; // "on_sale" or "on_sale,today_arrival"
+    const tagsFilter = tagsRaw
+      ? String(tagsRaw).split(',').map(t => t.trim()).filter(Boolean)
+      : [];
 
-    // ✅ CHECK CACHE FIRST
+    const cacheKey = cacheConfig.generateKey('PRODUCT', { 
+      categorySlug: slug, page, limit, userType,
+      tags: tagsFilter.join(',')   // ✅ add to cache key
+    });
+
     const cachedData = await cacheService.get(cacheKey);
     if (cachedData) {
       res.setHeader('X-Cache', 'HIT');
@@ -290,6 +381,16 @@ const getProductsByCategory = async (req, res) => {
       status: 'active', 
       category: category._id 
     };
+
+    // ✅ ADD THIS — tags filter using ProductTag lookup
+    if (tagsFilter.length > 0) {
+      const taggedProducts = await ProductTag.find({
+        tags: { $in: tagsFilter }
+      }).select('product').lean();
+
+      const taggedProductIds = taggedProducts.map(t => t.product);
+      filters._id = { $in: taggedProductIds };
+    }
 
     const total = await Product.countDocuments(filters);
     const products = await Product.find(filters)
@@ -314,10 +415,10 @@ const getProductsByCategory = async (req, res) => {
       limit, 
       products: productsWithData, 
       category,
-      userType: userType
+      userType,
+      appliedTags: tagsFilter   // ✅ tell frontend which tags were applied
     };
 
-    // ✅ STORE IN CACHE
     await cacheService.set(cacheKey, responseData, cacheConfig.ttl.PRODUCT_CATEGORY);
 
     res.setHeader('X-Cache', 'MISS');

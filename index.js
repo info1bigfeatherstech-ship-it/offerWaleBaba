@@ -117,7 +117,8 @@ app.use(cors({
   },
   credentials: true,  // ✅ IMPORTANT - allows cookies
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  // allowedHeaders: ['Content-Type', 'Authorization', 'x-store-type']
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-storefront']
 }));
 
 // Handle preflight requests

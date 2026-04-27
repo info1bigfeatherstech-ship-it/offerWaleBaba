@@ -147,6 +147,9 @@ const { verifyToken } = require('../middlewares/auth.middleware');
 const { authorizeRoles } = require('../middlewares/authorize-roles.middleware');
 const { uploadProductImages, uploadCSVFile, uploadBulkNewProductFiles } = require('../middlewares/upload.middleware');
 const productController = require('../controllers/product.controller');
+const updateProductTagController = require('../controllers/updateProductTagController');
+// const updateProductTagController = require("../controllers/updateProductTagController");
+
 
 // Validation middleware to check for rejected fields
 const rejectSlugSku = (req, res, next) => {
@@ -209,7 +212,9 @@ router.get('/drafts', productController.getDraftProducts);
 router.get('/all', productController.getAllProductsAdmin);
 router.delete('/bulk-hard-delete', productController.bulkHardDelete);
 router.get('/active', productController.getAllActiveProducts);
-            
+
+router.put("/updateFlags", updateProductTagController);       
+
 // =============================================
 // SINGLE PRODUCT ACTIONS (with :slug, :productCode)
 // =============================================
@@ -221,5 +226,7 @@ router.get('/variant/:productCode', productController.getVariantByproductCode);
 router.put('/:slug', uploadProductImages, rejectSlugSku, productController.updateProduct);
 router.delete('/:slug', productController.deleteProduct);
 router.get('/:slug', productController.getProductBySlug);
+
 // router.get('/', productController.getAllActiveProducts); // Get products with filters, pagination, search, etc.
+
 module.exports = router;
