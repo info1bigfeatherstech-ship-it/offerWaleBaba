@@ -21,7 +21,8 @@ const {
   deriveVariantChannelVisibilityFromLegacy,
   mergeProductChannelStatus,
   mergeVariantChannelVisibility,
-  hasWholesalePricingConfig
+  hasWholesalePricingConfig,
+  getVariantAvailabilityByStorefront
 } = require("../utils/storefrontCatalog");
 
 
@@ -79,6 +80,33 @@ function hasActiveWholesaleVariantForCatalog(doc) {
     const isVisibleWholesale = ws != null ? ws === "active" : v.isActive !== false;
     return isVisibleWholesale && hasWholesalePricingConfig(v);
   });
+}
+
+function collectWholesaleInventoryWarnings(variants = []) {
+  if (!Array.isArray(variants)) return [];
+  const warnings = [];
+  for (const variant of variants) {
+    if (!variant || variant.wholesale !== true) continue;
+    if (!hasWholesalePricingConfig(variant)) continue;
+    const trackInventory = variant?.inventory?.trackInventory !== false;
+    if (!trackInventory) continue;
+    const qty = Number(variant?.inventory?.quantity || 0);
+    const moq = Math.max(1, Number(variant?.minimumOrderQuantity || 1));
+    if (Number.isFinite(qty) && Number.isFinite(moq) && qty > 0 && qty < moq) {
+      warnings.push({
+        productCode: variant.productCode || null,
+        code: 'WHOLESALE_MOQ_EXCEEDS_STOCK',
+        message: `Inventory (${qty}) is below wholesale MOQ (${moq}). Variant will show as MOQ unmet on wholesale until stock is replenished.`
+      });
+    } else if (Number.isFinite(qty) && Number.isFinite(moq) && qty <= 0) {
+      warnings.push({
+        productCode: variant.productCode || null,
+        code: 'WHOLESALE_OUT_OF_STOCK',
+        message: 'Variant is wholesale-enabled but currently out of stock.'
+      });
+    }
+  }
+  return warnings;
 }
 
 const PRODUCT_CODE_REGEX = /^([A-Z0-9]+)-(\d{2})$/;
@@ -154,7 +182,7 @@ function parseProductCodeParts(productCode, contextLabel = 'productCode', { requ
 function assertVariantCodeSeries(codes, contextLabel = 'variants') {
   if (!Array.isArray(codes) || codes.length === 0) return;
   if (codes.length === 1) {
-    parseProductCodeParts(codes[0], `${contextLabel}[0] productCode`);
+    parseProductCodeParts(codes[0], `${contextLabel}[0] productCode`, { requireSuffix: true });
     return;
   }
 
@@ -229,14 +257,12 @@ function alignIncomingCodeWithExistingSeries(rawCode, existingCodes = []) {
 
 function alignIncomingRowsWithExistingSeries(productRows, existingCodes = []) {
   if (!Array.isArray(productRows)) return;
+  // Strict mode for bulk flows: do not auto-adjust productCode formats.
+  // We preserve user-entered values and let strict validation return actionable errors.
   for (const row of productRows) {
     const before = normalizeProductCode(row?.productCode);
     if (!before) continue;
-    const after = alignIncomingCodeWithExistingSeries(before, existingCodes);
-    if (after && after !== before) {
-      row.productCode = after;
-      row._productCodeAdjustedFrom = before;
-    }
+    row.productCode = before;
   }
 }
 
@@ -387,7 +413,7 @@ function assertBulkSeriesAgainstExisting({
     .filter(Boolean);
 
   const parsedIncoming = incomingNormalized.map((c, idx) =>
-    parseProductCodeParts(c, `${contextLabel}[incoming ${idx}] productCode`)
+    parseProductCodeParts(c, `${contextLabel}[incoming ${idx}] productCode`, { requireSuffix: true })
   );
   const parsedExisting = existingNormalized.map((c, idx) =>
     parseProductCodeParts(c, `${contextLabel}[existing ${idx}] productCode`)
@@ -909,12 +935,14 @@ const createProduct = async (req, res) => {
     product.seo = seoData;
 
     await product.save();
+    const warnings = collectWholesaleInventoryWarnings(product.variants);
 
     return res.status(201).json({
       success: true,
       message: "Product created successfully",
       product,
-      categoryDetails: existingCategory.name
+      categoryDetails: existingCategory.name,
+      warnings
     });
 
   } catch (error) {
@@ -3660,11 +3688,13 @@ const updateProduct = async (req, res) => {
     }
 
     await invalidateProductCaches(doc.slug);
+    const warnings = collectWholesaleInventoryWarnings(doc.variants);
 
     return res.status(200).json({
       success: true,
       message: "Product updated successfully",
-      product: doc
+      product: doc,
+      warnings
     });
   } catch (error) {
     console.error("Update product error:", error);
@@ -4697,6 +4727,18 @@ const getAllProductsAdmin = async (req, res) => {
       .limit(limit)
       .lean({ virtuals: true });
 
+    const enrichedProducts = products.map((product) => {
+      const variants = Array.isArray(product.variants) ? product.variants : [];
+      const variantsWithAvailability = variants.map((variant) => ({
+        ...variant,
+        availability: getVariantAvailabilityByStorefront(variant)
+      }));
+      return {
+        ...product,
+        variants: variantsWithAvailability
+      };
+    });
+
     const totalProducts = await Product.countDocuments();
 
     return res.status(200).json({
@@ -4704,7 +4746,7 @@ const getAllProductsAdmin = async (req, res) => {
        totalProducts,
       totalPages: Math.ceil(totalProducts / limit),
       currentPage: page,
-      products
+      products: enrichedProducts
     });
 
   } catch (error) {
@@ -4775,14 +4817,54 @@ const addVariant = async (req, res) => {
     }
 
     let productCodeNormalized;
+    let incomingCodeParts;
     try {
       productCodeNormalized = normalizeProductCode(variant.productCode);
-      parseProductCodeParts(productCodeNormalized, "variant.productCode");
+      incomingCodeParts = parseProductCodeParts(productCodeNormalized, "variant.productCode", { requireSuffix: true });
     } catch (e) {
       return res.status(400).json({
         success: false,
         message: e.message || "Invalid productCode"
       });
+    }
+
+    // Enforce same base and next sequence for this product's variant series.
+    const existingCodes = Array.isArray(product.variants)
+      ? product.variants
+          .map((v) => normalizeProductCode(v?.productCode))
+          .filter(Boolean)
+      : [];
+
+    const parsedExisting = existingCodes.map((code) => {
+      try {
+        return parseProductCodeParts(code, "existing productCode");
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+
+    if (parsedExisting.length > 0) {
+      const base = parsedExisting[0].base;
+      if (incomingCodeParts.base !== base) {
+        const maxSeq = Math.max(...parsedExisting.map((p) => deriveSequenceNumberFromParsedCode(p)));
+        const nextCode = `${base}-${formatSequenceSuffix(maxSeq + 1)}`;
+        return res.status(400).json({
+          success: false,
+          message: `productCode base mismatch for this product. Expected base ${base}-XX. Use next code ${nextCode}.`
+        });
+      }
+
+      const usedSequences = new Set(parsedExisting.map((p) => deriveSequenceNumberFromParsedCode(p)));
+      const maxSeq = Math.max(...usedSequences);
+      const expectedSeq = maxSeq + 1;
+      const expectedCode = `${base}-${formatSequenceSuffix(expectedSeq)}`;
+
+      if (incomingCodeParts.sequence !== expectedSeq || usedSequences.has(incomingCodeParts.sequence)) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid next productCode for this product. Use ${expectedCode}.`
+        });
+      }
     }
 
     // 🔒 Global duplicate check
@@ -4915,11 +4997,13 @@ const newVariant = {
 
        // ✅ INVALIDATE ALL PRODUCT CACHES
     await invalidateProductCaches(product.slug);
+    const warnings = collectWholesaleInventoryWarnings([newVariant]);
 
     return res.status(200).json({
       success: true,
       message: "Variant added successfully",
-      product
+      product,
+      warnings
     });
 
   } catch (error) {
