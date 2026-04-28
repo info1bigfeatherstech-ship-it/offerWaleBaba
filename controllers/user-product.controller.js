@@ -10,16 +10,20 @@ const ProductTag = require('../models/ProductTag');
 const {
   mongoCatalogAnd,
   filterVariantsForStorefront,
-  isProductListedOnStorefront
+  isProductListedOnStorefront,
+  getVariantAvailability
 } = require('../utils/storefrontCatalog');
 // Top of your products controller file mein add karo
 const ProductTag = require('../models/ProductTag');
 
 const storefrontFrom = (req) => req.storefront || 'ecomm';
+const useWholesalePricing = (storefront) => storefront === 'wholesale';
 
-// ONLY PRICE LOGIC - shared for ecomm + wholesale
-const getVariantPrice = (variant, userType) => {
-  if (userType === 'wholesaler') {
+// Price resolution is storefront-driven:
+// wholesale storefront => wholesale price for all visitors (logged-in or guest)
+// ecomm storefront => retail price
+const getVariantPrice = (variant, storefront) => {
+  if (useWholesalePricing(storefront)) {
     const wholesaleBase = Number(variant.price?.wholesaleBase || 0);
     const wholesaleSaleRaw = variant.price?.wholesaleSale;
     const wholesaleSale = wholesaleSaleRaw != null ? Number(wholesaleSaleRaw) : null;
@@ -58,10 +62,12 @@ const getVariantPrice = (variant, userType) => {
 function mapProductVariantsForApi(product, userType, storefront) {
   const visible = filterVariantsForStorefront(product.variants || [], storefront);
   return visible.map((variant) => {
-    const resolvedPrice = getVariantPrice(variant, userType);
+    const resolvedPrice = getVariantPrice(variant, storefront);
+    const availability = getVariantAvailability(variant, storefront);
     return {
       ...variant,
       price: resolvedPrice,
+      availability,
       // Keep top-level computed fields aligned with resolved storefront/user pricing.
       isSaleActive: Boolean(resolvedPrice.isSaleActive),
       finalPrice: Number(resolvedPrice.current || 0),

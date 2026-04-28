@@ -58,6 +58,79 @@ function hasWholesalePricingConfig(variant) {
   return Boolean(variant?.wholesale === true && Number.isFinite(wholesaleBase) && wholesaleBase > 0);
 }
 
+function _toSafeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function getVariantAvailability(variant, storefront) {
+  const sf = storefrontKey(storefront);
+  const listed = isVariantListedOnStorefront(variant, sf);
+  const trackInventory = variant?.inventory?.trackInventory !== false;
+  const quantity = _toSafeNumber(variant?.inventory?.quantity, 0);
+  const minimumOrderQuantity = Math.max(1, _toSafeNumber(variant?.minimumOrderQuantity, 1));
+
+  if (!listed) {
+    return {
+      storefront: sf,
+      listed: false,
+      purchasable: false,
+      status: 'NOT_LISTED',
+      quantity,
+      requiredQuantity: sf === 'wholesale' ? minimumOrderQuantity : 1
+    };
+  }
+
+  if (!trackInventory) {
+    return {
+      storefront: sf,
+      listed: true,
+      purchasable: true,
+      status: 'IN_STOCK',
+      quantity: null,
+      requiredQuantity: sf === 'wholesale' ? minimumOrderQuantity : 1
+    };
+  }
+
+  if (quantity <= 0) {
+    return {
+      storefront: sf,
+      listed: true,
+      purchasable: false,
+      status: 'OUT_OF_STOCK',
+      quantity,
+      requiredQuantity: sf === 'wholesale' ? minimumOrderQuantity : 1
+    };
+  }
+
+  if (sf === 'wholesale' && quantity < minimumOrderQuantity) {
+    return {
+      storefront: sf,
+      listed: true,
+      purchasable: false,
+      status: 'MOQ_UNMET',
+      quantity,
+      requiredQuantity: minimumOrderQuantity
+    };
+  }
+
+  return {
+    storefront: sf,
+    listed: true,
+    purchasable: true,
+    status: 'IN_STOCK',
+    quantity,
+    requiredQuantity: sf === 'wholesale' ? minimumOrderQuantity : 1
+  };
+}
+
+function getVariantAvailabilityByStorefront(variant) {
+  return {
+    ecomm: getVariantAvailability(variant, 'ecomm'),
+    wholesale: getVariantAvailability(variant, 'wholesale')
+  };
+}
+
 /**
  * Effective lifecycle for a product on one storefront (new fields with fallback to legacy status).
  * @param {object} product plain or mongoose doc
@@ -257,6 +330,8 @@ module.exports = {
   isProductListedOnStorefront,
   isVariantListedOnStorefront,
   hasWholesalePricingConfig,
+  getVariantAvailability,
+  getVariantAvailabilityByStorefront,
   mongoProductCatalogActiveFilter,
   mongoHasVisibleVariantClause,
   mongoCatalogListFilter,
