@@ -145,21 +145,6 @@ app.use((req, res, next) => {
       ) {
         return callback(null, true);
       }
-<<<<<<< HEAD
-<<<<<<< HEAD
-    } catch (_) {
-      /* ignore */
-    }
-    return callback(new Error('Not allowed by CORS'));
-  },
-  credentials: true,  // ✅ IMPORTANT - allows cookies
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  // allowedHeaders: ['Content-Type', 'Authorization', 'x-store-type']
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-storefront']
-}));
-=======
-=======
->>>>>>> c2d0890a5b52dc70d8edae1d8376f474a1e27d41
       if (!isOwnerReviewPath && allowedOrigins.has(origin)) {
         return callback(null, true);
       }
@@ -176,11 +161,6 @@ app.use((req, res, next) => {
 
   return cors(corsOptions)(req, res, next);
 });
-<<<<<<< HEAD
->>>>>>> 46377be (after wholesaler registration and login)
-=======
-
->>>>>>> c2d0890a5b52dc70d8edae1d8376f474a1e27d41
 
 
 
