@@ -155,7 +155,6 @@ const getcart = async (req, res) => {
 
   try {
     const storefront = storefrontOrDefault(req);
-        console.log('🛒 [getcart] userId:', userId, 'storefront:', storefront);
 
     const cart = await Cart.findOne({ userId })
       .populate({
@@ -163,8 +162,6 @@ const getcart = async (req, res) => {
         select: CART_PRODUCT_SELECT
       })
       .lean();
-       console.log('🛒 [getcart] Raw cart items count:', cart?.items?.length);
-    console.log('🛒 [getcart] First raw item:', JSON.stringify(cart?.items?.[0], null, 2));
 
     if (!cart) {
       return res.json({ 

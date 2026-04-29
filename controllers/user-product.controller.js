@@ -13,8 +13,6 @@ const {
   isProductListedOnStorefront,
   getVariantAvailability
 } = require('../utils/storefrontCatalog');
-// Top of your products controller file mein add karo
-const ProductTag = require('../models/ProductTag');
 
 const storefrontFrom = (req) => req.storefront || 'ecomm';
 const useWholesalePricing = (storefront) => storefront === 'wholesale';
@@ -225,6 +223,15 @@ if (Object.keys(priceQuery).length > 0) {
     if (req.query.featured === "true") {
       extraClauses.push({ isFeatured: true });
     }
+    const storefront = storefrontFrom(req);
+    const extraClauses = [];
+    if (req.query.category) {
+      const cat = await Category.findOne({
+        slug: String(req.query.category).toLowerCase()
+      }).select('_id');
+      if (cat) extraClauses.push({ category: cat._id });
+    }
+    if (req.query.featured === 'true') extraClauses.push({ isFeatured: true });
 
     // tag filter
     if (tagsFilter.length > 0) {
@@ -296,7 +303,7 @@ if (Object.keys(priceQuery).length > 0) {
     }
 
     const projection = req.query.q
-      ? { score: { $meta: "textScore" } }
+      ? { score: { $meta: 'textScore' } }
       : undefined;
 
     const [total, products] = await Promise.all([
@@ -527,6 +534,7 @@ const searchProducts = async (req, res) => {
       const taggedProductIds = taggedProducts.map(t => t.product);
       filters._id = { $in: taggedProductIds };
     }
+    const filters = mongoCatalogAnd(storefront, { $text: { $search: q } });
 
     const total = await Product.countDocuments(filters);
 

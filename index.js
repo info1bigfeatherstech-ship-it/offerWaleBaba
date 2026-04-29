@@ -146,6 +146,7 @@ app.use((req, res, next) => {
         return callback(null, true);
       }
 <<<<<<< HEAD
+<<<<<<< HEAD
     } catch (_) {
       /* ignore */
     }
@@ -157,6 +158,8 @@ app.use((req, res, next) => {
   allowedHeaders: ['Content-Type', 'Authorization', 'x-storefront']
 }));
 =======
+=======
+>>>>>>> c2d0890a5b52dc70d8edae1d8376f474a1e27d41
       if (!isOwnerReviewPath && allowedOrigins.has(origin)) {
         return callback(null, true);
       }
@@ -173,7 +176,11 @@ app.use((req, res, next) => {
 
   return cors(corsOptions)(req, res, next);
 });
+<<<<<<< HEAD
 >>>>>>> 46377be (after wholesaler registration and login)
+=======
+
+>>>>>>> c2d0890a5b52dc70d8edae1d8376f474a1e27d41
 
 
 
