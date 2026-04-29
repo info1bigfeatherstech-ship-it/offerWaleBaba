@@ -94,6 +94,18 @@ const variantSchema = new mongoose.Schema(
       trackInventory: { type: Boolean, default: true }
     },
 
+    /** Per-storefront lifecycle; falls back to isActive when unset (read-side). */
+    channelVisibility: {
+      type: new mongoose.Schema(
+        {
+          ecomm: { type: String, enum: ['draft', 'active', 'archived'] },
+          wholesale: { type: String, enum: ['draft', 'active', 'archived'] }
+        },
+        { _id: false }
+      ),
+      required: false
+    },
+
     isActive: { type: Boolean, default: true }
   },
   { _id: true }
@@ -214,6 +226,18 @@ const productSchema = new mongoose.Schema(
       type: String,
       enum: ['draft', 'active', 'archived'],
       default: 'draft'
+    },
+
+    /** Per-storefront lifecycle; falls back to status when unset (read-side). */
+    channelStatus: {
+      type: new mongoose.Schema(
+        {
+          ecomm: { type: String, enum: ['draft', 'active', 'archived'] },
+          wholesale: { type: String, enum: ['draft', 'active', 'archived'] }
+        },
+        { _id: false }
+      ),
+      required: false
     }
   },
   { timestamps: true }
@@ -329,6 +353,8 @@ productSchema.set('toObject', { virtuals: true });
 //
 productSchema.index({ name: 'text', title: 'text', description: 'text' });
 productSchema.index({ category: 1, status: 1 });
+productSchema.index({ category: 1, 'channelStatus.ecomm': 1, status: 1 });
+productSchema.index({ category: 1, 'channelStatus.wholesale': 1, status: 1 });
 productSchema.index({ isFeatured: 1 });
 productSchema.index({ 'variants.sku': 1 }, { unique: true, sparse: true });
 productSchema.index({ createdAt: -1 });
