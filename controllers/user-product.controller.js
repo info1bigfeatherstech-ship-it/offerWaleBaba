@@ -232,7 +232,7 @@ if (Object.keys(priceQuery).length > 0) {
         tags: { $in: tagsFilter },
       })
         .select("product")
-        .lean();
+        .lean({ virtuals: true });
 
       const taggedProductIds = taggedProducts.map((item) => item.product);
 
