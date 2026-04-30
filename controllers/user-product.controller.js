@@ -131,40 +131,11 @@ console.table(
           .map(t => normalizeTag(t.trim()))
           .filter(Boolean)
       : [];
-      
-    const filters = {
-  status:
-    req.userType === "admin"
-      ? { $in: ["active", "draft"] }
-      : "active",
-};
-
-// price filter
-const priceQuery = {};
-
-if (req.query.minPrice) {
-  priceQuery.$gte = Number(req.query.minPrice);
-}
-
-if (req.query.maxPrice) {
-  priceQuery.$lte = Number(req.query.maxPrice);
-}
-
-if (Object.keys(priceQuery).length > 0) {
-  filters.variants = {
-    $elemMatch: {
-      "price.sale": priceQuery,
-    },
-  };
-}
 
 
     // ✅ category filter
     const storefront = storefrontFrom(req);
     const currentUserType = req.userType || "user";
-
-    const extraClauses = [];
-
     // const allProducts = await Product.find({}).lean();
     // console.table(
     //   allProducts.map((p) => ({
@@ -173,17 +144,6 @@ if (Object.keys(priceQuery).length > 0) {
     //     base: p.variants?.[0]?.price?.base,
     //   }))
     // );
-
-    // normalize tag
-    const normalizeTag = (tag) => tag.replace(/_/g, "-");
-
-    const tagsRaw = req.query.tags;
-    const tagsFilter = tagsRaw
-      ? String(tagsRaw)
-          .split(",")
-          .map((t) => normalizeTag(t.trim()))
-          .filter(Boolean)
-      : [];
 
     /*
     // price filter (currently disabled)
@@ -223,7 +183,6 @@ if (Object.keys(priceQuery).length > 0) {
     if (req.query.featured === "true") {
       extraClauses.push({ isFeatured: true });
     }
-    const storefront = storefrontFrom(req);
     const extraClauses = [];
     if (req.query.category) {
       const cat = await Category.findOne({
@@ -438,19 +397,8 @@ const searchProducts = async (req, res) => {
     const skip = (page - 1) * limit;
 
     // ✅ ADD THIS
-    const tagsRaw = req.query.tags;
-    const tagsFilter = tagsRaw
-      ? String(tagsRaw).split(',').map(t => t.trim()).filter(Boolean)
-      : [];
-
-    const cacheKey = cacheConfig.generateKey('SEARCH', { 
-      q, page, limit, userType,
-      tags: tagsFilter.join(',')   // ✅ add to cache key
-    });
 
     //  GENERATE CACHE KEY
-    const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType });
-    const cacheKey = cacheConfig.generateKey('SEARCH', { q, page, limit, userType, storefront });
     const currentUserType = req.userType || "user";
     const currentStorefront = storefrontFrom(req);
 
@@ -534,7 +482,7 @@ const searchProducts = async (req, res) => {
       const taggedProductIds = taggedProducts.map(t => t.product);
       filters._id = { $in: taggedProductIds };
     }
-    const filters = mongoCatalogAnd(storefront, { $text: { $search: q } });
+    // const filters = mongoCatalogAnd(storefront, { $text: { $search: q } });
 
     const total = await Product.countDocuments(filters);
 
