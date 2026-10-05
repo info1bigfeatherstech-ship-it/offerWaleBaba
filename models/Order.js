@@ -60,7 +60,15 @@ const orderSchema = new mongoose.Schema(
      */
     dropshipMeta: {
       ref: { type: String, trim: true, default: null, index: true },
+      /** Staff placer (legacy temp JWT) — optional when dropshipper places own order */
       placedByUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      /** Dropshipper account id (separate Dropshipper collection — not ecomm User) */
+      dropshipperId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Dropshipper',
+        default: null,
+        index: true
+      },
       customerPhone: { type: String, default: null },
       customerName: { type: String, default: null }
     },

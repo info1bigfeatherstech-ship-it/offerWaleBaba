@@ -16,10 +16,10 @@ function normalizeOrderUserId(order) {
 }
 
 /**
- * Ensure order is dropship and caller owns it (or placed it).
+ * Ensure order is dropship and caller owns it (dropshipper or legacy placer).
  * @returns {Promise<{ ok: true, order } | { ok: false, statusCode, code, message }>}
  */
-async function assertDropshipPaymentAccess(orderId, userId) {
+async function assertDropshipPaymentAccess(orderId, actorId) {
   const order = await Order.findOne({ orderId: String(orderId || '').trim() }).lean();
   if (!order) {
     return { ok: false, statusCode: 404, code: 'ORDER_NOT_FOUND', message: 'Order not found' };
@@ -33,14 +33,21 @@ async function assertDropshipPaymentAccess(orderId, userId) {
     };
   }
 
-  const requester = userId != null ? String(userId) : null;
+  const requester = actorId != null ? String(actorId) : null;
   const owner = normalizeOrderUserId(order);
   const placedBy =
     order.dropshipMeta?.placedByUserId != null
       ? String(order.dropshipMeta.placedByUserId)
       : null;
+  const dropshipperId =
+    order.dropshipMeta?.dropshipperId != null
+      ? String(order.dropshipMeta.dropshipperId)
+      : null;
 
-  if (!requester || (requester !== owner && requester !== placedBy)) {
+  if (
+    !requester ||
+    (requester !== owner && requester !== placedBy && requester !== dropshipperId)
+  ) {
     return { ok: false, statusCode: 403, code: 'ORDER_ACCESS_DENIED', message: 'Unauthorized' };
   }
 

@@ -296,8 +296,9 @@ async function quoteDropshipOrder(input = {}) {
   };
 }
 
-async function createDropshipOrder({ userId, body }) {
-  if (!userId || !mongoose.Types.ObjectId.isValid(String(userId))) {
+async function createDropshipOrder({ userId, dropshipperId = null, body }) {
+  const actorId = userId || dropshipperId;
+  if (!actorId || !mongoose.Types.ObjectId.isValid(String(actorId))) {
     throw createError(401, 'UNAUTHORIZED', 'Authenticated user required to place dropship order');
   }
 
@@ -386,7 +387,7 @@ async function createDropshipOrder({ userId, body }) {
 
   try {
     const addressDoc = new Address({
-      userId,
+      userId: actorId,
       storefront: 'ecomm',
       ...addressCheck.data,
       addressType: 'other',
@@ -423,7 +424,7 @@ async function createDropshipOrder({ userId, body }) {
 
     order = new Order({
       orderId: candidateOrderId,
-      userId,
+      userId: actorId,
       items: evaluated.orderItems,
       subtotal,
       deliveryCharges,
@@ -439,7 +440,8 @@ async function createDropshipOrder({ userId, body }) {
       storefront: DROPSHIP_STOREFRONT,
       dropshipMeta: {
         ref: dropshipRef,
-        placedByUserId: userId,
+        placedByUserId: dropshipperId ? null : actorId,
+        dropshipperId: dropshipperId || null,
         customerPhone: addressCheck.data.phone,
         customerName: addressCheck.data.fullName
       },
@@ -527,7 +529,8 @@ async function createDropshipOrder({ userId, body }) {
       payment_capture: 1,
       notes: {
         orderId: order.orderId,
-        userId: String(userId),
+        userId: String(actorId),
+        dropshipperId: dropshipperId ? String(dropshipperId) : '',
         channel: 'dropship',
         dropshipRef: dropshipRef || ''
       }
@@ -606,12 +609,19 @@ function serializeDropshipOrder(order) {
   };
 }
 
-async function listDropshipOrdersForUser(userId, { page = 1, limit = 20, ref } = {}) {
+async function listDropshipOrdersForUser(userId, { page = 1, limit = 20, ref, dropshipperId } = {}) {
   const p = Math.max(1, Number(page) || 1);
   const l = Math.min(100, Math.max(1, Number(limit) || 20));
+  const actor = dropshipperId || userId;
+  const or = [{ userId: actor }, { 'dropshipMeta.placedByUserId': actor }];
+  if (dropshipperId) {
+    or.push({ 'dropshipMeta.dropshipperId': dropshipperId });
+  } else if (userId) {
+    or.push({ 'dropshipMeta.dropshipperId': userId });
+  }
   const filter = {
     storefront: DROPSHIP_STOREFRONT,
-    $or: [{ userId }, { 'dropshipMeta.placedByUserId': userId }]
+    $or: or
   };
   const refNorm = normalizeDropshipRef(ref);
   if (refNorm) filter['dropshipMeta.ref'] = refNorm;
@@ -634,11 +644,18 @@ async function listDropshipOrdersForUser(userId, { page = 1, limit = 20, ref } =
   };
 }
 
-async function getDropshipOrderForUser(userId, orderId) {
+async function getDropshipOrderForUser(userId, orderId, { dropshipperId } = {}) {
+  const actor = dropshipperId || userId;
+  const or = [{ userId: actor }, { 'dropshipMeta.placedByUserId': actor }];
+  if (dropshipperId) {
+    or.push({ 'dropshipMeta.dropshipperId': dropshipperId });
+  } else if (userId) {
+    or.push({ 'dropshipMeta.dropshipperId': userId });
+  }
   const order = await Order.findOne({
     orderId: String(orderId || '').trim(),
     storefront: DROPSHIP_STOREFRONT,
-    $or: [{ userId }, { 'dropshipMeta.placedByUserId': userId }]
+    $or: or
   }).lean();
   return order;
 }

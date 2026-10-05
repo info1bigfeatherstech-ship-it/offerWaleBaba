@@ -35,13 +35,15 @@ exports.quoteOrder = async (req, res) => {
 
 exports.createOrder = async (req, res) => {
   try {
+    const dropshipperId = req.dropshipperId || null;
     const userId = req.userId;
-    if (!userId) {
+    if (!userId && !dropshipperId) {
       return respondError(res, 401, 'UNAUTHORIZED', 'Login required');
     }
 
     const result = await dropshipOrderService.createDropshipOrder({
       userId,
+      dropshipperId,
       body: req.body || {}
     });
 
@@ -82,10 +84,12 @@ exports.createOrder = async (req, res) => {
 exports.verifyPayment = async (req, res) => {
   try {
     const orderId = req.body?.orderId;
-    const access = await assertDropshipPaymentAccess(orderId, req.userId);
+    const actorId = req.dropshipperId || req.userId;
+    const access = await assertDropshipPaymentAccess(orderId, actorId);
     if (!access.ok) {
       return respondError(res, access.statusCode, access.code, access.message);
     }
+    // Core verify compares order.userId to req.userId — already mapped for dropshipper.
     return getCoreOrderController().verifyPayment(req, res);
   } catch (err) {
     return handleServiceError(res, err);
@@ -94,13 +98,14 @@ exports.verifyPayment = async (req, res) => {
 
 exports.listMyOrders = async (req, res) => {
   try {
-    if (!req.userId) {
+    if (!req.userId && !req.dropshipperId) {
       return respondError(res, 401, 'UNAUTHORIZED', 'Login required');
     }
     const result = await dropshipOrderService.listDropshipOrdersForUser(req.userId, {
       page: req.query.page,
       limit: req.query.limit,
-      ref: req.query.ref || req.query.dropshipRef
+      ref: req.query.ref || req.query.dropshipRef,
+      dropshipperId: req.dropshipperId || null
     });
     return res.json({ success: true, ...result });
   } catch (err) {
@@ -110,12 +115,13 @@ exports.listMyOrders = async (req, res) => {
 
 exports.getMyOrder = async (req, res) => {
   try {
-    if (!req.userId) {
+    if (!req.userId && !req.dropshipperId) {
       return respondError(res, 401, 'UNAUTHORIZED', 'Login required');
     }
     const order = await dropshipOrderService.getDropshipOrderForUser(
       req.userId,
-      req.params.orderId
+      req.params.orderId,
+      { dropshipperId: req.dropshipperId || null }
     );
     if (!order) {
       return respondError(res, 404, 'ORDER_NOT_FOUND', 'Order not found');
