@@ -38,6 +38,94 @@ const { checkServiceability } = require('./serviceability.service');
 const DROPSHIP_STOREFRONT = 'dropship';
 const MAX_LINES = 30;
 const MAX_QTY_PER_LINE = 99;
+
+function pickNonEmpty(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    const s = String(value).trim();
+    if (s) return s;
+  }
+  return '';
+}
+
+/**
+ * Merge customer / address / shippingAddress so either FE shape works.
+ * Prefer structured fields (houseNumber, area, city, …) over line1-only payloads.
+ */
+function resolveDropshipCustomerAddress(body = {}) {
+  const customer =
+    body.customer && typeof body.customer === 'object' && !Array.isArray(body.customer)
+      ? body.customer
+      : {};
+  const address =
+    body.address && typeof body.address === 'object' && !Array.isArray(body.address)
+      ? body.address
+      : {};
+  const shipping =
+    body.shippingAddress &&
+    typeof body.shippingAddress === 'object' &&
+    !Array.isArray(body.shippingAddress)
+      ? body.shippingAddress
+      : {};
+
+  return {
+    fullName: pickNonEmpty(
+      customer.fullName,
+      customer.name,
+      address.fullName,
+      address.name,
+      shipping.fullName,
+      shipping.name
+    ),
+    phone: pickNonEmpty(customer.phone, address.phone, shipping.phone),
+    houseNumber: pickNonEmpty(
+      customer.houseNumber,
+      address.houseNumber,
+      shipping.houseNumber
+    ),
+    building: pickNonEmpty(customer.building, address.building, shipping.building),
+    floor: pickNonEmpty(customer.floor, address.floor, shipping.floor),
+    area: pickNonEmpty(customer.area, address.area, shipping.area),
+    landmark: pickNonEmpty(
+      customer.landmark,
+      address.landmark,
+      shipping.landmark,
+      customer.addressLine2,
+      address.addressLine2,
+      shipping.addressLine2,
+      shipping.line2
+    ),
+    addressLine1: pickNonEmpty(
+      customer.addressLine1,
+      address.addressLine1,
+      shipping.addressLine1,
+      shipping.line1,
+      body.addressLine1
+    ),
+    addressLine2: pickNonEmpty(
+      customer.addressLine2,
+      address.addressLine2,
+      shipping.addressLine2,
+      shipping.line2,
+      body.addressLine2
+    ),
+    city: pickNonEmpty(customer.city, address.city, shipping.city),
+    state: pickNonEmpty(customer.state, address.state, shipping.state),
+    postalCode: pickNonEmpty(
+      customer.postalCode,
+      address.postalCode,
+      shipping.postalCode,
+      body.customerPincode
+    ),
+    country:
+      pickNonEmpty(customer.country, address.country, shipping.country) || 'India',
+    deliveryInstructions: pickNonEmpty(
+      customer.deliveryInstructions,
+      address.deliveryInstructions,
+      body.deliveryInstructions
+    )
+  };
+}
 const MAX_REF_LEN = 64;
 
 function createError(statusCode, code, message, details = null) {
@@ -314,7 +402,8 @@ async function createDropshipOrder({ userId, dropshipperId = null, body }) {
     throw createError(400, 'VALIDATION_ERROR', 'warehousePincode is required');
   }
 
-  const addressCheck = validatePhysicalAddressForSave(body?.customer || body?.address || {});
+  const mergedAddress = resolveDropshipCustomerAddress(body);
+  const addressCheck = validatePhysicalAddressForSave(mergedAddress);
   if (!addressCheck.ok) {
     throw createError(400, addressCheck.code || 'ADDRESS_VALIDATION_FAILED', addressCheck.message, {
       errors: addressCheck.errors
@@ -393,7 +482,10 @@ async function createDropshipOrder({ userId, dropshipperId = null, body }) {
       addressType: 'other',
       isGift: false,
       deliveryInstructions: String(
-        body?.customer?.deliveryInstructions || body?.deliveryInstructions || ''
+        mergedAddress.deliveryInstructions ||
+          body?.customer?.deliveryInstructions ||
+          body?.deliveryInstructions ||
+          ''
       ).trim(),
       isDefault: false
     });

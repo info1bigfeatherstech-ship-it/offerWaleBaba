@@ -122,7 +122,7 @@ function parseMonthlyEstimatedPurchase(value) {
 
 /**
  * Wholesaler-style application profile for dropshipper registration.
- * Proof URLs are optional (no public upload route yet) but accepted if provided.
+ * Proof URLs: set by Cloudinary upload on create-payment (multipart) or optional https URL.
  */
 function parseApplicationDetails(body = {}) {
   const whatsappNumber = assertPhone(

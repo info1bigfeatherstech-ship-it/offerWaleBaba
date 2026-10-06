@@ -2,10 +2,12 @@
 
 const registerService = require('../services/dropshipperRegister.service');
 const { handleControllerError } = require('../utils/dropshipperHttp');
+const { resolveRegistrationRequestBody } = require('../utils/resolveRegistrationRequestBody');
 const logger = require('../../utils/logger');
 
 exports.startRegistration = async (req, res) => {
   try {
+    // Preview validates text fields only — proofs uploaded on create-payment
     const preview = await registerService.startRegistration(req.body || {});
     return res.json({ success: true, ...preview });
   } catch (err) {
@@ -15,7 +17,8 @@ exports.startRegistration = async (req, res) => {
 
 exports.createRegistrationPayment = async (req, res) => {
   try {
-    const result = await registerService.createRegistrationPayment(req.body || {});
+    const body = await resolveRegistrationRequestBody(req, { requireProofFiles: true });
+    const result = await registerService.createRegistrationPayment(body);
     return res.status(201).json({
       success: true,
       message: 'Complete Razorpay payment for subscription fee',

@@ -32,8 +32,12 @@ function isMoneyCapturedPaymentStatus(paymentStatus) {
 /**
  * Target orderStatus after a successful capture under current fulfilment policy.
  * Default (legacy off): stay/return to pending for the admin approval queue.
+ * Dropship orders always stay pending until admin confirms (never auto-confirm).
  */
-function targetOrderStatusAfterSuccessfulCapture() {
+function targetOrderStatusAfterSuccessfulCapture(order) {
+  if (String(order?.storefront || '').toLowerCase().trim() === 'dropship') {
+    return 'pending';
+  }
   return isLegacyAutoFulfillOnCheckout() ? 'confirmed' : 'pending';
 }
 
@@ -96,9 +100,14 @@ function recoverOrderStatusAfterSuccessfulCapture(order, opts = {}) {
   }
 
   const previousOrderStatus = normalizeLower(order.orderStatus);
+  const isDropship = String(order?.storefront || '').toLowerCase().trim() === 'dropship';
   if (!RECOVERABLE_AFTER_CAPTURE_ORDER_STATUSES.has(previousOrderStatus)) {
-    // Still promote pending → confirmed when legacy auto-fulfill is on.
-    if (isLegacyAutoFulfillOnCheckout() && previousOrderStatus === 'pending') {
+    // Still promote pending → confirmed when legacy auto-fulfill is on (never for dropship).
+    if (
+      !isDropship &&
+      isLegacyAutoFulfillOnCheckout() &&
+      previousOrderStatus === 'pending'
+    ) {
       order.orderStatus = 'confirmed';
       return {
         changed: true,
@@ -124,7 +133,7 @@ function recoverOrderStatusAfterSuccessfulCapture(order, opts = {}) {
     };
   }
 
-  const nextOrderStatus = targetOrderStatusAfterSuccessfulCapture();
+  const nextOrderStatus = targetOrderStatusAfterSuccessfulCapture(order);
   order.orderStatus = nextOrderStatus;
 
   order.paymentInfo = order.paymentInfo || {};
