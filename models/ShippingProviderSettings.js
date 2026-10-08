@@ -35,6 +35,18 @@ const shippingProviderSettingsSchema = new mongoose.Schema(
       pickupPincode: { type: String, default: null, trim: true },
       warehouseAddressTitle: { type: String, default: null, trim: true }
     },
+    /**
+     * Same Day / Shiprocket Quick overlay (admin-controlled).
+     * Does not change activeProvider — only offers same_day when enabled + pincode match.
+     */
+    sameDay: {
+      enabled: { type: Boolean, default: false },
+      /** Explicit allowlist — when enabled, at least one pincode is required for offers */
+      pincodes: { type: [String], default: [] },
+      cutoffHour: { type: Number, default: 14, min: 0, max: 23 },
+      warehouseLat: { type: Number, default: null },
+      warehouseLng: { type: Number, default: null }
+    },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
   },
   { timestamps: true }

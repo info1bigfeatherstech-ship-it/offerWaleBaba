@@ -1392,6 +1392,14 @@ exports.createOrder = async (req, res) => {
             });
         }
 
+        const quoteSpeedForOverride = (() => {
+            try {
+                const sds = require('../services/sameDayDelivery.service');
+                return sds.normalizeShippingSpeed(quote.shippingSpeed || quote.shippingMeta?.shippingSpeed);
+            } catch (_) {
+                return 'standard';
+            }
+        })();
         const deliveryOverride = {
             charges: Number(quote.deliveryCharges) || 0,
             meta: {
@@ -1402,6 +1410,13 @@ exports.createOrder = async (req, res) => {
                     Number.isFinite(Number(quote.shippingMeta.courierCompanyId))
                         ? Number(quote.shippingMeta.courierCompanyId)
                         : null,
+                shipmozoCourierId:
+                    quote.shippingMeta?.shipmozoCourierId != null &&
+                    Number.isFinite(Number(quote.shippingMeta.shipmozoCourierId))
+                        ? Number(quote.shippingMeta.shipmozoCourierId)
+                        : null,
+                shippingProvider: quote.shippingMeta?.shippingProvider || null,
+                pickupsAutomaticallyScheduled: quote.shippingMeta?.pickupsAutomaticallyScheduled,
                 isDeliverable: true,
                 codAvailable: quote.shippingMeta?.codAvailable !== false,
                 freightInr:
@@ -1413,7 +1428,10 @@ exports.createOrder = async (req, res) => {
                     quote.shippingMeta?.codFeeInr != null &&
                     Number.isFinite(Number(quote.shippingMeta.codFeeInr))
                         ? roundMoney2(Number(quote.shippingMeta.codFeeInr))
-                        : null
+                        : null,
+                shippingSpeed: quoteSpeedForOverride,
+                checkoutShippingMethod: quote.shippingMeta?.checkoutShippingMethod || null,
+                etaLabel: quote.shippingMeta?.etaLabel || null
             }
         };
 
@@ -1494,11 +1512,18 @@ exports.createOrder = async (req, res) => {
                   : pricedShip.shippingProvider === 'shipmozo' || quoteShip.shippingProvider === 'shipmozo'
                     ? resolvedCourierCompanyId
                     : null;
+        const sameDayDeliveryService = require('../services/sameDayDelivery.service');
+        const orderShippingSpeed = sameDayDeliveryService.normalizeShippingSpeed(
+            pricedShip.shippingSpeed || quote.shippingSpeed || quoteShip.shippingSpeed
+        );
         let orderShippingProvider =
             pricedShip.shippingProvider ||
             quoteShip.shippingProvider ||
             null;
-        if (orderShippingProvider !== 'shipmozo' && orderShippingProvider !== 'shiprocket') {
+        // Same-day always stamps Shiprocket Quick — never the active Shipmozo setting.
+        if (orderShippingSpeed === sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY) {
+            orderShippingProvider = SHIPPING_PROVIDERS.SHIPROCKET;
+        } else if (orderShippingProvider !== 'shipmozo' && orderShippingProvider !== 'shiprocket') {
             try {
                 orderShippingProvider = await shippingProviderSettingsService.getActiveProviderForNewOrders(storefront);
             } catch (_) {
@@ -1609,6 +1634,7 @@ exports.createOrder = async (req, res) => {
             userType: finalUserType,
             storefront,
             shippingProvider: orderShippingProvider,
+            shippingSpeed: orderShippingSpeed,
             inventoryHold,
             orderStatus:
                 isLegacyAutoFulfillOnCheckout() && normalizedPaymentMethod === 'cod' ? 'confirmed' : 'pending',
@@ -1634,14 +1660,31 @@ exports.createOrder = async (req, res) => {
                 courierName: pricedShip.courierName || quoteShip.courierName || null,
                 estimatedDays: pricedShip.estimatedDays ?? quoteShip.estimatedDays ?? null,
                 courierCompanyId: resolvedCourierCompanyId,
-                shipmozoCourierId: resolvedShipmozoCourierId,
+                shipmozoCourierId:
+                    orderShippingSpeed === sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY
+                        ? null
+                        : resolvedShipmozoCourierId,
                 provider: orderShippingProvider,
                 pickupsAutomaticallyScheduled:
                     pricedShip.pickupsAutomaticallyScheduled != null
                         ? Boolean(pricedShip.pickupsAutomaticallyScheduled)
                         : quoteShip.pickupsAutomaticallyScheduled != null
                           ? Boolean(quoteShip.pickupsAutomaticallyScheduled)
-                          : null
+                          : null,
+                shippingSpeed: orderShippingSpeed,
+                checkoutShippingMethod:
+                    orderShippingSpeed === sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY
+                        ? pricedShip.checkoutShippingMethod ||
+                          quoteShip.checkoutShippingMethod ||
+                          quote.sameDayMeta?.checkoutShippingMethod ||
+                          'SR_QUICK'
+                        : null,
+                etaLabel:
+                    pricedShip.etaLabel ||
+                    quoteShip.etaLabel ||
+                    (orderShippingSpeed === sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY
+                        ? 'Same day delivery'
+                        : null)
             },
             shippingWeightSnapshot
         };
@@ -3499,6 +3542,27 @@ function buildDefaultOrderTimeline(order) {
     const placed = { status: 'Order Placed', completed: true, timestamp: order.createdAt };
     const payment = buildPaymentTimelineStep(order);
 
+    // Warehouse self-pickup — never show courier Shipped / Out for Delivery steps.
+    const isSelfPickup =
+        String(order.fulfillmentMode || '').toLowerCase() === 'self_pickup' ||
+        String(order.shipmentInfo?.providerStatus || '').toUpperCase() === 'SELF_PICKUP';
+    if (isSelfPickup) {
+        const collectedAt =
+            order.selfPickup?.completedAt ||
+            order.shipmentInfo?.deliveredAt ||
+            order.updatedAt ||
+            null;
+        return [
+            placed,
+            payment,
+            {
+                status: 'Self pickup — collected from warehouse',
+                completed: true,
+                timestamp: collectedAt
+            }
+        ];
+    }
+
     const timeline = {
         pending: [placed, { ...payment, completed: payment.completed }],
         confirmed: [
@@ -3693,6 +3757,42 @@ exports.trackOrder = async (req, res) => {
         let liveTracking = null;
         let trackingSource = 'internal';
         const provider = resolveOrderShippingProvider(orderDoc);
+        const isSelfPickupOrder =
+            String(orderDoc.fulfillmentMode || '').toLowerCase() === 'self_pickup' ||
+            String(orderDoc.shipmentInfo?.providerStatus || '').toUpperCase() === 'SELF_PICKUP';
+
+        // Self pickup: do not call Shiprocket/Shipmozo — booking was cancelled (or never existed).
+        if (isSelfPickupOrder) {
+            const fallbackTimeline = buildDefaultOrderTimeline(orderDoc);
+            const tracking = {
+                orderId: orderDoc.orderId,
+                currentStatus: orderDoc.orderStatus,
+                trackingNumber: null,
+                courier: null,
+                estimatedDelivery: null,
+                providerStatus: orderDoc.shipmentInfo?.providerStatus || 'SELF_PICKUP',
+                lastSyncedAt: orderDoc.shipmentInfo?.lastSyncAt || null,
+                source: 'self_pickup',
+                shippingProvider: provider,
+                fulfillmentMode: 'self_pickup',
+                timeline: fallbackTimeline
+            };
+            if (isOrderStaffRequest(req)) {
+                const { buildShipmentOpsView } = require('../services/shipmentOps');
+                tracking.shipmentOps = buildShipmentOpsView(orderDoc, { source: 'track_order_self_pickup' });
+            } else {
+                const { buildCustomerTrackingExtras } = require('../utils/customerTrackingDisplay');
+                const customerExtras = buildCustomerTrackingExtras({
+                    orderDoc,
+                    liveEvents: [],
+                    hasAwb: false
+                });
+                tracking.simpleTimeline = fallbackTimeline;
+                tracking.courierTimeline = customerExtras.courierTimeline;
+                tracking.statusSummary = customerExtras.statusSummary;
+            }
+            return res.json({ success: true, tracking });
+        }
 
         // ——— Shipmozo: panel hydrate + track reconcile (Shiprocket parity) ———
         if (provider === SHIPPING_PROVIDERS.SHIPMOZO) {

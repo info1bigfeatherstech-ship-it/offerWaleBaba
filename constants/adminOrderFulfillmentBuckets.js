@@ -13,7 +13,7 @@ const {
   fulfillmentLabelForPickupExceptionAwareOrder
 } = require('./pickupExceptionOrderQuery');
 
-/** @typedef {'all'|'new'|'bill_sent'|'ready_to_ship'|'ready_to_pick'|'in_transit'|'completed'|'rto'|'pickup_exception'|'others'} AdminOrderBucketKey */
+/** @typedef {'all'|'new'|'bill_sent'|'ready_to_ship'|'ready_to_pick'|'in_transit'|'completed'|'rto'|'pickup_exception'|'self_pickup'|'others'} AdminOrderBucketKey */
 
 /** @type {Record<Exclude<AdminOrderBucketKey, 'all'>, string[]>} */
 const BUCKET_TO_ORDER_STATUSES = Object.freeze({
@@ -33,6 +33,11 @@ const BUCKET_TO_ORDER_STATUSES = Object.freeze({
   rto: ['rto'],
   /** Pickup exception — also matched via providerStatus (see pickupExceptionOrderQuery) */
   pickup_exception: ['pickup_exception'],
+  /**
+   * Warehouse self-pickup — matched via fulfillmentMode (see selfPickupOrderQuery).
+   * Placeholder status list unused; buildBucketMatch uses dedicated matcher.
+   */
+  self_pickup: ['delivered'],
   /** Terminal / exceptional */
   others: ['cancelled', 'payment_failed']
 });
@@ -132,6 +137,13 @@ function fulfillmentLabelFromOrderStatus(orderStatus, providerStatus, order) {
  * @param {string} bucketKey
  */
 function fulfillmentLabelForAdminListRow(orderStatus, providerStatus, bucketKey, order) {
+  if (
+    String(order?.fulfillmentMode || '').toLowerCase() === 'self_pickup' ||
+    String(providerStatus || '').toUpperCase() === 'SELF_PICKUP'
+  ) {
+    return 'Self pickup';
+  }
+
   const rtoLabel = fulfillmentLabelForRtoAwareOrder(orderStatus, providerStatus, order);
   if (rtoLabel) return rtoLabel;
 

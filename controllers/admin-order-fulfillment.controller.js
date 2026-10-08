@@ -42,8 +42,10 @@ const {
   ensureShiprocketPickupId
 } = require('../services/shiprocketReconcile.service');
 const { computeOpsState } = require('../services/shipmentOps/computeOpsState');
+const { markOrderSelfPickup } = require('../services/selfPickup.service');
 const { mergeReturnInfo } = require('../services/rtoRefund.service');
 const { isCustomerProductReturnRequest } = require('../utils/productReturnRequest');
+const { isPackingViewerRequest } = require('../utils/adminOrderRoles');
 const {
   resolveActualFreightForCourier,
   settleOosShippingAfterActualFreight,
@@ -2309,6 +2311,90 @@ exports.adminFulfillmentShippingLabelFile = async (req, res) => {
   }
 };
 
+/**
+ * POST /orders/admin/items/:orderId/fulfillment/self-pickup
+ * Customer collected from warehouse before courier pickup.
+ * Cancels Shiprocket/Shipmozo booking when present, then marks delivered + fulfillmentMode=self_pickup.
+ * Storefront-scoped via loadStaffOrder (ecomm / wholesale / dropship).
+ */
+exports.adminFulfillmentSelfPickup = async (req, res) => {
+  try {
+    if (isPackingViewerRequest(req)) {
+      return jsonError(
+        res,
+        403,
+        'PACKING_VIEWER_FORBIDDEN',
+        'Packing viewer cannot mark self pickup.'
+      );
+    }
+
+    const order = await loadStaffOrder(req, res, req.params.orderId);
+    if (!order) return;
+
+    const sf = String(order.storefront || 'ecomm').toLowerCase().trim();
+    if (sf === 'dropship') {
+      return jsonError(
+        res,
+        403,
+        'SELF_PICKUP_DROPSHIP_FORBIDDEN',
+        'Self pickup is not available for dropshipper orders.'
+      );
+    }
+    if (sf !== 'ecomm' && sf !== 'wholesale') {
+      return jsonError(
+        res,
+        403,
+        'SELF_PICKUP_STOREFRONT_FORBIDDEN',
+        'Self pickup is only available for ecomm and wholesale orders.'
+      );
+    }
+
+    if (!requireShipmentOpsAction(order, 'selfPickup', res)) return;
+
+    const note = String(req.body?.note || '').trim();
+    const adminUserId = req.userId || req.user?.id || req.user?._id || null;
+
+    const result = await markOrderSelfPickup({
+      order,
+      adminUserId,
+      note
+    });
+
+    const fresh = result.order;
+    const ops = fresh ? buildShipmentOpsView(fresh, { source: 'admin_self_pickup' }) : null;
+
+    return res.json({
+      success: true,
+      message: result.providerCancelled
+        ? 'Courier shipment cancelled and order marked as self pickup (delivered).'
+        : 'Order marked as self pickup (delivered). No courier booking was active.',
+      order: fresh,
+      shipmentOps: ops,
+      fulfillmentMode: 'self_pickup',
+      providerCancelled: Boolean(result.providerCancelled),
+      provider: result.provider || null
+    });
+  } catch (error) {
+    const status = error.statusCode && Number.isFinite(error.statusCode) ? error.statusCode : 500;
+    if (status >= 500) {
+      logger.error('adminFulfillmentSelfPickup', {
+        message: error.message,
+        stack: error.stack,
+        code: error.code
+      });
+    }
+    return jsonError(
+      res,
+      status,
+      error.code || 'SELF_PICKUP_FAILED',
+      status === 500 && process.env.NODE_ENV === 'production'
+        ? 'Could not mark self pickup'
+        : error.message || 'Could not mark self pickup',
+      error.details ? { details: error.details } : {}
+    );
+  }
+};
+
 /** POST /orders/admin/items/:orderId/fulfillment/cancel-shipment */
 exports.adminFulfillmentCancelShipment = async (req, res) => {
   try {
@@ -2321,30 +2407,30 @@ exports.adminFulfillmentCancelShipment = async (req, res) => {
       return jsonError(res, 409, 'ORDER_TOO_FAR', 'Cannot cancel shipment at this order stage.');
     }
 
-    // Shipmozo cancel
+    // Shipmozo cancel — works with or without AWB (New Order / Pickup Pending).
     if (isShipmozoOrder(order)) {
-      const awb = order.shipmentInfo?.awbCode || order.shipmentInfo?.trackingNumber;
-      const smOid = order.shipmentInfo?.shipmozoOrderId || order.shipmentInfo?.shipmentId || order.orderId;
-      if (!awb) {
-        return jsonError(res, 400, 'AWB_REQUIRED', 'AWB required to cancel on Shipmozo.');
-      }
-      const cancel = await ShipmozoService.cancelOrder({ orderId: smOid, awbNumber: awb });
+      const cancel = await ShipmozoService.cancelOrderForShipment(order);
       if (!cancel.success) {
         return jsonError(res, 502, cancel.code || 'CANCEL_FAILED', cancel.message || 'Shipmozo cancel failed', {
-          details: cancel.raw || null
+          details: { attempts: cancel.attempts || null, raw: cancel.raw || null }
         });
       }
       const fresh = await finalizeShipmentAfterRemoteCancel(order);
       const ops = fresh ? buildShipmentOpsView(fresh, { source: 'admin_cancel_shipment_shipmozo' }) : null;
       return res.json({
         success: true,
-        message:
-          'Shipment cancelled on Shipmozo. Stale AWB data cleared — use Ship now to book again if needed.',
+        message: cancel.awbUsed
+          ? 'Shipment cancelled on Shipmozo. Stale AWB data cleared — use Ship now to book again if needed.'
+          : 'Order cancelled on Shipmozo (no AWB was assigned yet). Local booking cleared — use Ship now to book again if needed.',
         raw: cancel.raw || null,
         order: fresh,
         shipmentOps: ops,
         readyForReship: Boolean(ops?.actionCapabilities?.shipNow),
-        provider: SHIPPING_PROVIDERS.SHIPMOZO
+        provider: SHIPPING_PROVIDERS.SHIPMOZO,
+        shipmozoCancel: {
+          orderIdUsed: cancel.orderIdUsed || null,
+          awbUsed: cancel.awbUsed || null
+        }
       });
     }
 

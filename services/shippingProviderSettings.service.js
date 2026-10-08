@@ -28,6 +28,50 @@ function cloneShipmozo(src) {
   };
 }
 
+function normalizeSameDayPincodes(input) {
+  const raw = Array.isArray(input)
+    ? input
+    : String(input || '')
+        .split(/[,;\s\n\r]+/);
+  const out = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const pin = String(item || '')
+      .replace(/\D/g, '')
+      .slice(0, 6);
+    if (pin.length !== 6 || seen.has(pin)) continue;
+    seen.add(pin);
+    out.push(pin);
+  }
+  return out;
+}
+
+function cloneSameDay(src) {
+  const cutoff = Number(src?.cutoffHour);
+  const lat = Number(src?.warehouseLat);
+  const lng = Number(src?.warehouseLng);
+  return {
+    enabled: Boolean(src?.enabled),
+    pincodes: normalizeSameDayPincodes(src?.pincodes),
+    cutoffHour: Number.isFinite(cutoff) ? Math.min(23, Math.max(0, Math.floor(cutoff))) : 14,
+    warehouseLat: Number.isFinite(lat) ? lat : null,
+    warehouseLng: Number.isFinite(lng) ? lng : null
+  };
+}
+
+function toSameDayPublic(doc) {
+  const sd = cloneSameDay(doc?.sameDay);
+  return {
+    enabled: sd.enabled,
+    pincodes: sd.pincodes,
+    pincodeCount: sd.pincodes.length,
+    cutoffHour: sd.cutoffHour,
+    warehouseLat: sd.warehouseLat,
+    warehouseLng: sd.warehouseLng,
+    ready: Boolean(sd.enabled && sd.pincodes.length > 0)
+  };
+}
+
 /**
  * API keys are env-only (never accepted from admin panel / DB write path).
  * Operational fields (warehouse, pickup pin, active provider) stay in settings.
@@ -98,6 +142,7 @@ function toPublicConfig(doc) {
         !pickup ? 'pickupPincode' : null
       ].filter(Boolean)
     },
+    sameDay: toSameDayPublic(doc),
     updatedAt: doc?.updatedAt || null
   };
 }
@@ -118,7 +163,8 @@ function toRuntimeConfig(doc) {
       warehouseId: resolveShipmozoWarehouseId(doc),
       pickupPincode: resolveShipmozoPickupPincode(doc),
       warehouseAddressTitle: doc?.shipmozo?.warehouseAddressTitle || null
-    }
+    },
+    sameDay: cloneSameDay(doc?.sameDay)
   };
 }
 
@@ -150,7 +196,8 @@ async function getOrCreateSettings(storefront) {
   const seed = {
     storefront: sf,
     activeProvider: normalizeShippingProvider(template?.activeProvider) || DEFAULT_SHIPPING_PROVIDER,
-    shipmozo: cloneShipmozo(template?.shipmozo)
+    shipmozo: cloneShipmozo(template?.shipmozo),
+    sameDay: cloneSameDay(template?.sameDay)
   };
 
   try {
@@ -224,11 +271,12 @@ async function applyAdminPatch(body, updatedByUserId, storefront) {
   const errors = [];
   const hasActive = body.activeProvider !== undefined;
   const hasShipmozo = body.shipmozo !== undefined && body.shipmozo !== null;
+  const hasSameDay = body.sameDay !== undefined && body.sameDay !== null;
 
-  if (!hasActive && !hasShipmozo) {
+  if (!hasActive && !hasShipmozo && !hasSameDay) {
     return {
       ok: false,
-      errors: ['Provide activeProvider and/or shipmozo config fields']
+      errors: ['Provide activeProvider, shipmozo, and/or sameDay config fields']
     };
   }
 
@@ -271,6 +319,37 @@ async function applyAdminPatch(body, updatedByUserId, storefront) {
     }
   }
 
+  const sdPatch = hasSameDay && typeof body.sameDay === 'object' ? body.sameDay : null;
+  if (hasSameDay && !sdPatch) {
+    errors.push('sameDay must be an object when provided');
+  }
+  if (sdPatch) {
+    if (sdPatch.enabled !== undefined && typeof sdPatch.enabled !== 'boolean') {
+      errors.push('sameDay.enabled must be a boolean');
+    }
+    if (sdPatch.cutoffHour !== undefined && sdPatch.cutoffHour !== null && sdPatch.cutoffHour !== '') {
+      const h = Number(sdPatch.cutoffHour);
+      if (!Number.isFinite(h) || h < 0 || h > 23) {
+        errors.push('sameDay.cutoffHour must be between 0 and 23');
+      }
+    }
+    if (sdPatch.warehouseLat !== undefined && sdPatch.warehouseLat !== null && sdPatch.warehouseLat !== '') {
+      const lat = Number(sdPatch.warehouseLat);
+      if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+        errors.push('sameDay.warehouseLat must be a valid latitude');
+      }
+    }
+    if (sdPatch.warehouseLng !== undefined && sdPatch.warehouseLng !== null && sdPatch.warehouseLng !== '') {
+      const lng = Number(sdPatch.warehouseLng);
+      if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+        errors.push('sameDay.warehouseLng must be a valid longitude');
+      }
+    }
+    if (sdPatch.pincodes !== undefined) {
+      sdPatch._normalizedPincodes = normalizeSameDayPincodes(sdPatch.pincodes);
+    }
+  }
+
   if (errors.length) {
     return { ok: false, errors };
   }
@@ -305,6 +384,49 @@ async function applyAdminPatch(body, updatedByUserId, storefront) {
     if (smPatch.warehouseAddressTitle !== undefined) {
       const v = String(smPatch.warehouseAddressTitle || '').trim();
       $set['shipmozo.warehouseAddressTitle'] = v || null;
+    }
+  }
+
+  if (sdPatch) {
+    if (sdPatch.enabled !== undefined) {
+      $set['sameDay.enabled'] = Boolean(sdPatch.enabled);
+    }
+    if (sdPatch.pincodes !== undefined) {
+      $set['sameDay.pincodes'] = sdPatch._normalizedPincodes || [];
+    }
+    if (sdPatch.cutoffHour !== undefined && sdPatch.cutoffHour !== null && sdPatch.cutoffHour !== '') {
+      $set['sameDay.cutoffHour'] = Math.min(23, Math.max(0, Math.floor(Number(sdPatch.cutoffHour))));
+    }
+    if (sdPatch.warehouseLat !== undefined) {
+      if (sdPatch.warehouseLat === null || sdPatch.warehouseLat === '') {
+        $set['sameDay.warehouseLat'] = null;
+      } else {
+        $set['sameDay.warehouseLat'] = Number(sdPatch.warehouseLat);
+      }
+    }
+    if (sdPatch.warehouseLng !== undefined) {
+      if (sdPatch.warehouseLng === null || sdPatch.warehouseLng === '') {
+        $set['sameDay.warehouseLng'] = null;
+      } else {
+        $set['sameDay.warehouseLng'] = Number(sdPatch.warehouseLng);
+      }
+    }
+
+    const mergedEnabled =
+      $set['sameDay.enabled'] !== undefined
+        ? $set['sameDay.enabled']
+        : Boolean(current.sameDay?.enabled);
+    const mergedPins =
+      $set['sameDay.pincodes'] !== undefined
+        ? $set['sameDay.pincodes']
+        : normalizeSameDayPincodes(current.sameDay?.pincodes);
+    if (mergedEnabled && (!Array.isArray(mergedPins) || mergedPins.length === 0)) {
+      return {
+        ok: false,
+        errors: [
+          'Add at least one 6-digit pincode before enabling Same Day Delivery (near-warehouse serviceable pins).'
+        ]
+      };
     }
   }
 
@@ -406,6 +528,8 @@ module.exports = {
   applyAdminPatch,
   toPublicConfig,
   toRuntimeConfig,
+  cloneSameDay,
+  normalizeSameDayPincodes,
   resolveShipmozoKeys: resolveShipmozoKeysFromEnv,
   resolveShipmozoKeysFromEnv,
   resolveShipmozoPickupPincode,

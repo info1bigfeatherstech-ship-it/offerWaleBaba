@@ -10,6 +10,8 @@
  * when scope is ecomm. Wholesale always requires explicit storefront=wholesale.
  */
 
+const mongoose = require('mongoose');
+
 /**
  * @param {'ecomm'|'wholesale'|'dropship'|string} storefront
  * @returns {import('mongoose').FilterQuery<any>}
@@ -43,6 +45,49 @@ function getAdminOrderMatch(req) {
   }
   const storefront = req?.adminScope?.storefront || req?.storefront || 'ecomm';
   return buildOrderMatchForStorefront(storefront);
+}
+
+/**
+ * Optional per-dropshipper filter for admin dropship orders.
+ * Only applied when admin scope is dropship — ignored on ecomm/wholesale (safe no-op).
+ * Query: ?dropshipperId=<ObjectId>
+ *
+ * @param {import('express').Request|null|undefined} req
+ * @returns {import('mongoose').FilterQuery<any>|null}
+ */
+function buildDropshipperIdMatch(req) {
+  const raw = String(req?.query?.dropshipperId || '').trim();
+  if (!raw) return null;
+
+  const sf = String(req?.adminScope?.storefront || req?.storefront || '')
+    .toLowerCase()
+    .trim();
+  if (sf !== 'dropship') {
+    // Never let this param affect ecomm/wholesale order panels.
+    return null;
+  }
+
+  if (!mongoose.Types.ObjectId.isValid(raw)) {
+    const err = new Error('dropshipperId must be a valid id');
+    err.statusCode = 400;
+    err.code = 'INVALID_DROPSHIPPER_ID';
+    throw err;
+  }
+
+  return { 'dropshipMeta.dropshipperId': new mongoose.Types.ObjectId(raw) };
+}
+
+/**
+ * Merge storefront scope with optional dropshipperId filter.
+ * @param {import('express').Request|null|undefined} req
+ * @param {import('mongoose').FilterQuery<any>} [scopeMatch]
+ */
+function withDropshipperIdScope(req, scopeMatch) {
+  const ds = buildDropshipperIdMatch(req);
+  const base = scopeMatch && Object.keys(scopeMatch).length ? scopeMatch : {};
+  if (!ds) return base;
+  if (!Object.keys(base).length) return ds;
+  return { $and: [base, ds] };
 }
 
 /**
@@ -136,6 +181,8 @@ function assertOrderInAdminScope(order, req) {
 module.exports = {
   buildOrderMatchForStorefront,
   getAdminOrderMatch,
+  buildDropshipperIdMatch,
+  withDropshipperIdScope,
   getAdminStorefrontLabel,
   mergeOrderScopeFilter,
   mergeAdminOrderFilter,

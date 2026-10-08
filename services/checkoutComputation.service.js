@@ -365,7 +365,10 @@ async function computeCheckoutTotals({
       codFeeInr:
         baseOverride.codFeeInr != null && Number.isFinite(Number(baseOverride.codFeeInr))
           ? roundMoney2(Number(baseOverride.codFeeInr))
-          : null
+          : null,
+      shippingSpeed: baseOverride.shippingSpeed || 'standard',
+      checkoutShippingMethod: baseOverride.checkoutShippingMethod || null,
+      etaLabel: baseOverride.etaLabel || null
     };
   } else {
     const ship = await checkDeliveryAvailabilityForActiveProvider(postalCode, {
@@ -416,7 +419,10 @@ async function computeCheckoutTotals({
       codFeeInr:
         ship.codFeeInr != null && Number.isFinite(Number(ship.codFeeInr))
           ? roundMoney2(Number(ship.codFeeInr))
-          : 0
+          : 0,
+      shippingSpeed: 'standard',
+      checkoutShippingMethod: null,
+      etaLabel: null
     };
   }
 

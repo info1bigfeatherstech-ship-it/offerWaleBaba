@@ -8,8 +8,18 @@ const {
   mergeCustomerStorefrontFilter,
   normalizeCustomerStorefront
 } = require("../utils/customerStorefrontScope");
+const addressGeocodeService = require("../services/addressGeocode.service");
 
 const clean = (val) => (typeof val === "string" ? val.trim() : val);
+
+/** Soft Same Day geocode — never fails the address API. */
+async function softGeocodeSameDayAddress(address, storefront) {
+  try {
+    return await addressGeocodeService.ensureAddressGeocodedForSameDay(address, storefront);
+  } catch (_) {
+    return address;
+  }
+}
 
 // Add a new address
 const addAddress = async (req, res) => {
@@ -72,10 +82,11 @@ const addAddress = async (req, res) => {
     );
 
     if (existingAddress) {
+      const geocodedExisting = await softGeocodeSameDayAddress(existingAddress, storefront);
       return res.status(200).json({
         success: true,
         message: "Address already exists",
-        address: existingAddress
+        address: geocodedExisting
       });
     }
 
@@ -123,11 +134,12 @@ const addAddress = async (req, res) => {
     });
 
     await address.save();
+    const geocoded = await softGeocodeSameDayAddress(address, storefront);
 
     return res.status(201).json({
       success: true,
       message: "Address added successfully",
-      address
+      address: geocoded
     });
   } catch (error) {
     console.error("Add address error:", error);
@@ -317,11 +329,12 @@ const updateAddress = async (req, res) => {
     }
 
     await address.save();
+    const geocoded = await softGeocodeSameDayAddress(address, storefront);
 
     return res.status(200).json({
       success: true,
       message: "Address updated successfully",
-      address
+      address: geocoded
     });
   } catch (error) {
     console.error("Update address error:", error);

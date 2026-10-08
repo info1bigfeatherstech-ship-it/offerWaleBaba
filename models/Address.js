@@ -121,10 +121,16 @@ const addressSchema = new mongoose.Schema({
     trim: true
   },
 
-  //  Future (DO NOT USE NOW, but keep)
+  /**
+   * Geocoded drop point (Nominatim) — filled only for Same Day allowlist pincodes.
+   * Soft / optional: checkout works without this; Same Day Quick prefers it.
+   */
   location: {
     lat: { type: Number },
-    lng: { type: Number }
+    lng: { type: Number },
+    /** Hash of address text used for this geocode — skip re-hit when unchanged */
+    geocodeKey: { type: String, default: null },
+    geocodedAt: { type: Date, default: null }
   },
 
   isDefault: {

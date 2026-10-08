@@ -19,6 +19,7 @@ const {
   resolvePackingViewerBucket,
   PACKING_VIEWER_BUCKETS
 } = require('../utils/adminOrderRoles');
+const { withDropshipperIdScope } = require('../utils/adminOrderScope');
 
 function sendError(res, err, fallbackMessage) {
   const status = err.statusCode && Number.isFinite(err.statusCode) ? err.statusCode : 500;
@@ -89,11 +90,24 @@ exports.getDashboardSummary = async (req, res) => {
       rangePreset
     });
 
-    const scopeMatch = withPackingViewerScope(req, req.adminScope?.orderMatch || {});
-    let summary = await aggregateSummary(range.from, range.to, scopeMatch);
+    const sameDayDeliveryService = require('../services/sameDayDelivery.service');
+    const speedMatch = sameDayDeliveryService.buildShippingSpeedScopeMatch(
+      req.query.shippingSpeedScope || 'standard'
+    );
+    const scopeMatch = withDropshipperIdScope(
+      req,
+      withPackingViewerScope(req, req.adminScope?.orderMatch || {})
+    );
+    const scopedWithSpeed =
+      speedMatch && Object.keys(speedMatch).length
+        ? { $and: [scopeMatch, speedMatch] }
+        : scopeMatch;
+    let summary = await aggregateSummary(range.from, range.to, scopedWithSpeed);
     if (isPackingViewerRequest(req)) {
       summary = redactSummaryForPackingViewer(summary);
     }
+
+    const dropshipperId = String(req.query.dropshipperId || '').trim() || null;
 
     return res.json({
       success: true,
@@ -104,6 +118,8 @@ exports.getDashboardSummary = async (req, res) => {
           preset: range.presetLabel
         },
         scope: req.adminScope?.storefront || 'ecomm',
+        dropshipperId:
+          req.adminScope?.storefront === 'dropship' && dropshipperId ? dropshipperId : null,
         packingViewer: isPackingViewerRequest(req),
         allowedBuckets: isPackingViewerRequest(req) ? [...PACKING_VIEWER_BUCKETS] : null,
         totals: {
@@ -161,8 +177,19 @@ exports.getOrdersList = async (req, res) => {
     const sortOrder = String(req.query.sortOrder || 'desc').toLowerCase() === 'asc' ? 1 : -1;
     const sort = { [sortBy]: sortOrder };
 
-    const scopeMatch = withPackingViewerScope(req, req.adminScope?.orderMatch || {});
-    const dateScopeMatch = buildScopedDateMatch(range.from, range.to, scopeMatch);
+    const sameDayDeliveryService = require('../services/sameDayDelivery.service');
+    const speedMatch = sameDayDeliveryService.buildShippingSpeedScopeMatch(
+      req.query.shippingSpeedScope || 'standard'
+    );
+    const scopeMatch = withDropshipperIdScope(
+      req,
+      withPackingViewerScope(req, req.adminScope?.orderMatch || {})
+    );
+    const scopedWithSpeed =
+      speedMatch && Object.keys(speedMatch).length
+        ? { $and: [scopeMatch, speedMatch] }
+        : scopeMatch;
+    const dateScopeMatch = buildScopedDateMatch(range.from, range.to, scopedWithSpeed);
     const search = await buildSearchFilter(searchRaw);
 
     const packingViewer = isPackingViewerRequest(req);
@@ -277,6 +304,8 @@ exports.getOrdersList = async (req, res) => {
 
     const rows = orders.map((doc) => mapOrderRow(doc));
 
+    const dropshipperId = String(req.query.dropshipperId || '').trim() || null;
+
     return res.json({
       success: true,
       data: {
@@ -286,6 +315,8 @@ exports.getOrdersList = async (req, res) => {
           preset: range.presetLabel
         },
         scope: req.adminScope?.storefront || 'ecomm',
+        dropshipperId:
+          req.adminScope?.storefront === 'dropship' && dropshipperId ? dropshipperId : null,
         packingViewer: packingViewer,
         allowedBuckets: packingViewer ? [...PACKING_VIEWER_BUCKETS] : null,
         orders: rows,
@@ -300,6 +331,8 @@ exports.getOrdersList = async (req, res) => {
         filters: {
           bucket: search ? null : String(req.query.bucket || 'all').toLowerCase(),
           search: searchRaw || null,
+          dropshipperId:
+            req.adminScope?.storefront === 'dropship' && dropshipperId ? dropshipperId : null,
           /** True when list ignored from/to / last30 because a search query is active. */
           searchIgnoresDateRange
         }
@@ -338,7 +371,7 @@ exports.autoSyncOrderStatuses = async (req, res) => {
       throw err;
     }
 
-    const scopeMatch = req.adminScope?.orderMatch || {};
+    const scopeMatch = withDropshipperIdScope(req, req.adminScope?.orderMatch || {});
     const staleMinutes = Math.min(
       120,
       Math.max(1, parseInt(String(req.query.staleMinutes || '5'), 10) || 5)

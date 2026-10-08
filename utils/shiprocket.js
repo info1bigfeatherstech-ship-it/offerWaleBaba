@@ -404,6 +404,163 @@ class ShiprocketService {
     }
   }
 
+  /**
+   * Soft probe for Shiprocket Quick / same-day hyperlocal couriers.
+   * Never throws — returns { available: false } on any failure.
+   * Does not affect standard serviceability / cheapest-courier selection.
+   */
+  async checkSameDayServiceability(deliveryPincode, opts = {}) {
+    const pincode = String(deliveryPincode || '').replace(/\D/g, '').slice(0, 6);
+    const weight = Math.max(0.05, Number(opts.weightKg) || 0.5);
+    const length = Math.max(1, Number(opts.lengthCm) || 1);
+    const breadth = Math.max(1, Number(opts.widthCm) || 1);
+    const height = Math.max(1, Number(opts.heightCm) || 1);
+    const codAmount = Math.max(0, Number(opts.codAmount) || 0);
+
+    if (pincode.length !== 6) {
+      return { available: false, reason: 'invalid_pincode' };
+    }
+
+    const warehouseLat = Number(opts.warehouseLat);
+    const warehouseLng = Number(opts.warehouseLng);
+    const deliveryLat = Number(opts.deliveryLat);
+    const deliveryLng = Number(opts.deliveryLng);
+    const hasWarehouseCoords = Number.isFinite(warehouseLat) && Number.isFinite(warehouseLng);
+    const hasDeliveryCoords = Number.isFinite(deliveryLat) && Number.isFinite(deliveryLng);
+
+    if (!this.enabled) {
+      // Keep probe deterministic in mock mode when coords present (local/dev).
+      if (!hasWarehouseCoords || !hasDeliveryCoords) {
+        return { available: false, reason: 'coords_required', mock: true };
+      }
+      return {
+        available: true,
+        mock: true,
+        deliveryCharges: 79,
+        freightInr: 79,
+        codFeeInr: 0,
+        estimatedDays: '0',
+        etaLabel: 'Same day (mock)',
+        courierName: 'Shiprocket Quick (mock)',
+        courierCompanyId: 0,
+        codAvailable: true,
+        reason: null
+      };
+    }
+
+    const pickupFromOpts = String(opts.pickupPincode || '')
+      .replace(/\D/g, '')
+      .slice(0, 6);
+    const pickup =
+      pickupFromOpts.length === 6
+        ? pickupFromOpts
+        : String(process.env.STORE_PINCODE || process.env.PICKUP_PINCODE || '')
+            .replace(/\D/g, '')
+            .slice(0, 6);
+    if (pickup.length !== 6) {
+      return { available: false, reason: 'pickup_pin_missing' };
+    }
+
+    try {
+      const params = {
+        pickup_postcode: pickup,
+        delivery_postcode: pincode,
+        weight,
+        cod: codAmount > 0 ? 1 : 0,
+        cod_amount: codAmount > 0 ? codAmount : undefined,
+        length,
+        breadth,
+        height
+      };
+
+      // Hyperlocal / Quick path — coords preferred; still try when only partially present.
+      if (hasWarehouseCoords && hasDeliveryCoords) {
+        params.is_new_hyperlocal = 1;
+        params.lat_from = warehouseLat;
+        params.long_from = warehouseLng;
+        params.lat_to = deliveryLat;
+        params.long_to = deliveryLng;
+      }
+
+      const data = await this.requestWithAuth({
+        method: 'get',
+        url: `${this.baseURL}/external/courier/serviceability`,
+        params,
+        timeout: 15000
+      });
+      if (!data) {
+        return { available: false, reason: 'auth_failed' };
+      }
+
+      const list = data?.data?.available_courier_companies || data?.data?.available_courier_list || [];
+      if (!Array.isArray(list) || !list.length) {
+        return { available: false, reason: 'not_serviceable', message: 'No same-day courier for this route' };
+      }
+
+      const { filterActiveCouriers } = require('../services/courierPolicy.service');
+      const active = filterActiveCouriers(list);
+      const pool = active.length ? active : list;
+
+      const quickish = pool.filter((c) => {
+        const name = String(c?.courier_name || c?.courier_company_name || '').toLowerCase();
+        const etdDays = Number(c?.estimated_delivery_days ?? c?.etd);
+        const etdHours = Number(c?.etd_hours);
+        const isQuickName = /quick|hyperlocal|same\s*day|sdd|rush|borzo|shadowfax|dunzo|wefast|flash|loadshare/.test(
+          name
+        );
+        const isSameDayEtd =
+          (Number.isFinite(etdDays) && etdDays <= 1) ||
+          (Number.isFinite(etdHours) && etdHours > 0 && etdHours <= 12);
+        return isQuickName || isSameDayEtd;
+      });
+
+      const candidates = quickish.length ? quickish : [];
+      if (!candidates.length) {
+        return { available: false, reason: 'no_quick_courier', message: 'No Quick/same-day courier in serviceability' };
+      }
+
+      const { pickCheapestActiveCourier } = require('../services/courierPolicy.service');
+      const picked = pickCheapestActiveCourier(candidates, { codRequired: codAmount > 0 });
+      if (!picked) {
+        return { available: false, reason: 'no_quick_courier' };
+      }
+
+      const best = picked.courier;
+      const split = ShiprocketService.extractShippingChargeSplit(best, Number(best.rate ?? best.freight_charge) || 0);
+      const days =
+        best.estimated_delivery_days != null
+          ? String(best.estimated_delivery_days)
+          : best.etd_hours != null
+            ? '0'
+            : '0';
+
+      return {
+        available: true,
+        mock: false,
+        deliveryCharges: Math.max(0, split.deliveryCharges),
+        freightInr: Math.max(0, split.freightInr),
+        codFeeInr: Math.max(0, split.codFeeInr),
+        estimatedDays: days,
+        etaLabel: Number(best.etd_hours) > 0 ? `Within ${best.etd_hours} hours` : 'Same day delivery',
+        courierName: picked.courierName,
+        courierCompanyId: picked.courierCompanyId,
+        codAvailable:
+          best.cod === 1 ||
+          best.cod === true ||
+          best.is_cod_available === 1 ||
+          best.is_cod_available === true,
+        reason: null
+      };
+    } catch (err) {
+      logger.warn('[Shiprocket] same-day serviceability soft-failed:', err.response?.data || err.message);
+      return {
+        available: false,
+        reason: 'api_error',
+        message: ShiprocketService.formatAxiosError(err)
+      };
+    }
+  }
+
   async getDeliveryCharges(pincode, weightKg = 1, dimensionOpts = {}) {
     const r = await this.checkDeliveryAvailability(pincode, {
       weightKg,
@@ -772,6 +929,20 @@ class ShiprocketService {
     };
 
     const payload = ShiprocketService.finalizeAdhocCreatePayload(basePayload, order, parts, orderItems);
+    // Same-day / Quick orders only — never set on standard Shiprocket shipments.
+    const orderSpeed = String(order?.shippingSpeed || order?.shippingSnapshot?.shippingSpeed || '')
+      .toLowerCase()
+      .trim();
+    if (orderSpeed === 'same_day' || orderSpeed === 'sameday') {
+      const method = String(
+        order?.shippingSnapshot?.checkoutShippingMethod ||
+          process.env.SAME_DAY_CHECKOUT_SHIPPING_METHOD ||
+          'SR_QUICK'
+      )
+        .trim()
+        .toUpperCase();
+      if (method) payload.checkout_shipping_method = method;
+    }
     const isPartial = ShiprocketService.isPartialCodBalanceShipment(parts, order);
     const isAdvanceCovered = ShiprocketService.isAdvanceFullyCoveredNoCod(parts, order);
     const lineSum = roundMoney2(

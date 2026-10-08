@@ -30,7 +30,52 @@ const {
 const { sanitizeCartItems } = require('../services/cartSanitize.service');
 const { findCartForStorefront } = require('../services/cartStorefront.service');
 const { addressBelongsToStorefront } = require('../utils/customerStorefrontScope');
+const sameDayDeliveryService = require('../services/sameDayDelivery.service');
+const addressGeocodeService = require('../services/addressGeocode.service');
 const logger = require('../utils/logger');
+
+/**
+ * Soft: for Same Day allowlist pins, ensure address has lat/lng (Nominatim + cache).
+ * Never throws; never blocks checkout on geocode failure.
+ */
+async function withSameDayDeliveryCoords(address, storefront) {
+  if (!address) return address;
+  const existingLat = Number(address?.location?.lat);
+  const existingLng = Number(address?.location?.lng);
+  if (Number.isFinite(existingLat) && Number.isFinite(existingLng)) {
+    return address;
+  }
+  try {
+    const coords = await addressGeocodeService.resolveCoordsForSameDayAddress(address, storefront);
+    if (!coords) return address;
+    if (address._id) {
+      Address.updateOne(
+        { _id: address._id },
+        {
+          $set: {
+            location: {
+              lat: coords.lat,
+              lng: coords.lng,
+              geocodeKey: coords.geocodeKey,
+              geocodedAt: coords.geocodedAt
+            }
+          }
+        }
+      ).catch(() => {});
+    }
+    return {
+      ...address,
+      location: {
+        lat: coords.lat,
+        lng: coords.lng,
+        geocodeKey: coords.geocodeKey,
+        geocodedAt: coords.geocodedAt
+      }
+    };
+  } catch (_) {
+    return address;
+  }
+}
 
 const QUOTE_TTL_MS = 15 * 60 * 1000;
 
@@ -67,8 +112,12 @@ async function buildFinalTotals({
   paymentMethodHint,
   req,
   shiprocketPricingMode = 'online',
-  advancePercentForBalanceCod = null
+  advancePercentForBalanceCod = null,
+  shippingSpeed = 'standard',
+  address = null
 }) {
+  const requestedSpeed = sameDayDeliveryService.normalizeShippingSpeed(shippingSpeed);
+
   if (allowDemoMockShipping(req)) {
     const evaluated = await evaluateCartForCheckout(cartDoc, finalUserType, null, storefront);
     const { discount, appliedCouponCode } = await resolveCouponDiscount(
@@ -94,11 +143,15 @@ async function buildFinalTotals({
         courierCompanyId: null,
         isDeliverable: true,
         codAvailable: true,
-        mock: true
-      }
+        mock: true,
+        shippingSpeed: 'standard'
+      },
+      sameDayOption: sameDayDeliveryService.emptySameDayOption('demo_mock_shipping'),
+      shippingSpeed: 'standard'
     };
   }
 
+  // Always price STANDARD via active provider first — never replaced unless same_day is chosen AND available.
   let last = await computeCheckoutTotals({
     cart: cartDoc,
     postalCode: pin,
@@ -150,7 +203,55 @@ async function buildFinalTotals({
     }
   }
 
-  return last;
+  // Soft same-day probe (never fails the standard quote).
+  let codForSameDayProbe = 0;
+  if (shiprocketPricingMode === 'cod_full') {
+    codForSameDayProbe = roundMoney2(last.subtotal + last.tax - last.discount + last.deliveryCharges);
+  } else if (shiprocketPricingMode === 'advance_balance_cod') {
+    const pct = Number(advancePercentForBalanceCod);
+    if (Number.isFinite(pct) && pct >= 1 && pct <= 100) {
+      const totalInr = roundMoney2(last.subtotal + last.tax - last.discount + last.deliveryCharges);
+      const advInrRaw = roundMoney2((totalInr * pct) / 100);
+      const advInr = Math.max(1, Math.min(roundMoney2(totalInr - 0.01), advInrRaw));
+      codForSameDayProbe = roundMoney2(totalInr - advInr);
+    }
+  }
+
+  const sameDayOption = await sameDayDeliveryService.probeSameDayOption({
+    deliveryPincode: pin,
+    storefront,
+    weightKg: last.totalWeight,
+    lengthCm: last.dims?.lengthCm,
+    widthCm: last.dims?.widthCm,
+    heightCm: last.dims?.heightCm,
+    codAmount: codForSameDayProbe,
+    deliveryLat: address?.location?.lat ?? address?.lat ?? null,
+    deliveryLng: address?.location?.lng ?? address?.lng ?? null
+  });
+
+  let effectiveSpeed = 'standard';
+  if (requestedSpeed === sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY && sameDayOption.available) {
+    const overrideMeta = sameDayDeliveryService.toDeliveryMetaOverride(sameDayOption);
+    last = await computeCheckoutTotals({
+      cart: cartDoc,
+      postalCode: pin,
+      finalUserType,
+      storefront,
+      couponCode,
+      session: null,
+      consumeCoupon: false,
+      codAmountForShiprocket: codForSameDayProbe,
+      deliveryChargesOverride: sameDayOption.deliveryCharges,
+      deliveryMetaOverride: overrideMeta
+    });
+    effectiveSpeed = sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY;
+  }
+
+  return {
+    ...last,
+    sameDayOption,
+    shippingSpeed: effectiveSpeed
+  };
 }
 
 /**
@@ -168,9 +269,11 @@ exports.quoteCheckout = async (req, res) => {
       paymentPlan,
       paymentAdvancePercent,
       balanceCollection,
-      quotePurpose
+      quotePurpose,
+      shippingSpeed
     } = req.body || {};
     const isComparisonQuote = String(quotePurpose || '').toLowerCase() === 'cod_comparison';
+    const requestedShippingSpeed = sameDayDeliveryService.normalizeShippingSpeed(shippingSpeed);
 
     const checkoutPolicy = await checkoutSettingsService.getPolicyForStorefront(storefront);
 
@@ -248,7 +351,7 @@ exports.quoteCheckout = async (req, res) => {
       });
     }
 
-    const address = await Address.findById(addressId).lean();
+    let address = await Address.findById(addressId).lean();
     if (
       !address ||
       String(address.userId) !== String(userId) ||
@@ -261,6 +364,8 @@ exports.quoteCheckout = async (req, res) => {
     if (pin.length !== 6) {
       return respondCheckoutInputError(res, 400, 'INVALID_POSTAL_CODE', 'Address must have a valid 6-digit postal code');
     }
+
+    address = await withSameDayDeliveryCoords(address, storefront);
 
     const cartDoc = await findCartForStorefront(userId, storefront);
     if (!cartDoc?.items?.length) {
@@ -294,12 +399,19 @@ exports.quoteCheckout = async (req, res) => {
       paymentMethodHint,
       req,
       shiprocketPricingMode,
-      advancePercentForBalanceCod: advancePctForSr
+      advancePercentForBalanceCod: advancePctForSr,
+      shippingSpeed: requestedShippingSpeed,
+      address
     });
 
     const fp = cartFingerprintFromItems(cartDoc.items);
     const quoteExpiresAt = new Date(Date.now() + QUOTE_TTL_MS);
     const couponCodeUpper = couponCode ? String(couponCode).toUpperCase().trim() : '';
+    const effectiveShippingSpeed =
+      finalTotals.shippingSpeed === sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY
+        ? sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY
+        : sameDayDeliveryService.SHIPPING_SPEEDS.STANDARD;
+    const sameDayOption = finalTotals.sameDayOption || sameDayDeliveryService.emptySameDayOption('unavailable');
 
     if (isComparisonQuote) {
       return res.json({
@@ -320,7 +432,15 @@ exports.quoteCheckout = async (req, res) => {
         taxes: finalTotals.tax,
         amountPayable: finalTotals.totalAmount,
         includesShippingAndHandling: true,
-        couponApplied: finalTotals.appliedCouponCode
+        couponApplied: finalTotals.appliedCouponCode,
+        shippingSpeed: effectiveShippingSpeed,
+        sameDayOption: {
+          available: Boolean(sameDayOption.available),
+          deliveryCharges: sameDayOption.available ? sameDayOption.deliveryCharges : null,
+          etaLabel: sameDayOption.available ? sameDayOption.etaLabel : null,
+          cutoffHour: sameDayOption.cutoffHour,
+          reason: sameDayOption.available ? null : sameDayOption.reason
+        }
       });
     }
 
@@ -366,6 +486,9 @@ exports.quoteCheckout = async (req, res) => {
       couponCodeUpper,
       cartFingerprint: fp,
       userType: finalUserType,
+      storefront,
+      shippingSpeed: effectiveShippingSpeed,
+      sameDayMeta: sameDayOption,
       itemCount: cartDoc.items.length,
       itemsSubtotal: finalTotals.subtotal,
       promotionDiscount: finalTotals.discount,
@@ -394,7 +517,10 @@ exports.quoteCheckout = async (req, res) => {
         codFeeInr:
           finalTotals.deliveryMeta?.codFeeInr != null
             ? roundMoney2(Number(finalTotals.deliveryMeta.codFeeInr))
-            : null
+            : null,
+        shippingSpeed: effectiveShippingSpeed,
+        checkoutShippingMethod: finalTotals.deliveryMeta?.checkoutShippingMethod || null,
+        etaLabel: finalTotals.deliveryMeta?.etaLabel || null
       },
       totalWeightKg: finalTotals.totalWeight,
       dims: finalTotals.dims,
@@ -413,6 +539,11 @@ exports.quoteCheckout = async (req, res) => {
         ? `Estimated delivery in ${finalTotals.deliveryMeta.estimatedDays} business days`
         : 'Delivery timeline will be confirmed after dispatch';
 
+    const deliveryEstimate =
+      effectiveShippingSpeed === sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY
+        ? finalTotals.deliveryMeta?.etaLabel || 'Same day delivery'
+        : eta;
+
     return res.json({
       success: true,
       quoteId: quote._id,
@@ -422,7 +553,7 @@ exports.quoteCheckout = async (req, res) => {
         carrierCodAvailable: quote.shippingMeta.codAvailable
       }),
       checkoutPolicy,
-      deliveryEstimate: eta,
+      deliveryEstimate,
       courierName: finalTotals.deliveryMeta?.courierName || null,
       pincode: pin,
       itemCount: cartDoc.items.length,
@@ -435,7 +566,16 @@ exports.quoteCheckout = async (req, res) => {
       couponApplied: finalTotals.appliedCouponCode,
       quoteExpiresAt: quoteExpiresAt.toISOString(),
       cartFingerprint: fp,
-      demoMockShipping: Boolean(allowDemoMockShipping(req))
+      demoMockShipping: Boolean(allowDemoMockShipping(req)),
+      shippingSpeed: effectiveShippingSpeed,
+      sameDayOption: {
+        available: Boolean(sameDayOption.available),
+        deliveryCharges: sameDayOption.available ? sameDayOption.deliveryCharges : null,
+        etaLabel: sameDayOption.available ? sameDayOption.etaLabel : null,
+        courierName: sameDayOption.available ? sameDayOption.courierName : null,
+        cutoffHour: sameDayOption.cutoffHour,
+        reason: sameDayOption.available ? null : sameDayOption.reason
+      }
     });
   } catch (err) {
     if (err.statusCode) {
@@ -535,13 +675,22 @@ exports.confirmCheckout = async (req, res) => {
       return respondCheckoutInputError(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found or inactive');
     }
 
+    if (quote.storefront && String(quote.storefront) !== String(storefront)) {
+      return respondCheckoutInputError(
+        res,
+        400,
+        'QUOTE_STOREFRONT_MISMATCH',
+        'Quote belongs to a different storefront. Please regenerate quote.'
+      );
+    }
+
     if (quote.quoteExpiresAt.getTime() <= Date.now()) {
       quote.status = 'expired';
       await quote.save();
       throw createQuoteExpiredError();
     }
 
-    const address = await Address.findById(quote.addressId).lean();
+    let address = await Address.findById(quote.addressId).lean();
     if (
       !address ||
       String(address.userId) !== String(userId) ||
@@ -554,6 +703,8 @@ exports.confirmCheckout = async (req, res) => {
     if (pin.length !== 6 || pin !== quote.postalCode) {
       return respondCheckoutInputError(res, 400, 'QUOTE_POSTAL_CODE_CHANGED', 'Address pincode changed. Regenerate quote.');
     }
+
+    address = await withSameDayDeliveryCoords(address, storefront);
 
     const cartDoc = await findCartForStorefront(userId, storefront);
     if (!cartDoc?.items?.length) {
@@ -581,6 +732,7 @@ exports.confirmCheckout = async (req, res) => {
       shiprocketPricingMode = 'advance_balance_cod';
     }
 
+    const quoteShippingSpeed = sameDayDeliveryService.normalizeShippingSpeed(quote.shippingSpeed);
     const recomputed = await buildFinalTotals({
       cartDoc,
       pin,
@@ -590,8 +742,32 @@ exports.confirmCheckout = async (req, res) => {
       paymentMethodHint: normalizedPaymentMethod === 'cod' ? 'cod' : 'online',
       req: { body: { demoMockShipping: Boolean(quote.shippingMeta?.mock) } },
       shiprocketPricingMode,
-      advancePercentForBalanceCod: isAdvanceBalanceCod ? effectiveAdvancePercent : null
+      advancePercentForBalanceCod: isAdvanceBalanceCod ? effectiveAdvancePercent : null,
+      shippingSpeed: quoteShippingSpeed,
+      address
     });
+
+    // Same-day quote must still be available at confirm; otherwise force refresh.
+    if (
+      quoteShippingSpeed === sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY &&
+      recomputed.shippingSpeed !== sameDayDeliveryService.SHIPPING_SPEEDS.SAME_DAY
+    ) {
+      throw createQuoteStaleError('same_day_unavailable', {
+        message: 'Same day delivery is no longer available for this address. Please refresh and choose standard delivery.',
+        details: {
+          latest: {
+            itemsSubtotal: recomputed.subtotal,
+            promotionDiscount: recomputed.discount,
+            deliveryCharges: recomputed.deliveryCharges,
+            taxes: recomputed.tax,
+            amountPayable: recomputed.totalAmount,
+            codAvailable: recomputed.deliveryMeta?.codAvailable !== false,
+            shippingSpeed: recomputed.shippingSpeed,
+            sameDayAvailable: Boolean(recomputed.sameDayOption?.available)
+          }
+        }
+      });
+    }
 
     const carrierCodCheck = validateCarrierCodForCheckout({
       carrierCodAvailable: recomputed.deliveryMeta?.codAvailable,
@@ -624,7 +800,8 @@ exports.confirmCheckout = async (req, res) => {
             deliveryCharges: recomputed.deliveryCharges,
             taxes: recomputed.tax,
             amountPayable: recomputed.totalAmount,
-            codAvailable: recomputed.deliveryMeta?.codAvailable !== false
+            codAvailable: recomputed.deliveryMeta?.codAvailable !== false,
+            shippingSpeed: recomputed.shippingSpeed
           }
         }
       });

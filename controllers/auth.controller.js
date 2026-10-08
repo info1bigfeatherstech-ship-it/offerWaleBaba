@@ -1424,7 +1424,27 @@ const me = async (req, res) => {
       return respondAuthError(res, 404, 'USER_NOT_FOUND', 'User not found');
     }
 
-    const tokenPortal = normalizePortal(req.authPortal || req.headers['x-auth-portal']);
+    // JWT portal claim (from access token) vs optional client intent header.
+    const tokenPortal = normalizePortal(req.authPortal);
+    const requestedPortal = normalizePortal(req.headers['x-auth-portal']);
+
+    // Customer storefront explicitly asked for ecomm/wholesale profile:
+    // never return privileged/staff users or honor admin JWTs (dual-tab bleed guard).
+    if (requestedPortal === 'ecomm' || requestedPortal === 'wholesale') {
+      if (
+        isPrivilegedAccount(user) ||
+        tokenPortal === 'admin-ecomm' ||
+        tokenPortal === 'admin-wholesale'
+      ) {
+        return respondAuthError(
+          res,
+          403,
+          'PORTAL_ACCESS_DENIED',
+          'This account is not allowed to access the customer storefront.'
+        );
+      }
+    }
+
     if (
       (tokenPortal === 'admin-ecomm' || tokenPortal === 'admin-wholesale') &&
       !isPrivilegedAccount(user)

@@ -8,6 +8,13 @@ const checkoutQuoteSchema = new mongoose.Schema(
     couponCodeUpper: { type: String, default: '' },
     cartFingerprint: { type: String, required: true, index: true },
     userType: { type: String, enum: ['normal', 'wholesaler'], required: true },
+    /** Storefront that created this quote — never cross-mix ecomm/wholesale/dropship */
+    storefront: {
+      type: String,
+      enum: ['ecomm', 'wholesale', 'dropship'],
+      default: 'ecomm',
+      index: true
+    },
 
     itemCount: { type: Number, required: true, min: 1 },
     itemsSubtotal: { type: Number, required: true, min: 0 },
@@ -15,6 +22,19 @@ const checkoutQuoteSchema = new mongoose.Schema(
     deliveryCharges: { type: Number, required: true, min: 0, default: 0 },
     taxes: { type: Number, required: true, min: 0, default: 0 },
     amountPayable: { type: Number, required: true, min: 0 },
+
+    /**
+     * Customer choice at quote time.
+     * standard = active provider charges; same_day = Shiprocket Quick (only if probed available).
+     */
+    shippingSpeed: {
+      type: String,
+      enum: ['standard', 'same_day'],
+      default: 'standard'
+    },
+
+    /** Soft-probed same-day option (null/unavailable when feature off or not serviceable) */
+    sameDayMeta: { type: mongoose.Schema.Types.Mixed, default: null },
 
     shippingMeta: {
       isDeliverable: { type: Boolean, default: false },
@@ -26,7 +46,12 @@ const checkoutQuoteSchema = new mongoose.Schema(
       pickupsAutomaticallyScheduled: { type: Boolean, default: null },
       codAvailable: { type: Boolean, default: true },
       message: { type: String, default: null },
-      mock: { type: Boolean, default: false }
+      mock: { type: Boolean, default: false },
+      freightInr: { type: Number, default: null },
+      codFeeInr: { type: Number, default: null },
+      shippingSpeed: { type: String, enum: ['standard', 'same_day', null], default: null },
+      checkoutShippingMethod: { type: String, default: null },
+      etaLabel: { type: String, default: null }
     },
 
     totalWeightKg: { type: Number, default: null },

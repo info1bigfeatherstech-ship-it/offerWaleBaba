@@ -84,6 +84,38 @@ const orderSchema = new mongoose.Schema(
       default: 'shiprocket',
       index: true
     },
+
+    /**
+     * Delivery speed chosen at checkout.
+     * standard (default/legacy) = active provider path (Shiprocket or Shipmozo).
+     * same_day = Shiprocket Quick only — listed in admin Same Day tab, excluded from normal Orders.
+     */
+    shippingSpeed: {
+      type: String,
+      enum: ['standard', 'same_day'],
+      default: 'standard',
+      index: true
+    },
+
+    /**
+     * How the order was fulfilled.
+     * null/courier = normal Shiprocket/Shipmozo path (legacy default).
+     * self_pickup = customer collected from warehouse (orderStatus → delivered).
+     */
+    fulfillmentMode: {
+      type: String,
+      enum: ['courier', 'self_pickup', null],
+      default: null,
+      index: true
+    },
+
+    /** Set when fulfillmentMode is self_pickup */
+    selfPickup: {
+      completedAt: { type: Date, default: null },
+      completedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      note: { type: String, default: null },
+      providerCancelled: { type: Boolean, default: false }
+    },
     
     orderStatus: {
       type: String,
@@ -342,7 +374,12 @@ const orderSchema = new mongoose.Schema(
       shipmozoCourierId: { type: Number, default: null },
       /** Provider that produced this quote */
       provider: { type: String, enum: ['shiprocket', 'shipmozo', null], default: null },
-      pickupsAutomaticallyScheduled: { type: Boolean, default: null }
+      pickupsAutomaticallyScheduled: { type: Boolean, default: null },
+      /** Mirror of order.shippingSpeed */
+      shippingSpeed: { type: String, enum: ['standard', 'same_day', null], default: null },
+      /** Shiprocket adhoc checkout_shipping_method when same_day (e.g. SR_QUICK) */
+      checkoutShippingMethod: { type: String, default: null },
+      etaLabel: { type: String, default: null }
     },
 
     /** Package weight/dims sent to Shiprocket at checkout (frozen at order place) */
