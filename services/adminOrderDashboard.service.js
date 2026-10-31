@@ -29,6 +29,11 @@ const {
   buildSelfPickupExclusionForNonSelfPickupBucket,
   isSelfPickupOrder
 } = require('../constants/selfPickupOrderQuery');
+const {
+  buildSameDayExclusion,
+  buildSameDayMatch,
+  buildSameDayShippedMatch
+} = require('../sameDayDelivery/constants/sameDayDeliveryOrderQuery');
 const { evaluateOrderPaymentForShiprocketFulfillment } = require('../utils/orderFulfillmentPaymentGate');
 const { buildListRowFulfillmentUi } = require('../utils/adminOrderListFulfillmentUi');
 const { resolveOrderShippingProvider } = require('../constants/shippingProviders');
@@ -233,7 +238,10 @@ function andFilters(...parts) {
 function buildBucketMatch(bucket) {
   const b = String(bucket || 'all').toLowerCase();
   if (b === 'all') {
-    return { orderStatus: { $nin: ALL_TAB_EXCLUDED_ORDER_STATUSES } };
+    return andFilters(
+      { orderStatus: { $nin: ALL_TAB_EXCLUDED_ORDER_STATUSES } },
+      buildSameDayExclusion()
+    );
   }
   if (b === 'rto') {
     return buildRtoBucketMatch();
@@ -255,7 +263,8 @@ function buildBucketMatch(bucket) {
       },
       buildRtoExclusionForNonRtoBucket(b),
       buildPickupExceptionExclusionForNonExceptionBucket(b),
-      buildSelfPickupExclusionForNonSelfPickupBucket(b)
+      buildSelfPickupExclusionForNonSelfPickupBucket(b),
+      buildSameDayExclusion()
     );
   }
   if (b === 'ready_to_pick') {
@@ -263,7 +272,8 @@ function buildBucketMatch(bucket) {
       processingTabMongoMatch(),
       buildRtoExclusionForNonRtoBucket(b),
       buildPickupExceptionExclusionForNonExceptionBucket(b),
-      buildSelfPickupExclusionForNonSelfPickupBucket(b)
+      buildSelfPickupExclusionForNonSelfPickupBucket(b),
+      buildSameDayExclusion()
     );
   }
   if (b === 'ready_to_ship') {
@@ -271,7 +281,8 @@ function buildBucketMatch(bucket) {
       readyToShipTabMongoMatch(),
       buildRtoExclusionForNonRtoBucket(b),
       buildPickupExceptionExclusionForNonExceptionBucket(b),
-      buildSelfPickupExclusionForNonSelfPickupBucket(b)
+      buildSelfPickupExclusionForNonSelfPickupBucket(b),
+      buildSameDayExclusion()
     );
   }
   const statuses = BUCKET_TO_ORDER_STATUSES[/** @type {keyof typeof BUCKET_TO_ORDER_STATUSES} */ (b)];
@@ -287,7 +298,8 @@ function buildBucketMatch(bucket) {
     buildRtoExclusionForNonRtoBucket(b),
     buildPickupExceptionExclusionForNonExceptionBucket(b),
     // Keep self-pickup out of Delivered / Confirmed / etc. — they have their own tab
-    b === 'self_pickup' ? null : buildSelfPickupExclusionForNonSelfPickupBucket(b)
+    b === 'self_pickup' ? null : buildSelfPickupExclusionForNonSelfPickupBucket(b),
+    buildSameDayExclusion()
   );
 }
 
@@ -330,11 +342,43 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
                 }
               },
               totalCompletedOrders: {
-                $sum: { $cond: [{ $eq: ['$orderStatus', 'delivered'] }, 1, 0] }
+                $sum: {
+                  $cond: [
+                    {
+                      $or: [
+                        { $eq: ['$orderStatus', 'delivered'] },
+                        {
+                          $and: [
+                            { $eq: ['$fulfillmentMode', 'same_day'] },
+                            { $eq: ['$orderStatus', 'shipped'] }
+                          ]
+                        }
+                      ]
+                    },
+                    1,
+                    0
+                  ]
+                }
               },
               totalPendingOrders: {
                 $sum: {
-                  $cond: [{ $in: ['$orderStatus', PIPELINE_ORDER_STATUSES] }, 1, 0]
+                  $cond: [
+                    {
+                      $and: [
+                        { $in: ['$orderStatus', PIPELINE_ORDER_STATUSES] },
+                        {
+                          $not: {
+                            $and: [
+                              { $eq: ['$fulfillmentMode', 'same_day'] },
+                              { $eq: ['$orderStatus', 'shipped'] }
+                            ]
+                          }
+                        }
+                      ]
+                    },
+                    1,
+                    0
+                  ]
                 }
               },
               totalRevenueInr: {
@@ -381,7 +425,10 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
     readyToPickCount,
     readyToShipCount,
     confirmedWithoutPickupExceptionCount,
-    deliveredCourierOnlyCount
+    deliveredCourierOnlyCount,
+    sameDayShippedCount,
+    sameDayListedCount,
+    sameDayPendingCount
   ] = await Promise.all([
     Order.countDocuments({ $and: [baseMatch, buildRtoBucketMatch()] }),
     Order.countDocuments({ $and: [baseMatch, buildPickupExceptionBucketMatch()] }),
@@ -396,32 +443,56 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
       $and: [baseMatch, { orderStatus: 'delivered', 'shipmentInfo.providerStatus': ndrProviderMatch }]
     }),
     Order.countDocuments(
-      andFilters(baseMatch, processingTabMongoMatch(), pickupExceptionExclude, selfPickupExclude)
+      andFilters(
+        baseMatch,
+        processingTabMongoMatch(),
+        pickupExceptionExclude,
+        selfPickupExclude,
+        buildSameDayExclusion()
+      )
     ),
     Order.countDocuments(
-      andFilters(baseMatch, readyToShipTabMongoMatch(), pickupExceptionExclude, selfPickupExclude)
+      andFilters(
+        baseMatch,
+        readyToShipTabMongoMatch(),
+        pickupExceptionExclude,
+        selfPickupExclude,
+        buildSameDayExclusion()
+      )
     ),
     Order.countDocuments(
       andFilters(
         baseMatch,
         { orderStatus: 'confirmed' },
         confirmedPickupExceptionExclude,
-        selfPickupExclude
+        selfPickupExclude,
+        buildSameDayExclusion()
       )
     ),
     Order.countDocuments(
-      andFilters(baseMatch, { orderStatus: 'delivered' }, selfPickupExclude)
-    )
+      andFilters(baseMatch, { orderStatus: 'delivered' }, selfPickupExclude, buildSameDayExclusion())
+    ),
+    Order.countDocuments({ $and: [baseMatch, buildSameDayShippedMatch()] }),
+    Order.countDocuments(
+      andFilters(
+        baseMatch,
+        { orderStatus: { $nin: ALL_TAB_EXCLUDED_ORDER_STATUSES } },
+        buildSameDayMatch()
+      )
+    ),
+    Order.countDocuments(andFilters(baseMatch, { fulfillmentMode: 'same_day', orderStatus: 'pending' }))
   ]);
 
   const countsByBucket = {
-    all: t.totalOrders || 0,
-    new: byStatus.pending || 0,
+    all: Math.max(0, (t.totalOrders || 0) - sameDayListedCount),
+    new: Math.max(0, (byStatus.pending || 0) - sameDayPendingCount),
     bill_sent: confirmedWithoutPickupExceptionCount,
     ready_to_ship: readyToShipCount,
     ready_to_pick: readyToPickCount,
     in_transit:
-      (byStatus.shipped || 0) + (byStatus.out_for_delivery || 0) + falseDeliveredNdrCount,
+      Math.max(0, (byStatus.shipped || 0) - sameDayShippedCount) +
+      (byStatus.out_for_delivery || 0) +
+      falseDeliveredNdrCount,
     completed:
       Math.max(0, deliveredCourierOnlyCount - legacyRtoInDelivered - falseDeliveredNdrCount) +
       (byStatus.return_requested || 0),
