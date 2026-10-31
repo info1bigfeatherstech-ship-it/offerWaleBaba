@@ -67,7 +67,8 @@ function resolveNotifyEmail() {
 function buildFileRows(enquiry) {
   const logos = Array.isArray(enquiry.logos) ? enquiry.logos : [];
   const refs = Array.isArray(enquiry.referencePhotos) ? enquiry.referencePhotos : [];
-  const all = [...refs, ...logos];
+  const card = enquiry.businessCard && enquiry.businessCard.url ? [enquiry.businessCard] : [];
+  const all = [...refs, ...logos, ...card];
   if (!all.length) {
     return { filesHtml: 'No files attached.', filesText: 'No files attached.' };
   }
@@ -90,15 +91,17 @@ function commonVars(enquiry) {
   return {
     id: String(enquiry._id || enquiry.id || ''),
     name: escapeHtml(enquiry.name || 'there'),
-    email: escapeHtml(enquiry.email || ''),
     phone: escapeHtml(enquiry.phone || ''),
     organizationName: escapeHtml(enquiry.organizationName || '—'),
     city: escapeHtml(enquiry.city || '—'),
     occasion: escapeHtml(enquiry.occasion || '—'),
     giftCategory: escapeHtml(enquiry.giftCategory || '—'),
-    quantity: escapeHtml(String(enquiry.quantity || '')),
+    quantity: escapeHtml(enquiry.quantity == null ? '—' : String(enquiry.quantity)),
+    volumeOrder: escapeHtml(enquiry.volumeOrder == null ? '—' : String(enquiry.volumeOrder)),
+    businessType: escapeHtml(enquiry.businessType || '—'),
     targetDeliveryDate: escapeHtml(formatYmd(enquiry.targetDeliveryDate)),
-    message: escapeHtml(enquiry.message || ''),
+    message: escapeHtml(enquiry.message || '—'),
+    email: escapeHtml(enquiry.email || '—'),
     enquiryLabel: escapeHtml(enquiryLabel(enquiry.enquiryType)),
     storeUrl: escapeHtml(getStorefrontFrontendBase(storefront)),
   };

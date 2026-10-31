@@ -75,11 +75,14 @@ function serializeListRow(row) {
     email: row.email,
     phone: row.phone,
     organizationName: row.organizationName || null,
-    city: row.city,
+    city: row.city || null,
     occasion: row.occasion || null,
     giftCategory: row.giftCategory || null,
-    quantity: row.quantity,
+    quantity: row.quantity == null ? null : row.quantity,
     targetDeliveryDate: formatYmd(row.targetDeliveryDate),
+    businessType: row.businessType || null,
+    volumeOrder: row.volumeOrder == null ? null : row.volumeOrder,
+    hasBusinessCard: Boolean(row.businessCard && row.businessCard.url),
     status: row.status,
     storefront: row.storefront,
     referencePhotoCount: refs.length,
@@ -92,9 +95,10 @@ function serializeListRow(row) {
 function serializeDetail(row) {
   return {
     ...serializeListRow(row),
-    message: row.message,
+    message: row.message || null,
     logos: (row.logos || []).map(serializeFile),
     referencePhotos: (row.referencePhotos || []).map(serializeFile),
+    businessCard: serializeFile(row.businessCard),
     adminNote: row.adminNote || null,
     convertedOrderId: row.convertedOrderId || null,
     contactedAt: row.contactedAt || null,
@@ -120,7 +124,6 @@ exports.submitCorporateGiftEnquiry = async (req, res) => {
 
     const since = new Date(Date.now() - DUPLICATE_WINDOW_MS);
     const existing = await CorporateGiftEnquiry.findOne({
-      email: payload.email,
       phone: payload.phone,
       enquiryType: payload.enquiryType,
       status: { $in: OPEN_STATUSES },
@@ -144,7 +147,11 @@ exports.submitCorporateGiftEnquiry = async (req, res) => {
     }
 
     const assets = await uploadEnquiryAssets(payload, files);
-    uploadedAssets = [...(assets.logos || []), ...(assets.referencePhotos || [])];
+    uploadedAssets = [
+      ...(assets.logos || []),
+      ...(assets.referencePhotos || []),
+      ...(assets.businessCard ? [assets.businessCard] : []),
+    ];
 
     const userId =
       req.userId && mongoose.Types.ObjectId.isValid(String(req.userId)) ? req.userId : null;
@@ -153,6 +160,7 @@ exports.submitCorporateGiftEnquiry = async (req, res) => {
       ...payload,
       logos: assets.logos,
       referencePhotos: assets.referencePhotos,
+      businessCard: assets.businessCard || null,
       storefront: resolveStorefront(req),
       source: 'gift_page',
       userId,
@@ -220,6 +228,7 @@ exports.listCorporateGiftEnquiries = async (req, res) => {
         { city: re },
         { occasion: re },
         { giftCategory: re },
+        { businessType: re },
       ];
       if (digits.length >= 4) {
         filter.$or.push({ phone: new RegExp(escapeRegex(digits), 'i') });
@@ -232,7 +241,7 @@ exports.listCorporateGiftEnquiries = async (req, res) => {
         .skip(skip)
         .limit(limit)
         .select(
-          'enquiryType name email phone organizationName city occasion giftCategory quantity targetDeliveryDate status storefront logos referencePhotos createdAt updatedAt'
+          'enquiryType name email phone organizationName city occasion giftCategory quantity targetDeliveryDate businessType volumeOrder businessCard status storefront logos referencePhotos createdAt updatedAt'
         )
         .lean(),
       CorporateGiftEnquiry.countDocuments(filter),

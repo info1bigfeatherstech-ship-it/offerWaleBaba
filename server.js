@@ -824,7 +824,7 @@ app.use((err, req, res, next) => {
     message = String(req.path || '').includes('/categories')
       ? 'Image file is too large. Maximum size is 20 MB for category images.'
       : String(req.path || '').includes('/gift-enquiries')
-        ? 'Each file must be 5 MB or smaller.'
+        ? 'Each file must be 20 MB or smaller.'
         : (err.message || 'Uploaded file is too large.');
   }
 

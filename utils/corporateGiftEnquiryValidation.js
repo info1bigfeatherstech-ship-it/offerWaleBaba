@@ -1,6 +1,6 @@
 /**
- * Corporate / customise-gift enquiry validation.
- * Reuses OOS phone + email rules so contact checks stay consistent.
+ * Corporate customise-gift + bulk-order enquiry validation.
+ * Reuses OOS phone + email format rules so contact checks stay consistent.
  */
 
 const {
@@ -13,9 +13,10 @@ const { ENQUIRY_TYPES, STATUS_ENUM } = require('../models/CorporateGiftEnquiry')
 
 const OPEN_STATUSES = ['pending', 'contacted', 'quoted'];
 
-const MAX_GIFT_FILE_BYTES = 5 * 1024 * 1024;
-const MAX_REFERENCE_PHOTOS = 3;
+const MAX_GIFT_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_REFERENCE_PHOTOS = 6;
 const MAX_LOGOS = 3;
+const MAX_BUSINESS_CARDS = 1;
 const MIN_MESSAGE_LEN = 10;
 const MAX_MESSAGE_LEN = 2000;
 const DUPLICATE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -89,29 +90,38 @@ function parseEnquiryType(raw) {
   return value;
 }
 
-function parseQuantity(raw) {
+function parseWholeNumber(raw, { field, code, required, emptyMessage }) {
   const asString = String(raw == null ? '' : raw).trim();
   if (!asString) {
-    throw createHttpError(400, 'INVALID_QUANTITY', 'Estimated quantity is required', 'quantity');
+    if (!required) return null;
+    throw createHttpError(400, code, emptyMessage, field);
   }
   if (!/^\d+$/.test(asString)) {
-    throw createHttpError(
-      400,
-      'INVALID_QUANTITY',
-      'Quantity must be a whole number (e.g. 50 or 100)',
-      'quantity'
-    );
+    throw createHttpError(400, code, `${field} must be a whole number (e.g. 50 or 100)`, field);
   }
   const qty = Number.parseInt(asString, 10);
   if (!Number.isFinite(qty) || qty < 1 || qty > 100000) {
-    throw createHttpError(
-      400,
-      'INVALID_QUANTITY',
-      'Quantity must be between 1 and 100000',
-      'quantity'
-    );
+    throw createHttpError(400, code, `${field} must be between 1 and 100000`, field);
   }
   return qty;
+}
+
+function parseQuantity(raw, { required = true } = {}) {
+  return parseWholeNumber(raw, {
+    field: 'quantity',
+    code: 'INVALID_QUANTITY',
+    required,
+    emptyMessage: 'Estimated quantity is required',
+  });
+}
+
+function parseVolumeOrder(raw) {
+  return parseWholeNumber(raw, {
+    field: 'volumeOrder',
+    code: 'INVALID_VOLUME_ORDER',
+    required: false,
+    emptyMessage: 'Volume order is required',
+  });
 }
 
 function todayYmdIst() {
@@ -159,34 +169,17 @@ function parseTargetDeliveryDate(raw) {
   return utc;
 }
 
-/**
- * @param {object} body
- * @returns {{
- *  enquiryType: string,
- *  name: string,
- *  email: string,
- *  phone: string,
- *  organizationName: string|null,
- *  city: string,
- *  occasion: string|null,
- *  giftCategory: string|null,
- *  quantity: number,
- *  targetDeliveryDate: Date|null,
- *  message: string
- * }}
- */
-function validateGiftEnquiryPayload(body = {}) {
-  const enquiryType = parseEnquiryType(body.enquiryType);
-
-  const emailRaw = String(body.email || '').trim();
-  if (!emailRaw) {
-    throw createHttpError(400, 'EMAIL_REQUIRED', 'Email is required', 'email');
-  }
+function parseOptionalEmail(raw) {
+  const emailRaw = String(raw || '').trim();
+  if (!emailRaw) return null;
   if (!isValidInquiryEmail(emailRaw)) {
     throw createHttpError(400, 'INVALID_EMAIL', 'Enter a valid email (e.g. name@gmail.com).', 'email');
   }
+  return emailRaw.toLowerCase();
+}
 
-  const phoneRaw = String(body.phone || '').trim();
+function parseRequiredPhone(raw) {
+  const phoneRaw = String(raw || '').trim();
   if (!phoneRaw) {
     throw createHttpError(400, 'PHONE_REQUIRED', 'Mobile number is required', 'phone');
   }
@@ -198,44 +191,62 @@ function validateGiftEnquiryPayload(body = {}) {
       'phone'
     );
   }
-  const email = emailRaw.toLowerCase();
-  const phone = normalizeInquiryPhone(phoneRaw);
+  return normalizeInquiryPhone(phoneRaw);
+}
 
-  const name = requiredText(body.name, { field: 'name', min: 2, max: 120 });
-  const city = requiredText(body.city, { field: 'city', min: 2, max: 120 });
-  const organizationName = optionalText(body.organizationName, {
-    field: 'organizationName',
-    max: 160,
-  });
+function validateCustomPayload(body, shared) {
+  return {
+    ...shared,
+    city: requiredText(body.city, { field: 'city', min: 2, max: 120 }),
+    occasion: requiredText(body.occasion, { field: 'occasion', min: 2, max: 120 }),
+    giftCategory: requiredText(body.giftCategory, { field: 'giftCategory', min: 2, max: 120 }),
+    quantity: parseQuantity(body.quantity, { required: true }),
+    targetDeliveryDate: parseTargetDeliveryDate(body.targetDeliveryDate),
+    message: requiredText(body.message, {
+      field: 'message',
+      min: MIN_MESSAGE_LEN,
+      max: MAX_MESSAGE_LEN,
+    }),
+    businessType: null,
+    volumeOrder: null,
+  };
+}
 
-  const occasion = requiredText(body.occasion, { field: 'occasion', min: 2, max: 120 });
-  const giftCategory = requiredText(body.giftCategory, {
-    field: 'giftCategory',
-    min: 2,
-    max: 120,
-  });
-
-  const quantity = parseQuantity(body.quantity);
-  const targetDeliveryDate = parseTargetDeliveryDate(body.targetDeliveryDate);
-  const message = requiredText(body.message, {
+function validateBulkPayload(body, shared) {
+  const message = optionalText(body.message, {
     field: 'message',
     min: MIN_MESSAGE_LEN,
     max: MAX_MESSAGE_LEN,
   });
-
   return {
-    enquiryType,
-    name,
-    email,
-    phone,
-    organizationName,
-    city,
-    occasion,
-    giftCategory,
-    quantity,
-    targetDeliveryDate,
+    ...shared,
+    city: optionalText(body.city, { field: 'city', min: 2, max: 120 }),
+    occasion: null,
+    giftCategory: null,
+    quantity: null,
+    targetDeliveryDate: null,
     message,
+    businessType: requiredText(body.businessType, { field: 'businessType', min: 2, max: 120 }),
+    volumeOrder: parseVolumeOrder(body.volumeOrder),
   };
+}
+
+function validateGiftEnquiryPayload(body = {}) {
+  const enquiryType = parseEnquiryType(body.enquiryType);
+  const shared = {
+    enquiryType,
+    name: requiredText(body.name, { field: 'name', min: 2, max: 120 }),
+    email: parseOptionalEmail(body.email),
+    phone: parseRequiredPhone(body.phone),
+    organizationName: optionalText(body.organizationName, {
+      field: 'organizationName',
+      max: 160,
+    }),
+  };
+
+  return enquiryType === 'bulk'
+    ? validateBulkPayload(body, shared)
+    : validateCustomPayload(body, shared);
 }
 
 function parseAdminStatus(raw) {
@@ -265,6 +276,7 @@ module.exports = {
   MAX_GIFT_FILE_BYTES,
   MAX_REFERENCE_PHOTOS,
   MAX_LOGOS,
+  MAX_BUSINESS_CARDS,
   MIN_MESSAGE_LEN,
   MAX_MESSAGE_LEN,
   DUPLICATE_WINDOW_MS,
@@ -277,6 +289,7 @@ module.exports = {
   validateGiftEnquiryPayload,
   parseEnquiryType,
   parseQuantity,
+  parseVolumeOrder,
   parseTargetDeliveryDate,
   parseAdminStatus,
   parseAdminNote,

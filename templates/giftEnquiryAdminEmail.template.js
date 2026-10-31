@@ -14,6 +14,8 @@ module.exports = {
     <tr><td style="padding:6px 0;color:#777;">Occasion</td><td style="padding:6px 0;">{{occasion}}</td></tr>
     <tr><td style="padding:6px 0;color:#777;">Gift category</td><td style="padding:6px 0;">{{giftCategory}}</td></tr>
     <tr><td style="padding:6px 0;color:#777;">Quantity</td><td style="padding:6px 0;">{{quantity}}</td></tr>
+    <tr><td style="padding:6px 0;color:#777;">Business type</td><td style="padding:6px 0;">{{businessType}}</td></tr>
+    <tr><td style="padding:6px 0;color:#777;">Volume order</td><td style="padding:6px 0;">{{volumeOrder}}</td></tr>
     <tr><td style="padding:6px 0;color:#777;">Delivery date</td><td style="padding:6px 0;">{{targetDeliveryDate}}</td></tr>
     <tr><td style="padding:6px 0;color:#777;">Enquiry id</td><td style="padding:6px 0;">{{id}}</td></tr>
   </table>
@@ -34,6 +36,8 @@ City: {{city}}
 Occasion: {{occasion}}
 Gift category: {{giftCategory}}
 Quantity: {{quantity}}
+Business type: {{businessType}}
+Volume order: {{volumeOrder}}
 Delivery date: {{targetDeliveryDate}}
 Enquiry id: {{id}}
 

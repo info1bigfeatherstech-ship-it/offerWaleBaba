@@ -5,6 +5,7 @@ const {
   MAX_GIFT_FILE_BYTES,
   MAX_REFERENCE_PHOTOS,
   MAX_LOGOS,
+  MAX_BUSINESS_CARDS,
   IMAGE_MIME_TYPES,
   LOGO_MIME_TYPES,
 } = require('../utils/corporateGiftEnquiryValidation');
@@ -280,14 +281,29 @@ const giftEnquiryFileFilter = (req, file, cb) => {
     return;
   }
 
-  reject('TOO_MANY_FILES', `Unexpected file field "${field}". Use referencePhotos or logos.`);
+  if (field === 'businessCard') {
+    if (LOGO_MIME_TYPES.includes(mime)) {
+      cb(null, true);
+      return;
+    }
+    reject(
+      'INVALID_FILE_TYPE',
+      'Business card must be an image (JPG, JPEG, PNG, WEBP) or PDF.'
+    );
+    return;
+  }
+
+  reject(
+    'TOO_MANY_FILES',
+    `Unexpected file field "${field}". Use referencePhotos, logos, or businessCard.`
+  );
 };
 
 const giftEnquiryUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter: giftEnquiryFileFilter,
   limits: {
-    files: MAX_REFERENCE_PHOTOS + MAX_LOGOS,
+    files: MAX_REFERENCE_PHOTOS + MAX_LOGOS + MAX_BUSINESS_CARDS,
     fileSize: MAX_GIFT_FILE_BYTES,
   },
 });
@@ -295,6 +311,7 @@ const giftEnquiryUpload = multer({
 const giftEnquiryFields = giftEnquiryUpload.fields([
   { name: 'referencePhotos', maxCount: MAX_REFERENCE_PHOTOS },
   { name: 'logos', maxCount: MAX_LOGOS },
+  { name: 'businessCard', maxCount: MAX_BUSINESS_CARDS },
 ]);
 
 /**
@@ -309,7 +326,7 @@ function uploadGiftEnquiryFiles(req, res, next) {
       return res.status(400).json({
         success: false,
         code: 'FILE_TOO_LARGE',
-        message: 'Each file must be 5 MB or smaller.',
+        message: 'Each file must be 20 MB or smaller.',
       });
     }
     if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
@@ -317,7 +334,7 @@ function uploadGiftEnquiryFiles(req, res, next) {
         success: false,
         code: 'TOO_MANY_FILES',
         message:
-          'Too many files. Reference photos: max 3 images. Logos: max 3 image/PDF files.',
+          'Too many files. Reference photos: max 6 images. Logos: max 3. Business card: max 1.',
         field: err.field || undefined,
       });
     }

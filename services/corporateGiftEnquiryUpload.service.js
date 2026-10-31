@@ -1,13 +1,18 @@
 /**
- * Compress gift-enquiry images, then store on Cloudflare R2.
- * PDFs are stored as-is. Failed runs roll back any objects already written.
+ * Compress gift-enquiry images, then store on the same default media provider
+ * as product images (Cloudflare R2 or Cloudinary). PDFs are stored raw.
  */
 
 const crypto = require('crypto');
 const path = require('path');
 const logger = require('../utils/logger');
-const { optimizeProductImageBuffer } = require('../utils/cloudinaryHelper');
-const { uploadBufferToR2, deleteFromR2ByKey, isR2Configured } = require('../utils/r2Storage');
+const {
+  optimizeProductImageBuffer,
+  uploadToCloudinary,
+  uploadRawToDefaultMedia,
+  deleteFromCloudinary,
+  isDefaultMediaConfigured,
+} = require('../utils/cloudinaryHelper');
 const {
   detectBufferKind,
   isAllowedLogoKind,
@@ -17,6 +22,7 @@ const {
   MAX_GIFT_FILE_BYTES,
   MAX_REFERENCE_PHOTOS,
   MAX_LOGOS,
+  MAX_BUSINESS_CARDS,
   createHttpError,
 } = require('../utils/corporateGiftEnquiryValidation');
 
@@ -41,9 +47,14 @@ function sanitizePublicIdPart(value) {
   );
 }
 
-function r2KeyFromPublicId(publicId) {
-  const raw = String(publicId || '');
-  return raw.startsWith('r2:') ? raw.slice(3) : raw;
+function fileTypeMessage(field, allowPdf) {
+  if (field === 'businessCard') {
+    return 'Business card must be an image (JPG, JPEG, PNG, WEBP) or PDF.';
+  }
+  if (allowPdf) {
+    return 'Logo files must be images (JPG, JPEG, PNG, WEBP) or PDF.';
+  }
+  return 'Reference photos must be image files (JPG, JPEG, PNG, WEBP). PDF is not allowed.';
 }
 
 function assertFileBuffer(file, field) {
@@ -51,7 +62,7 @@ function assertFileBuffer(file, field) {
     throw createHttpError(400, 'INVALID_FILE_TYPE', 'Uploaded file is empty or unreadable', field);
   }
   if (file.buffer.length > MAX_GIFT_FILE_BYTES) {
-    throw createHttpError(400, 'FILE_TOO_LARGE', 'Each file must be 5 MB or smaller', field);
+    throw createHttpError(400, 'FILE_TOO_LARGE', 'Each file must be 20 MB or smaller', field);
   }
 }
 
@@ -59,27 +70,23 @@ function inspectFile(file, { allowedKinds, field, allowPdf }) {
   assertFileBuffer(file, field);
   const kind = detectBufferKind(file.buffer);
   if (!kind || !allowedKinds(kind)) {
-    throw createHttpError(
-      400,
-      'INVALID_FILE_TYPE',
-      allowPdf
-        ? 'Logo files must be images (JPG, JPEG, PNG, WEBP) or PDF.'
-        : 'Reference photos must be image files (JPG, JPEG, PNG, WEBP). PDF is not allowed.',
-      field
-    );
+    throw createHttpError(400, 'INVALID_FILE_TYPE', fileTypeMessage(field, allowPdf), field);
   }
   return kind;
 }
 
+function resourceTypeForAsset(asset) {
+  return asset?.mimeType === 'application/pdf' ? 'raw' : undefined;
+}
+
 async function rollbackUploads(assets) {
   for (const asset of assets) {
-    const key = r2KeyFromPublicId(asset?.publicId);
-    if (!key) continue;
+    if (!asset?.publicId) continue;
     try {
-      await deleteFromR2ByKey(key);
+      await deleteFromCloudinary(asset.publicId, resourceTypeForAsset(asset));
     } catch (err) {
-      logger.error('[gift-enquiry] R2 rollback failed', {
-        key,
+      logger.error('[gift-enquiry] media rollback failed', {
+        publicId: asset.publicId,
         message: err.message,
       });
     }
@@ -93,17 +100,10 @@ async function uploadOneFile(file, { kind, folder, publicIdPrefix, assetKind }) 
     .toString('hex')}`;
 
   if (kind === 'pdf') {
-    const upload = await uploadBufferToR2({
-      buffer: file.buffer,
-      folderPath: folder,
-      publicIdName,
-      contentType: 'application/pdf',
-      extension: 'pdf',
-      cacheControl: 'public, max-age=31536000, immutable',
-    });
+    const upload = await uploadRawToDefaultMedia(file.buffer, folder, publicIdName);
     return {
       url: upload.url,
-      publicId: `r2:${upload.key}`,
+      publicId: upload.publicId,
       originalName,
       mimeType: 'application/pdf',
       sizeBytes: file.buffer.length,
@@ -116,26 +116,20 @@ async function uploadOneFile(file, { kind, folder, publicIdPrefix, assetKind }) 
     optimized = await optimizeProductImageBuffer(file.buffer);
   } catch (err) {
     logger.warn('[gift-enquiry] image compress failed', { message: err.message });
+    const field =
+      assetKind === 'logo' ? 'logos' : assetKind === 'business_card' ? 'businessCard' : 'referencePhotos';
     throw createHttpError(
       400,
       'INVALID_FILE_TYPE',
       'Could not process this image. Use JPG, PNG, or WEBP.',
-      assetKind === 'logo' ? 'logos' : 'referencePhotos'
+      field
     );
   }
 
-  const upload = await uploadBufferToR2({
-    buffer: optimized,
-    folderPath: folder,
-    publicIdName,
-    contentType: 'image/webp',
-    extension: 'webp',
-    cacheControl: 'public, max-age=31536000, immutable',
-  });
-
+  const upload = await uploadToCloudinary(optimized, folder, publicIdName);
   return {
     url: upload.url,
-    publicId: `r2:${upload.key}`,
+    publicId: upload.publicId,
     originalName,
     mimeType: 'image/webp',
     sizeBytes: optimized.length,
@@ -147,39 +141,56 @@ function pickEnquiryFiles(req) {
   return {
     referencePhotos: collectFieldFiles(req, 'referencePhotos'),
     logos: collectFieldFiles(req, 'logos'),
+    businessCards: collectFieldFiles(req, 'businessCard'),
   };
 }
 
 function validateEnquiryFiles(enquiryType, files) {
-  const refs = files.referencePhotos;
-  const logos = files.logos;
+  const refs = files.referencePhotos || [];
+  const logos = files.logos || [];
+  const cards = files.businessCards || [];
 
-  if (enquiryType === 'bulk' && (refs.length > 0 || logos.length > 0)) {
+  if (enquiryType === 'bulk') {
+    if (refs.length > 0 || logos.length > 0) {
+      throw createHttpError(
+        400,
+        'FILES_NOT_ALLOWED',
+        'Bulk enquiries cannot include logo or reference files.',
+        'files'
+      );
+    }
+    if (cards.length > MAX_BUSINESS_CARDS) {
+      throw createHttpError(
+        400,
+        'TOO_MANY_FILES',
+        'Only 1 business card file is allowed.',
+        'businessCard'
+      );
+    }
+    const inspectedCards = cards.map((file) => ({
+      file,
+      kind: inspectFile(file, {
+        allowedKinds: isAllowedLogoKind,
+        field: 'businessCard',
+        allowPdf: true,
+      }),
+    }));
+    return { inspectedRefs: [], inspectedLogos: [], inspectedCards };
+  }
+
+  if (cards.length > 0) {
     throw createHttpError(
       400,
       'FILES_NOT_ALLOWED',
-      'Bulk enquiries cannot include logo or reference files.',
-      'files'
-    );
-  }
-
-  if (enquiryType !== 'custom') {
-    return { referencePhotos: [], logos: [] };
-  }
-
-  if (refs.length < 1) {
-    throw createHttpError(
-      400,
-      'REFERENCE_PHOTOS_REQUIRED',
-      'Upload at least 1 reference photo (max 3).',
-      'referencePhotos'
+      'Customised gift enquiries cannot include a business card.',
+      'businessCard'
     );
   }
   if (refs.length > MAX_REFERENCE_PHOTOS) {
     throw createHttpError(
       400,
       'TOO_MANY_FILES',
-      'Maximum 3 reference photos are allowed.',
+      'Maximum 6 reference photos are allowed.',
       'referencePhotos'
     );
   }
@@ -187,63 +198,78 @@ function validateEnquiryFiles(enquiryType, files) {
     throw createHttpError(400, 'TOO_MANY_FILES', 'Maximum 3 logo files are allowed.', 'logos');
   }
 
-  const inspectedRefs = refs.map((file) => ({
-    file,
-    kind: inspectFile(file, {
-      allowedKinds: isAllowedReferenceKind,
-      field: 'referencePhotos',
-      allowPdf: false,
-    }),
-  }));
-  const inspectedLogos = logos.map((file) => ({
-    file,
-    kind: inspectFile(file, {
-      allowedKinds: isAllowedLogoKind,
-      field: 'logos',
-      allowPdf: true,
-    }),
-  }));
+  return {
+    inspectedRefs: refs.map((file) => ({
+      file,
+      kind: inspectFile(file, {
+        allowedKinds: isAllowedReferenceKind,
+        field: 'referencePhotos',
+        allowPdf: false,
+      }),
+    })),
+    inspectedLogos: logos.map((file) => ({
+      file,
+      kind: inspectFile(file, {
+        allowedKinds: isAllowedLogoKind,
+        field: 'logos',
+        allowPdf: true,
+      }),
+    })),
+    inspectedCards: [],
+  };
+}
 
-  return { inspectedRefs, inspectedLogos };
+function collectJobs(payload, inspected) {
+  const prefix = payload.phone || 'enquiry';
+  const jobs = [];
+  for (const item of inspected.inspectedRefs || []) {
+    jobs.push({
+      file: item.file,
+      kind: item.kind,
+      folder: 'gift-enquiries/references',
+      publicIdPrefix: `ref-${prefix}`,
+      assetKind: 'reference',
+    });
+  }
+  for (const item of inspected.inspectedLogos || []) {
+    jobs.push({
+      file: item.file,
+      kind: item.kind,
+      folder: 'gift-enquiries/logos',
+      publicIdPrefix: `logo-${prefix}`,
+      assetKind: 'logo',
+    });
+  }
+  for (const item of inspected.inspectedCards || []) {
+    jobs.push({
+      file: item.file,
+      kind: item.kind,
+      folder: 'gift-enquiries/business-cards',
+      publicIdPrefix: `card-${prefix}`,
+      assetKind: 'business_card',
+    });
+  }
+  return jobs;
 }
 
 /**
- * Upload custom-enquiry files to R2. Caller must rollback if DB write fails.
- * @returns {Promise<{ logos: object[], referencePhotos: object[] }>}
+ * Upload enquiry files to the default product media provider.
+ * Caller must rollback if DB write fails.
  */
 async function uploadEnquiryAssets(payload, files) {
-  if (payload.enquiryType !== 'custom') {
-    return { logos: [], referencePhotos: [] };
+  const inspected = validateEnquiryFiles(payload.enquiryType, files);
+  const jobs = collectJobs(payload, inspected);
+
+  if (!jobs.length) {
+    return { logos: [], referencePhotos: [], businessCard: null };
   }
 
-  if (!isR2Configured()) {
+  if (!isDefaultMediaConfigured()) {
     throw createHttpError(
       503,
       'MEDIA_STORAGE_UNAVAILABLE',
       'File storage is temporarily unavailable. Please try again shortly.'
     );
-  }
-
-  const inspected = validateEnquiryFiles(payload.enquiryType, files);
-  const jobs = [];
-
-  for (const item of inspected.inspectedRefs) {
-    jobs.push({
-      file: item.file,
-      kind: item.kind,
-      folder: 'gift-enquiries/references',
-      publicIdPrefix: `ref-${payload.phone}`,
-      assetKind: 'reference',
-    });
-  }
-  for (const item of inspected.inspectedLogos) {
-    jobs.push({
-      file: item.file,
-      kind: item.kind,
-      folder: 'gift-enquiries/logos',
-      publicIdPrefix: `logo-${payload.phone}`,
-      assetKind: 'logo',
-    });
   }
 
   const uploaded = [];
@@ -260,6 +286,7 @@ async function uploadEnquiryAssets(payload, files) {
   return {
     referencePhotos: uploaded.filter((a) => a.kind === 'reference'),
     logos: uploaded.filter((a) => a.kind === 'logo'),
+    businessCard: uploaded.find((a) => a.kind === 'business_card') || null,
   };
 }
 

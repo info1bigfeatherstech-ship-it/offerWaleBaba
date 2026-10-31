@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const ENQUIRY_TYPES = ['custom', 'bulk'];
 const STATUS_ENUM = ['pending', 'contacted', 'quoted', 'closed', 'converted'];
 const STOREFRONTS = ['ecomm', 'wholesale'];
-const FILE_KINDS = ['logo', 'reference'];
+const FILE_KINDS = ['logo', 'reference', 'business_card'];
 
 const fileAssetSchema = new mongoose.Schema(
   {
@@ -29,24 +29,28 @@ const corporateGiftEnquirySchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true, maxlength: 120 },
     email: {
       type: String,
-      required: true,
       trim: true,
       lowercase: true,
       maxlength: 254,
+      default: null,
       index: true,
     },
     phone: { type: String, required: true, trim: true, maxlength: 15, index: true },
     organizationName: { type: String, trim: true, maxlength: 160, default: null },
-    city: { type: String, required: true, trim: true, maxlength: 120 },
+    city: { type: String, trim: true, maxlength: 120, default: null },
 
     occasion: { type: String, trim: true, maxlength: 120, default: null },
     giftCategory: { type: String, trim: true, maxlength: 120, default: null },
-    quantity: { type: Number, required: true, min: 1, max: 100000 },
+    quantity: { type: Number, min: 1, max: 100000, default: null },
     targetDeliveryDate: { type: Date, default: null },
-    message: { type: String, required: true, trim: true, maxlength: 2000 },
+    message: { type: String, trim: true, maxlength: 2000, default: null },
+
+    businessType: { type: String, trim: true, maxlength: 120, default: null },
+    volumeOrder: { type: Number, min: 1, max: 100000, default: null },
 
     logos: { type: [fileAssetSchema], default: [] },
     referencePhotos: { type: [fileAssetSchema], default: [] },
+    businessCard: { type: fileAssetSchema, default: null },
 
     storefront: {
       type: String,
@@ -85,7 +89,6 @@ const corporateGiftEnquirySchema = new mongoose.Schema(
 corporateGiftEnquirySchema.index({ createdAt: -1 });
 corporateGiftEnquirySchema.index({ storefront: 1, status: 1, createdAt: -1 });
 corporateGiftEnquirySchema.index({
-  email: 1,
   phone: 1,
   enquiryType: 1,
   status: 1,
