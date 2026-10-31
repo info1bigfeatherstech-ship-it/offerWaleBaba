@@ -5,7 +5,6 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const {
   BUCKET_TO_ORDER_STATUSES,
-  PIPELINE_ORDER_STATUSES,
   GMV_EXCLUDED_ORDER_STATUSES,
   fulfillmentBucketKeyFromOrderStatus,
   fulfillmentLabelForAdminListRow,
@@ -31,7 +30,6 @@ const {
 } = require('../constants/selfPickupOrderQuery');
 const {
   buildSameDayExclusion,
-  buildSameDayMatch,
   buildSameDayShippedMatch
 } = require('../sameDayDelivery/constants/sameDayDeliveryOrderQuery');
 const { evaluateOrderPaymentForShiprocketFulfillment } = require('../utils/orderFulfillmentPaymentGate');
@@ -335,7 +333,12 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
               totalOrders: {
                 $sum: {
                   $cond: [
-                    { $not: { $in: ['$orderStatus', ALL_TAB_EXCLUDED_ORDER_STATUSES] } },
+                    {
+                      $and: [
+                        { $not: { $in: ['$orderStatus', ALL_TAB_EXCLUDED_ORDER_STATUSES] } },
+                        { $ne: ['$fulfillmentMode', 'same_day'] }
+                      ]
+                    },
                     1,
                     0
                   ]
@@ -345,14 +348,9 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
                 $sum: {
                   $cond: [
                     {
-                      $or: [
+                      $and: [
                         { $eq: ['$orderStatus', 'delivered'] },
-                        {
-                          $and: [
-                            { $eq: ['$fulfillmentMode', 'same_day'] },
-                            { $eq: ['$orderStatus', 'shipped'] }
-                          ]
-                        }
+                        { $ne: ['$fulfillmentMode', 'same_day'] }
                       ]
                     },
                     1,
@@ -365,15 +363,8 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
                   $cond: [
                     {
                       $and: [
-                        { $in: ['$orderStatus', PIPELINE_ORDER_STATUSES] },
-                        {
-                          $not: {
-                            $and: [
-                              { $eq: ['$fulfillmentMode', 'same_day'] },
-                              { $eq: ['$orderStatus', 'shipped'] }
-                            ]
-                          }
-                        }
+                        { $eq: ['$orderStatus', 'pending'] },
+                        { $ne: ['$fulfillmentMode', 'same_day'] }
                       ]
                     },
                     1,
@@ -387,7 +378,8 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
                     {
                       $and: [
                         { $not: { $in: ['$orderStatus', GMV_EXCLUDED_ORDER_STATUSES] } },
-                        { $ne: ['$paymentStatus', 'failed'] }
+                        { $ne: ['$paymentStatus', 'failed'] },
+                        { $ne: ['$fulfillmentMode', 'same_day'] }
                       ]
                     },
                     '$totalAmount',
@@ -427,7 +419,6 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
     confirmedWithoutPickupExceptionCount,
     deliveredCourierOnlyCount,
     sameDayShippedCount,
-    sameDayListedCount,
     sameDayPendingCount
   ] = await Promise.all([
     Order.countDocuments({ $and: [baseMatch, buildRtoBucketMatch()] }),
@@ -473,18 +464,11 @@ async function aggregateSummary(from, to, scopeMatch = {}) {
       andFilters(baseMatch, { orderStatus: 'delivered' }, selfPickupExclude, buildSameDayExclusion())
     ),
     Order.countDocuments({ $and: [baseMatch, buildSameDayShippedMatch()] }),
-    Order.countDocuments(
-      andFilters(
-        baseMatch,
-        { orderStatus: { $nin: ALL_TAB_EXCLUDED_ORDER_STATUSES } },
-        buildSameDayMatch()
-      )
-    ),
     Order.countDocuments(andFilters(baseMatch, { fulfillmentMode: 'same_day', orderStatus: 'pending' }))
   ]);
 
   const countsByBucket = {
-    all: Math.max(0, (t.totalOrders || 0) - sameDayListedCount),
+    all: t.totalOrders || 0,
     new: Math.max(0, (byStatus.pending || 0) - sameDayPendingCount),
     bill_sent: confirmedWithoutPickupExceptionCount,
     ready_to_ship: readyToShipCount,

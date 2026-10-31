@@ -23,7 +23,7 @@ function buildSameDayPendingMatch() {
   return {
     fulfillmentMode: 'same_day',
     orderStatus: 'confirmed',
-    paymentStatus: { $in: ['paid', 'partially_paid'] },
+    paymentStatus: { $in: ['paid', 'partially_refunded'] },
   };
 }
 

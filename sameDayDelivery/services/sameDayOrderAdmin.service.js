@@ -15,6 +15,7 @@ const {
   isSameDayOrder,
 } = require('../constants/sameDayDeliveryOrderQuery');
 const { createSddHttpError } = require('../utils/sameDayDeliveryMode');
+const { assertSameDayShipPayment } = require('../utils/sameDayShipPaymentGate');
 
 const razorpay =
   String(process.env.RAZORPAY_KEY_ID || '').trim() && String(process.env.RAZORPAY_KEY_SECRET || '').trim()
@@ -48,6 +49,7 @@ async function findSddOrder(orderId, scopeMatch) {
 
 function serializeSddOrder(order) {
   const o = order.toObject ? order.toObject() : order;
+  const user = o.userId && typeof o.userId === 'object' ? o.userId : null;
   return {
     id: o._id,
     orderId: o.orderId,
@@ -55,8 +57,8 @@ function serializeSddOrder(order) {
     fulfillmentMode: 'same_day',
     orderStatus: o.orderStatus,
     paymentStatus: o.paymentStatus,
-    name: o.addressSnapshot?.fullName || o.addressSnapshot?.name || null,
-    phone: o.addressSnapshot?.phone || null,
+    name: o.addressSnapshot?.fullName || o.addressSnapshot?.name || user?.name || null,
+    phone: o.addressSnapshot?.phone || user?.phone || null,
     pincode: o.sameDay?.pincode || o.addressSnapshot?.postalCode || null,
     city: o.addressSnapshot?.city || null,
     items: o.items,
@@ -66,6 +68,7 @@ function serializeSddOrder(order) {
     deliveryCharges: 0,
     totalAmount: o.totalAmount,
     amountPaidInr: o.amountPaidInr,
+    balanceDueInr: o.balanceDueInr,
     adminNote: o.adminNote || null,
     shippedAt: o.sameDay?.shippedAt || null,
     cancelledAt: o.sameDay?.cancelledAt || null,
@@ -73,10 +76,109 @@ function serializeSddOrder(order) {
     updatedAt: o.updatedAt,
     addressSnapshot: o.addressSnapshot || null,
     refundHistory: o.refundHistory || [],
+    paymentInfo: o.paymentInfo || null,
+    appliedCoupon: o.appliedCoupon || null,
+    shippingWeightSnapshot: o.shippingWeightSnapshot || null,
+    removedItemsArchive: o.removedItemsArchive || [],
+    customer: {
+      name: user?.name || o.addressSnapshot?.fullName || o.addressSnapshot?.name || null,
+      email: user?.email || null,
+      phone: user?.phone || o.addressSnapshot?.phone || null,
+    },
   };
 }
 
-async function listSameDayOrders({ tab = 'pending', page = 1, limit = 20, search = '', scopeMatch }) {
+function appendDateRange(filterAnd, from, to) {
+  if (
+    from instanceof Date &&
+    to instanceof Date &&
+    !Number.isNaN(from.getTime()) &&
+    !Number.isNaN(to.getTime())
+  ) {
+    filterAnd.push({ createdAt: { $gte: from, $lte: to } });
+  }
+}
+
+function mergeScope(filterAnd, scopeMatch) {
+  if (scopeMatch && Object.keys(scopeMatch).length) filterAnd.push(scopeMatch);
+}
+
+async function aggregateSameDaySummary({ from = null, to = null, scopeMatch } = {}) {
+  const matchAnd = [{ fulfillmentMode: 'same_day' }];
+  appendDateRange(matchAnd, from, to);
+  mergeScope(matchAnd, scopeMatch);
+
+  const [row] = await Order.aggregate([
+    { $match: { $and: matchAnd } },
+    {
+      $group: {
+        _id: null,
+        totalOrders: {
+          $sum: {
+            $cond: [{ $not: { $in: ['$orderStatus', ['cancelled', 'payment_failed']] } }, 1, 0],
+          },
+        },
+        totalPendingOrders: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $eq: ['$orderStatus', 'confirmed'] },
+                  { $in: ['$paymentStatus', ['paid', 'partially_refunded']] },
+                ],
+              },
+              1,
+              0,
+            ],
+          },
+        },
+        totalCompletedOrders: {
+          $sum: { $cond: [{ $eq: ['$orderStatus', 'shipped'] }, 1, 0] },
+        },
+        totalRevenueInr: {
+          $sum: {
+            $cond: [
+              {
+                $and: [
+                  { $not: { $in: ['$orderStatus', ['cancelled', 'payment_failed']] } },
+                  { $ne: ['$paymentStatus', 'failed'] },
+                ],
+              },
+              '$totalAmount',
+              0,
+            ],
+          },
+        },
+        cancelledCount: {
+          $sum: { $cond: [{ $eq: ['$orderStatus', 'cancelled'] }, 1, 0] },
+        },
+      },
+    },
+  ]).exec();
+
+  const t = row || {};
+  return {
+    totalOrders: t.totalOrders || 0,
+    totalPendingOrders: t.totalPendingOrders || 0,
+    totalCompletedOrders: t.totalCompletedOrders || 0,
+    totalRevenueInr: roundMoney2(t.totalRevenueInr || 0),
+    countsByTab: {
+      pending: t.totalPendingOrders || 0,
+      shipped: t.totalCompletedOrders || 0,
+      cancelled: t.cancelledCount || 0,
+    },
+  };
+}
+
+async function listSameDayOrders({
+  tab = 'pending',
+  page = 1,
+  limit = 20,
+  search = '',
+  from = null,
+  to = null,
+  scopeMatch,
+}) {
   const safePage = Math.max(1, parseInt(String(page), 10) || 1);
   const safeLimit = Math.min(100, Math.max(1, parseInt(String(limit), 10) || 20));
   const tabKey = String(tab || 'pending').toLowerCase();
@@ -86,7 +188,7 @@ async function listSameDayOrders({ tab = 'pending', page = 1, limit = 20, search
   else tabMatch = buildSameDayPendingMatch();
 
   const filter = { $and: [tabMatch] };
-  if (scopeMatch && Object.keys(scopeMatch).length) filter.$and.push(scopeMatch);
+  mergeScope(filter.$and, scopeMatch);
 
   const q = String(search || '').trim();
   if (q) {
@@ -102,6 +204,8 @@ async function listSameDayOrders({ tab = 'pending', page = 1, limit = 20, search
         { 'sameDay.pincode': re },
       ],
     });
+  } else {
+    appendDateRange(filter.$and, from, to);
   }
 
   const [rows, total] = await Promise.all([
@@ -181,9 +285,7 @@ async function shipSameDayOrder({ orderId, adminUserId, scopeMatch }) {
       `Only confirmed same-day orders can be shipped (current: ${order.orderStatus}).`
     );
   }
-  if (!['paid', 'partially_paid'].includes(String(order.paymentStatus || ''))) {
-    throw createSddHttpError(400, 'ORDER_NOT_PAID', 'Order must be paid before shipping.');
-  }
+  assertSameDayShipPayment(order);
   order.orderStatus = 'shipped';
   order.sameDay = order.sameDay || {};
   order.sameDay.shippedAt = new Date();
@@ -420,6 +522,7 @@ async function editSameDayItems({ orderId, itemUpdates, commit, adminUserId, sco
 
 module.exports = {
   listSameDayOrders,
+  aggregateSameDaySummary,
   findSddOrder,
   serializeSddOrder,
   shipSameDayOrder,

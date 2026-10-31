@@ -202,7 +202,7 @@ function validateCustomPayload(body, shared) {
     giftCategory: requiredText(body.giftCategory, { field: 'giftCategory', min: 2, max: 120 }),
     quantity: parseQuantity(body.quantity, { required: true }),
     targetDeliveryDate: parseTargetDeliveryDate(body.targetDeliveryDate),
-    message: requiredText(body.message, {
+    message: optionalText(body.message, {
       field: 'message',
       min: MIN_MESSAGE_LEN,
       max: MAX_MESSAGE_LEN,

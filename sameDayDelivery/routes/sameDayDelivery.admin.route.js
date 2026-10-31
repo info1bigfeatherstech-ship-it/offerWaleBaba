@@ -7,6 +7,7 @@ const { requireAdminStorefrontScope } = require('../../middlewares/admin-storefr
 const {
   getSettings,
   updateSettings,
+  getOrdersSummary,
   listOrders,
   getOrder,
   shipOrder,
@@ -24,6 +25,7 @@ router.use(requireAdminStorefrontScope);
 router.get('/settings', authorizeRoles('admin'), getSettings);
 router.put('/settings', authorizeRoles('admin'), updateSettings);
 
+router.get('/orders/summary', getOrdersSummary);
 router.get('/orders', listOrders);
 router.get('/orders/:orderId', getOrder);
 router.post('/orders/:orderId/ship', shipOrder);

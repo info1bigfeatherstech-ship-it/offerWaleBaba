@@ -9,12 +9,15 @@ const {
 } = require('../services/sameDayDeliverySettings.service');
 const {
   listSameDayOrders,
+  aggregateSameDaySummary,
   findSddOrder,
   serializeSddOrder,
   shipSameDayOrder,
   cancelSameDayOrder,
   editSameDayItems,
 } = require('../services/sameDayOrderAdmin.service');
+const { resolveDateRange } = require('../../services/adminOrderDashboard.service');
+const { shouldHideOrdersRevenueRequest } = require('../../utils/adminOrderRoles');
 
 function sendError(res, err, fallback) {
   const status = err.statusCode && Number.isFinite(err.statusCode) ? err.statusCode : 500;
@@ -70,14 +73,65 @@ exports.updateSettings = async (req, res) => {
   }
 };
 
+function parseSddDateRange(query) {
+  const q = query || {};
+  const hasFrom = q.from != null && String(q.from).trim() !== '';
+  const hasTo = q.to != null && String(q.to).trim() !== '';
+  const hasPreset = String(q.rangePreset || '').trim() !== '';
+  if (!hasFrom && !hasTo && !hasPreset && (q.presetDays == null || q.presetDays === '')) {
+    return { from: null, to: null, presetLabel: 'all' };
+  }
+  return resolveDateRange({
+    from: q.from,
+    to: q.to,
+    rangePreset: q.rangePreset || 'all',
+    presetDays: q.presetDays,
+  });
+}
+
+exports.getOrdersSummary = async (req, res) => {
+  try {
+    assertEcommAdmin(req);
+    const range = parseSddDateRange(req.query);
+    const summary = await aggregateSameDaySummary({
+      from: range.from,
+      to: range.to,
+      scopeMatch: getAdminOrderMatch(req),
+    });
+    const hideRevenue = shouldHideOrdersRevenueRequest(req);
+    return res.json({
+      success: true,
+      data: {
+        dateRange: {
+          from: range.from ? range.from.toISOString() : null,
+          to: range.to ? range.to.toISOString() : null,
+          preset: range.presetLabel,
+        },
+        totals: {
+          totalOrders: summary.totalOrders,
+          totalRevenueInr: hideRevenue ? null : summary.totalRevenueInr,
+          totalPendingOrders: summary.totalPendingOrders,
+          totalCompletedOrders: summary.totalCompletedOrders,
+        },
+        countsByTab: summary.countsByTab,
+      },
+    });
+  } catch (err) {
+    return sendError(res, err, 'Could not load same-day order summary');
+  }
+};
+
 exports.listOrders = async (req, res) => {
   try {
     assertEcommAdmin(req);
+    const range = parseSddDateRange(req.query);
     const result = await listSameDayOrders({
       tab: req.query.tab,
       page: req.query.page,
       limit: req.query.limit,
       search: req.query.search,
+      from: range.from,
+      to: range.to,
       scopeMatch: getAdminOrderMatch(req),
     });
     return res.json({ success: true, ...result });
@@ -90,6 +144,10 @@ exports.getOrder = async (req, res) => {
   try {
     assertEcommAdmin(req);
     const order = await findSddOrder(req.params.orderId, getAdminOrderMatch(req));
+    await order.populate([
+      { path: 'items.productId', select: 'name slug images variants' },
+      { path: 'userId', select: 'name email phone' },
+    ]);
     return res.json({ success: true, data: serializeSddOrder(order) });
   } catch (err) {
     return sendError(res, err, 'Could not load same-day order');
