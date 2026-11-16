@@ -661,12 +661,7 @@ function resolveLabelFileMeta(buf, hint) {
   return { contentType: 'application/octet-stream', extension: 'bin' };
 }
 
-/**
- * Fetch Shipmozo label bytes (data-URL / base64 / http URL). Never calls Shiprocket.
- * @param {import('mongoose').Document} order
- * @returns {Promise<{ buffer: Buffer, contentType: string, extension: string }>}
- */
-async function fetchShipmozoLabelFile(order) {
+function assertLabelPaymentAndAwb(order) {
   const gate = evaluateOrderPaymentForShiprocketFulfillment(order);
   if (!gate.ok) {
     const e = new Error(gate.message || 'Payment rules do not allow this shipment action.');
@@ -680,32 +675,52 @@ async function fetchShipmozoLabelFile(order) {
     e.code = 'AWB_REQUIRED';
     throw e;
   }
+  return awb;
+}
 
-  try {
-    const storefront =
-      String(order.storefront || '').toLowerCase() === 'wholesale' ? 'wholesale' : 'ecomm';
-    const saved = await shipmozoLabelSettingsService.getPublicSettings(storefront);
-    const vm = await buildLabelViewModel(order, saved.settings);
-    const pdfBuf = await renderLabelPdf(vm);
-    if (pdfBuf && Buffer.isBuffer(pdfBuf) && pdfBuf.length > 80) {
-      return { buffer: pdfBuf, contentType: 'application/pdf', extension: 'pdf' };
-    }
-    logger.warn('custom Shipmozo label PDF empty, falling back to provider PNG', {
-      orderId: order?.orderId,
-      awb
-    });
-  } catch (customErr) {
-    if (customErr?.code === 'AWB_REQUIRED' || customErr?.code === 'PAYMENT_REQUIRED') {
-      throw customErr;
-    }
-    logger.error('custom Shipmozo 4x6 label failed; falling back to Shipmozo PNG', {
-      orderId: order?.orderId,
-      awb,
-      message: customErr?.message
-    });
+function normalizeLabelSource(raw) {
+  const v = String(raw || 'auto').toLowerCase().trim();
+  if (v === 'custom' || v === 'branded') return 'custom';
+  if (v === 'provider' || v === 'courier' || v === 'original') return 'provider';
+  return 'auto';
+}
+
+/**
+ * Branded 4×6 PDF from order.storefront settings (provider-agnostic).
+ * @returns {Promise<{ buffer: Buffer, contentType: string, extension: string, labelSource: 'custom' }>}
+ */
+async function renderCustomLabelPdfFile(order) {
+  const awb = assertLabelPaymentAndAwb(order);
+  const labelStorefront =
+    shipmozoLabelSettingsService.resolveLabelSettingsStorefrontForOrder(order);
+  const saved = await shipmozoLabelSettingsService.getPublicSettings(labelStorefront);
+  const vm = await buildLabelViewModel(order, saved.settings);
+  const pdfBuf = await renderLabelPdf(vm);
+  if (!pdfBuf || !Buffer.isBuffer(pdfBuf) || pdfBuf.length < 80) {
+    const e = new Error('Custom shipping label PDF was empty.');
+    e.code = 'CUSTOM_LABEL_EMPTY';
+    throw e;
   }
+  logger.info('custom shipping label rendered', {
+    orderId: order?.orderId,
+    awb,
+    labelStorefront,
+    bytes: pdfBuf.length
+  });
+  return {
+    buffer: pdfBuf,
+    contentType: 'application/pdf',
+    extension: 'pdf',
+    labelSource: 'custom'
+  };
+}
 
-  // Always fetch live from Shipmozo (do not persist/reuse huge base64 labelUrl in Mongo).
+/**
+ * Live Shipmozo courier label (PNG/PDF). Never uses ecomm/dropship custom settings.
+ */
+async function fetchShipmozoProviderLabelFile(order) {
+  const awb = assertLabelPaymentAndAwb(order);
+
   let labelPayload = '';
   try {
     const label = await ShipmozoService.getOrderLabel(awb);
@@ -718,7 +733,11 @@ async function fetchShipmozoLabelFile(order) {
     labelPayload = String(label.labelUrl).trim();
   } catch (err) {
     if (err.code) throw err;
-    logger.error('fetchShipmozoLabelFile', { orderId: order?.orderId, awb, message: err.message });
+    logger.error('fetchShipmozoProviderLabelFile', {
+      orderId: order?.orderId,
+      awb,
+      message: err.message
+    });
     const e = new Error(err.message || 'Could not download Shipmozo label');
     e.code = 'LABEL_FILE_FAILED';
     throw e;
@@ -729,7 +748,6 @@ async function fetchShipmozoLabelFile(order) {
     throw e;
   }
 
-  // Drop any previously cached Shipmozo base64 label from DB (keep DB lean).
   const cached = order.shipmentInfo?.labelUrl ? String(order.shipmentInfo.labelUrl).trim() : '';
   if (cached && (/^data:/i.test(cached) || cached.length > 500)) {
     try {
@@ -770,7 +788,12 @@ async function fetchShipmozoLabelFile(order) {
         throw e;
       }
       const resolved = resolveLabelFileMeta(buf, mimeHint);
-      return { buffer: buf, contentType: resolved.contentType, extension: resolved.extension };
+      return {
+        buffer: buf,
+        contentType: resolved.contentType,
+        extension: resolved.extension,
+        labelSource: 'provider'
+      };
     }
     if (/^https?:\/\//i.test(labelPayload)) {
       const external = await axios.get(labelPayload, {
@@ -791,9 +814,13 @@ async function fetchShipmozoLabelFile(order) {
       }
       const ctHeader = String(external.headers?.['content-type'] || '');
       const resolved = resolveLabelFileMeta(buf, ctHeader);
-      return { buffer: buf, contentType: resolved.contentType, extension: resolved.extension };
+      return {
+        buffer: buf,
+        contentType: resolved.contentType,
+        extension: resolved.extension,
+        labelSource: 'provider'
+      };
     }
-    // Raw base64 (no data: prefix) — sniff magic bytes after decode
     const buf = Buffer.from(labelPayload.replace(/\s+/g, ''), 'base64');
     if (!buf.length) {
       const e = new Error('Shipmozo label payload could not be decoded');
@@ -802,20 +829,79 @@ async function fetchShipmozoLabelFile(order) {
     }
     const resolved = resolveLabelFileMeta(buf, '');
     if (resolved.extension === 'bin') {
-      // Most Shipmozo labels are PNG when mime is omitted
       const asPng = resolveLabelFileMeta(buf, 'image/png');
       if (buf[0] === 0x89) {
-        return { buffer: buf, contentType: asPng.contentType, extension: asPng.extension };
+        return {
+          buffer: buf,
+          contentType: asPng.contentType,
+          extension: asPng.extension,
+          labelSource: 'provider'
+        };
       }
     }
-    return { buffer: buf, contentType: resolved.contentType, extension: resolved.extension };
+    return {
+      buffer: buf,
+      contentType: resolved.contentType,
+      extension: resolved.extension,
+      labelSource: 'provider'
+    };
   } catch (err) {
     if (err.code) throw err;
-    logger.error('fetchShipmozoLabelFile', { orderId: order?.orderId, message: err.message });
+    logger.error('fetchShipmozoProviderLabelFile decode', {
+      orderId: order?.orderId,
+      message: err.message
+    });
     const e = new Error(err.message || 'Could not download Shipmozo label');
     e.code = 'LABEL_FILE_FAILED';
     throw e;
   }
+}
+
+async function fetchProviderLabelFile(order) {
+  if (isShipmozoOrder(order)) {
+    return fetchShipmozoProviderLabelFile(order);
+  }
+  const buf = await fetchShiprocketLabelPdfBuffer(order);
+  return {
+    buffer: buf,
+    contentType: 'application/pdf',
+    extension: 'pdf',
+    labelSource: 'provider'
+  };
+}
+
+/**
+ * Unified label fetch.
+ * - custom: branded PDF only (hard fail if empty)
+ * - provider: courier original
+ * - auto: try custom then provider (legacy / bulk default)
+ */
+async function fetchOrderLabelFile(order, labelSource = 'auto') {
+  const source = normalizeLabelSource(labelSource);
+  if (source === 'custom') {
+    return renderCustomLabelPdfFile(order);
+  }
+  if (source === 'provider') {
+    return fetchProviderLabelFile(order);
+  }
+  try {
+    return await renderCustomLabelPdfFile(order);
+  } catch (customErr) {
+    if (customErr?.code === 'AWB_REQUIRED' || customErr?.code === 'PAYMENT_REQUIRED') {
+      throw customErr;
+    }
+    logger.warn('custom label failed; falling back to provider', {
+      orderId: order?.orderId,
+      code: customErr?.code,
+      message: customErr?.message
+    });
+    return fetchProviderLabelFile(order);
+  }
+}
+
+/** @deprecated Prefer fetchOrderLabelFile — kept for internal call sites. */
+async function fetchShipmozoLabelFile(order) {
+  return fetchOrderLabelFile(order, 'auto');
 }
 
 /**
@@ -2195,7 +2281,8 @@ exports.adminFulfillmentShippingLabel = async (req, res) => {
 
 /**
  * GET /orders/admin/items/:orderId/fulfillment/shipping-label-file
- * Proxies provider label file (Shiprocket PDF; Shipmozo PNG/JPEG/PDF) for admin download/open without CORS issues.
+ * Query: labelSource=custom|provider|auto (default auto for legacy)
+ * Scope: x-storefront must match order channel (via loadStaffOrder).
  */
 exports.adminFulfillmentShippingLabelFile = async (req, res) => {
   try {
@@ -2205,29 +2292,27 @@ exports.adminFulfillmentShippingLabelFile = async (req, res) => {
     if (!requireShipmentOpsAction(order, 'downloadLabel', res)) return;
 
     const isShipmozo = isShipmozoOrder(order);
+    const labelSource = normalizeLabelSource(
+      req.query?.labelSource || req.query?.source || 'auto'
+    );
     let buf;
     let contentType = 'application/pdf';
     let extension = 'pdf';
+    let usedSource = labelSource;
     try {
-      if (isShipmozo) {
-        const file = await fetchShipmozoLabelFile(order);
-        buf = file.buffer;
-        contentType = file.contentType || 'image/png';
-        extension = file.extension || 'png';
-        // Never claim PDF when payload is an image (Shipmozo default is PNG).
-        if (contentType === 'application/octet-stream' || extension === 'bin') {
-          const sniffed = resolveLabelFileMeta(buf, '');
-          contentType = sniffed.contentType;
-          extension = sniffed.extension;
-          if (extension === 'bin') {
-            contentType = 'image/png';
-            extension = 'png';
-          }
+      const file = await fetchOrderLabelFile(order, labelSource);
+      buf = file.buffer;
+      contentType = file.contentType || 'application/pdf';
+      extension = file.extension || 'pdf';
+      usedSource = file.labelSource || labelSource;
+      if (contentType === 'application/octet-stream' || extension === 'bin') {
+        const sniffed = resolveLabelFileMeta(buf, '');
+        contentType = sniffed.contentType;
+        extension = sniffed.extension;
+        if (extension === 'bin') {
+          contentType = 'image/png';
+          extension = 'png';
         }
-      } else {
-        buf = await fetchShiprocketLabelPdfBuffer(order);
-        contentType = 'application/pdf';
-        extension = 'pdf';
       }
       const awb = String(order.shipmentInfo?.awbCode || order.shipmentInfo?.trackingNumber || '').trim();
       await applyUpsertShipmentInfo({
@@ -2238,16 +2323,25 @@ exports.adminFulfillmentShippingLabelFile = async (req, res) => {
           ...(isShipmozo
             ? {
                 provider: SHIPPING_PROVIDERS.SHIPMOZO,
-                // Never keep Shipmozo base64 labels in Mongo — fetch live on each download.
                 labelUrl: null
               }
             : {})
         },
-        trigger: isShipmozo ? 'admin_label_downloaded_shipmozo' : 'admin_label_downloaded',
+        trigger:
+          usedSource === 'custom'
+            ? 'admin_label_downloaded_custom'
+            : isShipmozo
+              ? 'admin_label_downloaded_shipmozo'
+              : 'admin_label_downloaded',
         allowOrderStatusUpdate: false
       });
       await evaluateAndPersistShipmentOps(order, {
-        source: isShipmozo ? 'admin_label_downloaded_shipmozo' : 'admin_label_downloaded'
+        source:
+          usedSource === 'custom'
+            ? 'admin_label_downloaded_custom'
+            : isShipmozo
+              ? 'admin_label_downloaded_shipmozo'
+              : 'admin_label_downloaded'
       });
     } catch (fetchErr) {
       logger.error('adminFulfillmentShippingLabelFile fetch', {
@@ -2255,16 +2349,20 @@ exports.adminFulfillmentShippingLabelFile = async (req, res) => {
         stack: fetchErr.stack,
         code: fetchErr.code,
         status: fetchErr.response?.status,
+        labelSource,
         provider: isShipmozo ? 'shipmozo' : 'shiprocket'
       });
       const code = fetchErr.code || 'LABEL_FILE_FAILED';
+      if (code === 'CUSTOM_LABEL_EMPTY') {
+        return jsonError(res, 502, code, fetchErr.message || 'Custom label PDF was empty.');
+      }
       if (code === 'SHIPROCKET_ORDER_ID_MISSING') {
         return jsonError(
           res,
           400,
           code,
           isShipmozo
-            ? 'Shipmozo label is not available yet. Use Ship now / Refresh, then try label again.'
+            ? 'Courier label is not available yet. Use Ship now / Refresh, then try label again.'
             : fetchErr.message || 'No Shiprocket order id on order.'
         );
       }
@@ -2282,7 +2380,7 @@ exports.adminFulfillmentShippingLabelFile = async (req, res) => {
           res,
           502,
           'LABEL_FILE_FETCH_FAILED',
-          `Could not download label from ${isShipmozo ? 'Shipmozo' : 'Shiprocket'} (HTTP ${fetchErr.response.status}).`
+          `Could not download label from courier (HTTP ${fetchErr.response.status}).`
         );
       }
       if (code === 'LABEL_FAILED' || code === 'LABEL_EMPTY_BODY') {
@@ -2294,12 +2392,16 @@ exports.adminFulfillmentShippingLabelFile = async (req, res) => {
     }
 
     const safe = String(order.orderId || 'order').replace(/[^\w.-]+/g, '_').slice(0, 80);
-    const filePrefix = isShipmozo ? 'Shipmozo-label' : 'Shiprocket-label';
+    const filePrefix =
+      usedSource === 'custom' ? 'Shipping-label' : isShipmozo ? 'Courier-label' : 'Courier-label';
     const filename = `${filePrefix}-${safe}.${extension}`;
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    // Let browsers/axios read filename + type (fixes save-as .pdf while body is PNG).
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, Content-Type');
+    res.setHeader('X-Label-Source', usedSource === 'custom' ? 'custom' : 'provider');
+    res.setHeader(
+      'Access-Control-Expose-Headers',
+      'Content-Disposition, Content-Type, X-Label-Source'
+    );
     return res.status(200).send(buf);
   } catch (error) {
     logger.error('adminFulfillmentShippingLabelFile', {
@@ -2762,6 +2864,7 @@ exports.adminBulkShippingLabelsZip = async (req, res) => {
     }
     const parallel = parseBulkConcurrency(req.body?.concurrency);
     const scopeMatch = getAdminOrderMatch(req);
+    const bulkLabelSource = normalizeLabelSource(req.body?.labelSource || 'auto');
 
     const results = await mapInConcurrentWindows(orderIds, parallel, async (oid) => {
       try {
@@ -2777,16 +2880,14 @@ exports.adminBulkShippingLabelsZip = async (req, res) => {
             message: `Cannot download label for status ${order.orderStatus}`
           };
         }
-        let fileBuf;
-        let ext = 'pdf';
-        if (isShipmozoOrder(order)) {
-          const file = await fetchShipmozoLabelFile(order);
-          fileBuf = file.buffer;
-          ext = file.extension && file.extension !== 'bin' ? file.extension : 'png';
-        } else {
-          fileBuf = await fetchShiprocketLabelPdfBuffer(order);
-          ext = 'pdf';
-        }
+        const file = await fetchOrderLabelFile(order, bulkLabelSource);
+        const fileBuf = file.buffer;
+        const ext =
+          file.extension && file.extension !== 'bin'
+            ? file.extension
+            : file.contentType?.includes('pdf')
+              ? 'pdf'
+              : 'png';
         await applyUpsertShipmentInfo({
           order,
           shipmentPayload: { labelDownloaded: true },
