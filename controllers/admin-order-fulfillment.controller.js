@@ -9,7 +9,10 @@ const Order = require('../models/Order');
 const ShiprocketService = require('../utils/shiprocket');
 const ShipmozoService = require('../utils/shipmozo');
 const { runShipmozoAssignShip } = require('../services/shipmozoFulfillment.service');
-const { runShiprocketAssignAwb } = require('../services/shiprocketFulfillment.service');
+const {
+  runShiprocketAssignAwb,
+  runShiprocketReassignCourier
+} = require('../services/shiprocketFulfillment.service');
 const {
   SHIPPING_PROVIDERS,
   resolveOrderShippingProvider,
@@ -2563,6 +2566,135 @@ exports.adminFulfillmentCancelShipment = async (req, res) => {
   } catch (error) {
     logger.error('adminFulfillmentCancelShipment', { message: error.message, stack: error.stack });
     return jsonError(res, 500, 'FULFILLMENT_CANCEL_FAILED', error.message || 'Server error');
+  }
+};
+
+/**
+ * POST /orders/admin/items/:orderId/fulfillment/reassign-courier
+ * Shiprocket panel "Reassign Courier" (assign/awb status=reassign). Pickup-exception only.
+ * body: { courierId?: number, confirmSuggested?: boolean }
+ */
+exports.adminFulfillmentReassignCourier = async (req, res) => {
+  try {
+    const order = await loadStaffOrder(req, res, req.params.orderId);
+    if (!order) return;
+    if (!requireFulfillmentPaymentReady(order, res)) return;
+    if (!requireShipmentOpsAction(order, 'reassignCourier', res)) return;
+
+    if (isShipmozoOrder(order)) {
+      return jsonError(
+        res,
+        409,
+        'REASSIGN_SHIPROCKET_ONLY',
+        'Courier reassign via API is Shiprocket-only. Use Shipmozo panel or Cancel and ship again.'
+      );
+    }
+
+    const preSync = await syncShipmentFromShiprocket(order, 'admin_reassign_courier_presync');
+    if (!preSync.success) {
+      return jsonError(
+        res,
+        502,
+        preSync.code || 'SYNC_BEFORE_REASSIGN_FAILED',
+        preSync.message || 'Could not verify Shiprocket state before reassign.'
+      );
+    }
+
+    let working = await Order.findOne({ orderId: order.orderId });
+    if (!working) {
+      return jsonError(res, 404, 'ORDER_NOT_FOUND', 'Order not found');
+    }
+
+    const { computeOpsState: computeOps } = require('../services/shipmentOps/computeOpsState');
+    const { OPS_STATES } = require('../services/shipmentOps/constants');
+    if (preSync.resetApplied || computeOps(working) === OPS_STATES.PROVIDER_RESET) {
+      return jsonError(
+        res,
+        409,
+        'REASSIGN_NOT_APPLICABLE',
+        'Shipment was reset on Shiprocket. Use Ship now to re-book — reassign does not apply.',
+        { shipmentOps: buildShipmentOpsView(working, { source: 'admin_reassign_courier_blocked' }) }
+      );
+    }
+    if (computeOps(working) !== OPS_STATES.PICKUP_EXCEPTION) {
+      return jsonError(
+        res,
+        409,
+        'REASSIGN_NOT_APPLICABLE',
+        'Reassign courier is only available while the order is in Pickup exception.',
+        { shipmentOps: buildShipmentOpsView(working, { source: 'admin_reassign_courier_blocked' }) }
+      );
+    }
+
+    const courierId = req.body?.courierId != null ? Number(req.body.courierId) : null;
+    const confirmSuggested = Boolean(req.body?.confirmSuggested);
+    const result = await runShiprocketReassignCourier(working, {
+      courierId: Number.isFinite(courierId) && courierId > 0 ? courierId : null,
+      confirmSuggested
+    });
+
+    if (!result.success) {
+      const c = result.code || 'REASSIGN_COURIER_FAILED';
+      let status = 502;
+      if (c === 'REASSIGN_COURIER_CONFIRM' || c === 'NO_ACTIVE_COURIER' || c === 'COURIER_INACTIVE') {
+        status = 409;
+      } else if (c === 'SHIPMENT_ID_MISSING' || c === 'AWB_REQUIRED' || c === 'COURIER_ID_REQUIRED') {
+        status = 400;
+      } else if (c === 'SHIPROCKET_WALLET_OR_BALANCE') {
+        status = 402;
+      } else if (c === 'REASSIGN_INTERNAL_ERROR') {
+        status = 500;
+      }
+      return jsonError(res, status, c, result.message, {
+        details: result.details || null,
+        suggestedCourier: result.suggestedCourier || null,
+        availableCouriers: result.availableCouriers || null,
+        currentCourier: result.currentCourier || null,
+        quotedFreightInr: result.quotedFreightInr ?? null,
+        customerBillUnchanged: true
+      });
+    }
+
+    const assign = result.assign;
+    await applyUpsertShipmentInfo({
+      order: working,
+      shipmentPayload: {
+        ...assign,
+        courier: assign.courier || result.courierName || working.shipmentInfo?.courier,
+        assignedCourierId: String(result.courierId),
+        courierAssignNote: result.courierAssignNote || null,
+        courierSubstitutedFromId: result.courierSubstitutedFromId ?? null,
+        courierSubstitutedFromName: result.courierSubstitutedFromName || null,
+        lastPickupError: null,
+        pickupDate: null,
+        pickupScheduledAt: null,
+        shiprocketOrderId: working.shipmentInfo?.shiprocketOrderId || undefined,
+        events: []
+      },
+      trigger: 'admin_reassign_courier',
+      allowOrderStatusUpdate: false
+    });
+
+    await syncShipmentFromShiprocket(working, 'admin_reassign_courier_sync');
+    const finalOrder = await Order.findOne({ orderId: working.orderId });
+    if (finalOrder) {
+      await evaluateAndPersistShipmentOps(finalOrder, { source: 'admin_reassign_courier' });
+    }
+    const fresh = (await Order.findOne({ orderId: working.orderId })) || finalOrder;
+    const finalOps = fresh ? buildShipmentOpsView(fresh, { source: 'admin_reassign_courier' }) : null;
+
+    return res.json({
+      success: true,
+      message: `Courier reassigned to ${result.courierName || result.courierId}. Customer bill unchanged.`,
+      courierId: result.courierId,
+      courierName: result.courierName,
+      order: fresh,
+      shipmentOps: finalOps,
+      customerBillUnchanged: true
+    });
+  } catch (error) {
+    logger.error('adminFulfillmentReassignCourier', { message: error.message, stack: error.stack });
+    return jsonError(res, 500, 'FULFILLMENT_REASSIGN_COURIER_FAILED', error.message || 'Server error');
   }
 };
 
